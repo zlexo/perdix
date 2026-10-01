@@ -1,0 +1,69 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": { "CMAKE_EXPORT_COMPILE_COMMANDS": "ON" }
+    },
+    {
+      "name": "mac",
+      "hidden": true,
+      "inherits": "base",
+      "description": "Apple Clang, chosen by path so an older clang++ earlier on PATH is never picked up.",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "/usr/bin/clang++" }
+    },
+    {
+      "name": "linux",
+      "hidden": true,
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "mac-debug",
+      "displayName": "macOS, Apple Clang, Debug",
+      "inherits": "mac",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "mac-release",
+      "displayName": "macOS, Apple Clang, Release",
+      "inherits": "mac",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "linux-gcc",
+      "displayName": "Linux, GCC, Debug",
+      "inherits": "linux",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "g++", "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "linux-clang",
+      "displayName": "Linux, Clang, Debug",
+      "inherits": "linux",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "clang++", "CMAKE_BUILD_TYPE": "Debug" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "mac-debug", "configurePreset": "mac-debug" },
+    { "name": "mac-release", "configurePreset": "mac-release" },
+    { "name": "linux-gcc", "configurePreset": "linux-gcc" },
+    { "name": "linux-clang", "configurePreset": "linux-clang" }
+  ],
+  "testPresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    { "name": "mac-debug", "inherits": "base", "configurePreset": "mac-debug" },
+    { "name": "mac-release", "inherits": "base", "configurePreset": "mac-release" },
+    { "name": "linux-gcc", "inherits": "base", "configurePreset": "linux-gcc" },
+    { "name": "linux-clang", "inherits": "base", "configurePreset": "linux-clang" }
+  ]
+}
