@@ -1,0 +1,29 @@
+# Formatting for every C++ file in the repository. CI checks it with a
+# pinned clang-format (see .github/workflows/ci.yml), because different
+# versions format the same file differently.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+PointerAlignment: Left
+AccessModifierOffset: -4
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+FixNamespaceComments: true
+InsertNewlineAtEOF: true
+IncludeBlocks: Regroup
+# A source file's own header comes first, even with angle brackets
+MainIncludeChar: Any
+IncludeCategories:
+  # Local headers of the same target
+  - Regex: '^"'
+    Priority: 1
+  # Engine headers
+  - Regex: '^<vx/'
+    Priority: 2
+  # Standard library: no extension, no directory
+  - Regex: '^<[a-z_]+>$'
+    Priority: 4
+  # Third-party
+  - Regex: '^<'
+    Priority: 3
