@@ -13,3 +13,4 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(VxWarnings)
 
 add_subdirectory(engine/core)
+add_subdirectory(app)
