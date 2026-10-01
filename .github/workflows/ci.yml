@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CLANG_FORMAT_VERSION: "22.1.8"
+
+jobs:
+  linux:
+    name: Linux (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+      - name: Configure
+        run: cmake --preset linux-${{ matrix.compiler }}
+      - name: Build
+        run: cmake --build --preset linux-${{ matrix.compiler }}
+      - name: Test
+        run: ctest --preset linux-${{ matrix.compiler }}
+
+  # macOS minutes bill at ten times the Linux rate on private repositories,
+  # so this job only runs once the repository is public, where they are free.
+  macos:
+    name: macOS (Apple Clang)
+    if: ${{ !github.event.repository.private }}
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        run: brew install ninja
+      - name: Configure
+        run: cmake --preset mac-debug
+      - name: Build
+        run: cmake --build --preset mac-debug
+      - name: Test
+        run: ctest --preset mac-debug
+
+  format:
+    name: Format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format ${{ env.CLANG_FORMAT_VERSION }}
+        run: pipx install "clang-format==${CLANG_FORMAT_VERSION}"
+      - name: Check formatting
+        run: |
+          clang-format --version
+          git ls-files '*.cpp' '*.hpp' | xargs clang-format --dry-run --Werror
