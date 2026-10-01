@@ -11,3 +11,5 @@ option(VX_WARNINGS_AS_ERRORS "Treat compiler warnings in engine code as errors" 
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(VxWarnings)
+
+add_subdirectory(engine/core)
