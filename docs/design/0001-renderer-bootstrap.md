@@ -133,7 +133,7 @@ At startup the engine logs the GPU, driver name and version, API version, presen
 
 - Format: the first sRGB format offered, preferring `B8G8R8A8_SRGB`.
 - Present mode: FIFO by default (always available, no tearing). Immediate, when offered, for benchmarking, switchable at runtime from the overlay.
-- Image count: the minimum plus one, clamped to the maximum.
+- Image count: the minimum plus one, clamped to the maximum unless the maximum is 0, which means no limit.
 - Size: the framebuffer size in pixels, never the window size in points, so high-DPI displays render at native resolution.
 - Recreated on `VK_ERROR_OUT_OF_DATE_KHR`, `VK_SUBOPTIMAL_KHR` or a resize event, passing the old swapchain. A zero-sized framebuffer (minimized) pauses rendering instead of recreating.
 
