@@ -126,7 +126,9 @@ Five power-of-two sizes means the block data comes from five size classes. Each 
 
 ### Changing blocks
 
-`set` writes in place when the state is already in the palette. A new state that does not fit the palette doubles the width and repacks the chunk once (1 to 2 to 4 to 8 bits, then direct). Repacking 32,768 entries takes microseconds and happens a handful of times in a chunk's life.
+`set` first finds the state's palette index with a linear scan of the palette, then writes in place. The scan is cheap while the palette is small (4.5 ns per `set` measured in a 4-bit chunk) and grows with it (37.8 ns in an 8-bit chunk holding 200 states). Generation never pays it, because generators write plain arrays and use `from_dense`; edits and simulation do. A reverse lookup table for 8-bit palettes is added only if profiling shows `set` in very mixed chunks matters.
+
+A new state that does not fit the palette first looks for a dead entry: one pass counts how often each palette entry is used (a few microseconds, and only on this rare path), and an entry with no blocks left is reused. Only when every entry is live does the width double and the chunk repack once (1 to 2 to 4 to 8 bits, then direct). Without that check, overwritten states that still hold palette slots would force growth that compaction could have avoided.
 
 Palettes do not shrink on every `set`. When a state's last block is overwritten, its palette entry stays until the chunk is next compacted, which happens when it is meshed or saved: both already read every block, so counting usage costs nothing extra there.
 
