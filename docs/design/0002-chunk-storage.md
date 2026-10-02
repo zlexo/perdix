@@ -41,7 +41,7 @@ Goals:
 Non-goals:
 
 - The world's map of loaded chunks and streaming: RFC 0006. Threading: RFC 0005. Both are M3.
-- What a block *is* (names, properties, textures): the block registry RFC.
+- What a block *is* (names, properties, textures): RFC 0004, the block registry.
 - The on-disk format: M8. The in-memory layout is chosen so it can be written out as is, then compressed.
 - Light storage: M6.
 
@@ -62,7 +62,7 @@ Non-goals:
 enum class BlockState : std::uint16_t { air = 0 };
 ```
 
-16 bits give 65,536 states. Minecraft Java Edition has about 30,000 (29,873 in 26.1, by the state ids in PrismarineJS/minecraft-data), so there is headroom. The block registry RFC assigns the ids.
+16 bits give 65,536 states. Minecraft Java Edition has about 30,000 (29,873 in 26.1, by the state ids in PrismarineJS/minecraft-data), so there is headroom. RFC 0004 (the block registry) assigns the ids.
 
 ### Coordinates
 
