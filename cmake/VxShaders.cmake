@@ -34,7 +34,8 @@ set(VX_EMBED_SPIRV "${CMAKE_CURRENT_LIST_DIR}/VxEmbedSpirv.cmake")
 # vx_add_shaders(<target> <source.slang>...)
 #
 # Compiles each source into one SPIR-V module that holds all of its entry
-# points under their own names, with warnings as errors, and embeds the module
+# points under their own names, with warnings as errors and matrices laid out
+# as glm stores them, column after column, and embeds the module
 # in a generated header: shader `triangle.slang` becomes the
 # std::array<std::uint32_t, N> `vx::shaders::triangle` in
 # <vx/shaders/triangle.hpp>. A shader rebuilds when its source or anything it
@@ -55,7 +56,8 @@ function(vx_add_shaders target)
         add_custom_command(
             OUTPUT "${spirv}"
             COMMAND "${VX_SLANGC}" "${source_path}" -target spirv -fvk-use-entrypoint-name
-                -warnings-as-errors all -depfile "${spirv}.d" -o "${spirv}"
+                -matrix-layout-column-major -warnings-as-errors all -depfile "${spirv}.d"
+                -o "${spirv}"
             DEPENDS "${source_path}"
             DEPFILE "${spirv}.d"
             COMMENT "Compiling shader ${name}"

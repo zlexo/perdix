@@ -24,6 +24,7 @@ VmaAllocationCreateInfo allocation_info(BufferMemory memory) {
         info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
         break;
     case BufferMemory::staging:
+    case BufferMemory::per_frame:
         info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                      VMA_ALLOCATION_CREATE_MAPPED_BIT;
         info.usage = VMA_MEMORY_USAGE_AUTO;

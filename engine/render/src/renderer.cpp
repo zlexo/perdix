@@ -3,8 +3,13 @@
 #include "vk_result.hpp"
 
 #include <vx/render/buffer.hpp>
+#include <vx/render/camera_relative.hpp>
 #include <vx/render/upload.hpp>
-#include <vx/shaders/triangle.hpp>
+#include <vx/shaders/cube.hpp>
+
+#include <glm/mat4x4.hpp>
+#include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
 #include <array>
 #include <cassert>
@@ -13,6 +18,7 @@
 #include <cstring>
 #include <limits>
 #include <span>
+#include <string>
 #include <utility>
 
 namespace vx::render {
@@ -61,38 +67,75 @@ struct FrameTarget {
     VkImageView depth_view;
 };
 
-// Triangle vertices as triangle.slang reads them: positions in clip space,
-// where y points down the screen and z is depth, and linear colors.
-struct TriangleVertex {
+// Cube vertices as cube.slang reads them: a corner within the block and
+// the face's linear color.
+struct CubeVertex {
     std::array<float, 4> position;
     std::array<float, 4> color;
 };
-static_assert(sizeof(TriangleVertex) == 32, "triangle.slang's vertex stride");
+static_assert(sizeof(CubeVertex) == 32, "cube.slang's vertex stride");
 
-// Two triangles. The colored one is nearer, at depth 0.75, and drawn first;
-// the gray one is farther, at 0.25, and drawn over it, so where they overlap
-// the depth test decides which shows.
-constexpr std::array<TriangleVertex, 6> triangle_vertices = {{
-    {.position = {0.0F, -0.6F, 0.75F, 1.0F}, .color = {1.0F, 0.0F, 0.0F, 1.0F}}, // top, red
-    {.position = {0.6F, 0.6F, 0.75F, 1.0F}, .color = {0.0F, 1.0F, 0.0F, 1.0F}},  // right, green
-    {.position = {-0.6F, 0.6F, 0.75F, 1.0F}, .color = {0.0F, 0.0F, 1.0F, 1.0F}}, // left, blue
-    {.position = {-0.7F, -0.45F, 0.25F, 1.0F}, .color = {0.5F, 0.5F, 0.5F, 1.0F}},
-    {.position = {0.7F, -0.45F, 0.25F, 1.0F}, .color = {0.5F, 0.5F, 0.5F, 1.0F}},
-    {.position = {0.0F, 0.55F, 0.25F, 1.0F}, .color = {0.5F, 0.5F, 0.5F, 1.0F}},
-}};
-
-// triangle.slang's push constants.
-struct TrianglePush {
-    VkDeviceAddress vertices;
+// A face: its corners counterclockwise seen from outside, so it is a front
+// face from there, and one color each until textures come (item 9).
+struct Face {
+    std::array<std::array<float, 3>, 4> corners;
+    std::array<float, 4> color;
 };
 
-Result<GraphicsPipeline> make_triangle_pipeline(const Device& device, VkFormat color_format) {
-    return GraphicsPipeline::create(device, {.spirv = shaders::triangle,
+constexpr std::array<Face, 6> cube_faces = {{
+    {.corners = {{{1, 0, 1}, {1, 0, 0}, {1, 1, 0}, {1, 1, 1}}}, .color = {1, 0, 0, 1}}, // +x red
+    {.corners = {{{0, 0, 0}, {0, 0, 1}, {0, 1, 1}, {0, 1, 0}}}, .color = {0, 1, 1, 1}}, // -x cyan
+    {.corners = {{{0, 1, 1}, {1, 1, 1}, {1, 1, 0}, {0, 1, 0}}}, .color = {0, 1, 0, 1}}, // +y green
+    {.corners = {{{0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {0, 0, 1}}},
+     .color = {1, 0, 1, 1}}, // -y magenta
+    {.corners = {{{0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}}, .color = {0, 0, 1, 1}}, // +z blue
+    {.corners = {{{1, 0, 0}, {0, 0, 0}, {0, 1, 0}, {1, 1, 0}}}, .color = {1, 1, 0, 1}}, // -z yellow
+}};
+
+// Two triangles a face, both counterclockwise: 36 vertices.
+constexpr std::array<CubeVertex, 36> make_cube_vertices() {
+    std::array<CubeVertex, 36> vertices{};
+    std::size_t next = 0;
+    for (const Face& face : cube_faces) {
+        for (const std::size_t corner : std::array<std::size_t, 6>{0, 1, 2, 0, 2, 3}) {
+            const auto& [x, y, z] = face.corners.at(corner);
+            vertices.at(next++) = {.position = {x, y, z, 1.0F}, .color = face.color};
+        }
+    }
+    return vertices;
+}
+
+constexpr std::array<CubeVertex, 36> cube_vertices = make_cube_vertices();
+
+// RFC 0001's push constants, as cube.slang reads them.
+struct DrawPush {
+    glm::mat4 view_projection; // offset 0: rotation and projection only
+    VkDeviceAddress vertices;  // offset 64
+    VkDeviceAddress origins;   // offset 72: one float4 per instance
+    glm::vec3 camera_fraction; // offset 80: the camera's place within its block
+    std::uint32_t texture;     // offset 92: the bindless texture, item 9
+};
+static_assert(sizeof(DrawPush) == 96 && offsetof(DrawPush, texture) == 92);
+
+// One frame's push constants for a target of `extent`.
+DrawPush make_draw_push(const Camera& camera, const BlockAndFraction& split, VkExtent2D extent,
+                        VkDeviceAddress vertices, VkDeviceAddress origins) {
+    const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    return {.view_projection = view_projection(camera, aspect),
+            .vertices = vertices,
+            .origins = origins,
+            .camera_fraction = split.fraction,
+            .texture = 0};
+}
+
+Result<GraphicsPipeline> make_cube_pipeline(const Device& device, VkFormat color_format) {
+    return GraphicsPipeline::create(device, {.spirv = shaders::cube,
                                              .vertex_entry = "vertex_main",
                                              .fragment_entry = "fragment_main",
                                              .color_format = color_format,
                                              .depth_format = depth_format,
-                                             .push_constant_size = sizeof(TrianglePush),
+                                             .cull_mode = VK_CULL_MODE_BACK_BIT,
+                                             .push_constant_size = sizeof(DrawPush),
                                              .push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT});
 }
 
@@ -146,11 +189,10 @@ void begin_commands(VkCommandBuffer commands) {
 }
 
 // One frame's commands: the image becomes a color attachment, is cleared, has
-// the triangles drawn over it, and, for a swapchain, becomes presentable. An
-// offscreen image stays a color attachment, ready for the next frame or for
-// capture.
+// the cubes drawn, and, for a swapchain, becomes presentable. An offscreen
+// image stays a color attachment, ready for the next frame or for capture.
 void record_frame(VkCommandBuffer commands, const FrameTarget& target, Color clear,
-                  const GraphicsPipeline& pipeline, VkDeviceAddress vertices) {
+                  const GraphicsPipeline& pipeline, const DrawPush& push, std::uint32_t cubes) {
     begin_commands(commands);
 
     // For a swapchain image, the submission waits for the acquired image at
@@ -228,10 +270,9 @@ void record_frame(VkCommandBuffer commands, const FrameTarget& target, Color cle
     vkCmdSetViewport(commands, 0, 1, &viewport);
     const VkRect2D scissor = {.offset = {.x = 0, .y = 0}, .extent = target.extent};
     vkCmdSetScissor(commands, 0, 1, &scissor);
-    const TrianglePush push = {.vertices = vertices};
     vkCmdPushConstants(commands, pipeline.layout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push),
                        &push);
-    vkCmdDraw(commands, static_cast<std::uint32_t>(triangle_vertices.size()), 1, 0, 0);
+    vkCmdDraw(commands, static_cast<std::uint32_t>(cube_vertices.size()), cubes, 0, 0);
 
     vkCmdEndRendering(commands);
 
@@ -339,12 +380,11 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     if (!depth.has_value()) {
         return depth.error();
     }
-    Result<GraphicsPipeline> pipeline =
-        make_triangle_pipeline(context.value().device(), color_format);
+    Result<GraphicsPipeline> pipeline = make_cube_pipeline(context.value().device(), color_format);
     if (!pipeline.has_value()) {
         return pipeline.error();
     }
-    Result<Buffer> vertices = Buffer::create(context.value().device(), sizeof(triangle_vertices),
+    Result<Buffer> vertices = Buffer::create(context.value().device(), sizeof(cube_vertices),
                                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                              BufferMemory::upload_target);
@@ -358,7 +398,7 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     if (const Result<void> made = renderer.create_frame_objects(); !made.has_value()) {
         return made.error();
     }
-    if (const Result<void> uploaded = renderer.upload_triangle(); !uploaded.has_value()) {
+    if (const Result<void> uploaded = renderer.upload_cube(); !uploaded.has_value()) {
         return uploaded.error();
     }
     return renderer;
@@ -366,21 +406,20 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
 
 Renderer::Renderer(Context context, std::optional<Swapchain> swapchain,
                    std::optional<AttachmentImage> offscreen, AttachmentImage depth,
-                   GraphicsPipeline triangle_pipeline, Buffer triangle_buffer, Extent framebuffer,
+                   GraphicsPipeline cube_pipeline, Buffer cube_buffer, Extent framebuffer,
                    PresentMode present_mode)
     : context_(std::move(context)), swapchain_(std::move(swapchain)),
       offscreen_(std::move(offscreen)), depth_(std::move(depth)),
-      triangle_pipeline_(std::move(triangle_pipeline)),
-      triangle_buffer_(std::move(triangle_buffer)), framebuffer_(framebuffer),
-      target_framebuffer_(framebuffer), present_mode_(present_mode) {}
+      cube_pipeline_(std::move(cube_pipeline)), cube_buffer_(std::move(cube_buffer)),
+      framebuffer_(framebuffer), target_framebuffer_(framebuffer), present_mode_(present_mode) {}
 
 Renderer::Renderer(Renderer&& other) noexcept
     : context_(std::move(other.context_)), swapchain_(std::move(other.swapchain_)),
       offscreen_(std::move(other.offscreen_)), depth_(std::move(other.depth_)),
-      triangle_pipeline_(std::move(other.triangle_pipeline_)),
-      triangle_buffer_(std::move(other.triangle_buffer_)), framebuffer_(other.framebuffer_),
-      target_framebuffer_(other.target_framebuffer_), present_mode_(other.present_mode_),
-      swapchain_stale_(other.swapchain_stale_), slots_(std::exchange(other.slots_, {})),
+      cube_pipeline_(std::move(other.cube_pipeline_)), cube_buffer_(std::move(other.cube_buffer_)),
+      framebuffer_(other.framebuffer_), target_framebuffer_(other.target_framebuffer_),
+      present_mode_(other.present_mode_), swapchain_stale_(other.swapchain_stale_),
+      slots_(std::exchange(other.slots_, {})), origins_(std::move(other.origins_)),
       image_rendered_(std::exchange(other.image_rendered_, {})),
       frames_done_(std::exchange(other.frames_done_, VK_NULL_HANDLE)), frame_(other.frame_) {}
 
@@ -434,6 +473,16 @@ Result<void> Renderer::create_frame_objects() {
     }
     frames_done_ = done.value();
 
+    for (std::size_t slot = 0; slot < frames_in_flight; ++slot) {
+        Result<Buffer> origins = Buffer::create(context_.device(), max_cubes * sizeof(glm::vec4),
+                                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                BufferMemory::per_frame);
+        if (!origins.has_value()) {
+            return origins.error();
+        }
+        origins_.push_back(std::move(origins).value());
+    }
     return add_rendered_semaphores();
 }
 
@@ -456,13 +505,13 @@ Result<void> Renderer::add_rendered_semaphores() {
 // On unified memory the vertices go through their buffer's mapping and
 // nothing is recorded. Elsewhere the staged copy is submitted, and waited for
 // before its staging buffer goes away with `uploads`.
-Result<void> Renderer::upload_triangle() {
+Result<void> Renderer::upload_cube() {
     const Device& device = context_.device();
     UploadContext uploads(device);
     VkCommandBuffer commands = slots_[0].command_buffer;
     begin_commands(commands);
     const Result<void> uploaded =
-        upload(uploads, commands, triangle_buffer_, 0, std::as_bytes(std::span(triangle_vertices)));
+        upload(uploads, commands, cube_buffer_, 0, std::as_bytes(std::span(cube_vertices)));
     uploads.finish(commands);
     vkEndCommandBuffer(commands);
     if (!uploaded.has_value()) {
@@ -495,12 +544,12 @@ Result<void> Renderer::recreate_target() {
         // A surface may offer a different format after a change, such as a
         // move to another display.
         if (const VkFormat format = swapchain_->choice().format.format;
-            format != triangle_pipeline_.color_format()) {
-            Result<GraphicsPipeline> rebuilt = make_triangle_pipeline(context_.device(), format);
+            format != cube_pipeline_.color_format()) {
+            Result<GraphicsPipeline> rebuilt = make_cube_pipeline(context_.device(), format);
             if (!rebuilt.has_value()) {
                 return rebuilt.error();
             }
-            triangle_pipeline_ = std::move(rebuilt).value();
+            cube_pipeline_ = std::move(rebuilt).value();
         }
     } else {
         Result<AttachmentImage> replacement =
@@ -519,7 +568,11 @@ Result<void> Renderer::recreate_target() {
     return add_rendered_semaphores();
 }
 
-Result<Frame> Renderer::render(Color clear) {
+Result<Frame> Renderer::render(const FrameInputs& inputs) {
+    if (inputs.cubes.size() > max_cubes) {
+        return Error{"a frame draws at most " + std::to_string(max_cubes) + " cubes, not " +
+                     std::to_string(inputs.cubes.size())};
+    }
     if (framebuffer_.width == 0 || framebuffer_.height == 0) {
         return Frame::skipped;
     }
@@ -552,6 +605,22 @@ Result<Frame> Renderer::render(Color clear) {
     const VkSemaphoreSubmitInfo frame_done =
         semaphore_submit(frames_done_, frame, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
+    // The slot's origins are free with the slot. Each is a cube's block as
+    // seen from the camera's, subtracted in 64-bit integers.
+    const BlockAndFraction split = split_position(inputs.camera.position);
+    const Buffer& origins = origins_[frame % frames_in_flight];
+    for (std::size_t cube = 0; cube < inputs.cubes.size(); ++cube) {
+        const glm::vec4 origin(relative_origin(inputs.cubes[cube], split.block), 0.0F);
+        std::memcpy(origins.mapping().subspan(cube * sizeof(glm::vec4)).data(), &origin,
+                    sizeof(origin));
+    }
+    if (const VkResult result = vmaFlushAllocation(context_.device().allocator(),
+                                                   origins.allocation(), 0, VK_WHOLE_SIZE);
+        result != VK_SUCCESS) {
+        return Error{"vmaFlushAllocation failed: " + vk_result_name(result)};
+    }
+    const auto cubes = static_cast<std::uint32_t>(inputs.cubes.size());
+
     if (offscreen_.has_value()) {
         vkResetCommandPool(device, slot.command_pool, 0);
         record_frame(slot.command_buffer,
@@ -561,7 +630,10 @@ Result<Frame> Renderer::render(Color clear) {
                       .extent = offscreen_->extent(),
                       .depth_image = depth_.image(),
                       .depth_view = depth_.view()},
-                     clear, triangle_pipeline_, triangle_buffer_.address());
+                     inputs.sky, cube_pipeline_,
+                     make_draw_push(inputs.camera, split, offscreen_->extent(),
+                                    cube_buffer_.address(), origins.address()),
+                     cubes);
         if (const Result<void> submitted =
                 submit(queue, slot.command_buffer, {}, std::span(&frame_done, 1));
             !submitted.has_value()) {
@@ -593,7 +665,10 @@ Result<Frame> Renderer::render(Color clear) {
                   .extent = swapchain.choice().extent,
                   .depth_image = depth_.image(),
                   .depth_view = depth_.view()},
-                 clear, triangle_pipeline_, triangle_buffer_.address());
+                 inputs.sky, cube_pipeline_,
+                 make_draw_push(inputs.camera, split, swapchain.choice().extent,
+                                cube_buffer_.address(), origins.address()),
+                 cubes);
 
     const VkSemaphoreSubmitInfo wait =
         semaphore_submit(slot.image_acquired, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);

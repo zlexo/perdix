@@ -20,6 +20,8 @@ struct GraphicsPipelineDesc {
     // With a depth format, the pipeline tests and writes depth, reversed-Z:
     // a fragment passes where it is nearer, its depth greater.
     VkFormat depth_format = VK_FORMAT_UNDEFINED;
+    // Faces wound counterclockwise, seen from outside, are front faces.
+    VkCullModeFlags cull_mode = VK_CULL_MODE_NONE;
     // Push constants from offset 0, and the stages that read them.
     std::uint32_t push_constant_size = 0;
     VkShaderStageFlags push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT;
