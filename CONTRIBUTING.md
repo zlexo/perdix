@@ -2,6 +2,10 @@
 
 This engine is built slowly on purpose. Every system is designed before it is written, every change lands through a reviewed pull request, and every performance claim comes with a number.
 
+## Who contributes
+
+The code is source-available, not open source: anyone may read it, but nobody may use or copy it without permission (see [LICENSE](LICENSE)). Issues, bug reports and benchmark results are welcome. Pull requests from outside the project are not accepted for now; this guide describes how the project's own work moves.
+
 ## How a feature moves
 
 1. **Design.** A design document (RFC) in [`docs/design/`](docs/design/) describes the whole feature: the problem, goals and non-goals, prior art, the options and their trade-offs, the chosen design (data layout, algorithms, API sketch), a performance budget, a test plan and the list of pull requests that will build it. It starts as `Draft` and becomes `Accepted` after review. **No feature code is written before its RFC is accepted.** Chores and small fixes are exempt.
