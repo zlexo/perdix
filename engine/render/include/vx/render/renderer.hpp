@@ -23,6 +23,8 @@
 namespace tracy {
 class VkCtx; // Tracy's GPU timing context, defined in profiling builds only
 } // namespace tracy
+struct ImDrawData;   // Dear ImGui's draw lists for one frame
+struct ImGuiContext; // Dear ImGui's state: windows, input, fonts
 
 namespace vx::render {
 
@@ -33,6 +35,9 @@ struct RendererDesc {
     // VK_LAYER_KHRONOS_validation with synchronization validation: debug builds.
     bool validation = false;
     PresentMode present_mode = PresentMode::fifo;
+    // The ImGui context the overlay is built in, by the app, which keeps it
+    // alive longer than the renderer; null when there is no overlay.
+    ImGuiContext* overlay = nullptr;
 };
 
 // A color in linear RGB, with alpha. The target's sRGB format encodes it.
@@ -50,6 +55,9 @@ struct FrameInputs {
     // Where cubes stand: each one's block, its lowest corner. At most
     // Renderer::max_cubes.
     std::span<const glm::i64vec3> cubes;
+    // The overlay's draw lists, from ImGui::GetDrawData(), drawn over the
+    // frame; null draws none. Not const: drawing updates its textures' state.
+    ImDrawData* overlay = nullptr;
 };
 
 enum class Frame : std::uint8_t {
@@ -108,6 +116,7 @@ private:
     [[nodiscard]] Result<void> upload_cube();
     [[nodiscard]] Result<void> add_rendered_semaphores();
     [[nodiscard]] Result<void> recreate_target();
+    [[nodiscard]] Result<void> start_overlay(ImGuiContext* overlay);
     void destroy() noexcept;
 
     Context context_;                    // declared first, so it is destroyed last
@@ -144,6 +153,8 @@ private:
     // Tracy's timing of the queue, for RFC 0001's GPU zones: null without
     // VX_PROFILE, or when the queue writes no timestamps.
     tracy::VkCtx* gpu_profiler_ = nullptr;
+    // The context ImGui's Vulkan backend was started on: null without one.
+    ImGuiContext* overlay_ = nullptr;
 };
 
 } // namespace vx::render

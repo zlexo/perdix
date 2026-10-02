@@ -12,6 +12,8 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
+#include <imgui.h>
+#include <imgui_impl_vulkan.h>
 #include <tracy/Tracy.hpp>
 #include <tracy/TracyVulkan.hpp>
 
@@ -191,12 +193,21 @@ void begin_commands(VkCommandBuffer commands) {
 // One frame's commands: the image becomes a color attachment, is cleared, has
 // the cubes drawn, and, for a swapchain, becomes presentable. An offscreen
 // image stays a color attachment, ready for the next frame or for capture.
+// What a frame's passes draw, besides the target they draw into.
+struct FrameDraw {
+    Color clear;
+    const GraphicsPipeline* pipeline;
+    VkDescriptorSet textures; // set 0, the texture table
+    DrawPush push;
+    std::uint32_t cubes;
+    ImDrawData* overlay; // null: no overlay pass
+};
+
 // Records the pass that clears the target and draws the cubes, inside the
 // GPU zone Cube pass. The zone's timestamps fall outside the pass: KosmicKrisp
 // drops timestamps written within rendering.
 void record_cube_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_profiler,
-                      const FrameTarget& target, Color clear, const GraphicsPipeline& pipeline,
-                      VkDescriptorSet textures, const DrawPush& push, std::uint32_t cubes) {
+                      const FrameTarget& target, const FrameDraw& draw) {
     TracyVkNamedZone(gpu_profiler, pass_zone, commands, "Cube pass", gpu_profiler != nullptr);
 
     const VkRenderingAttachmentInfo attachment = {
@@ -209,7 +220,8 @@ void record_cube_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* g
         .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .clearValue = {.color = {.float32 = {clear.r, clear.g, clear.b, clear.a}}},
+        .clearValue = {.color = {.float32 = {draw.clear.r, draw.clear.g, draw.clear.b,
+                                             draw.clear.a}}},
     };
     // Reversed-Z: depth clears to 0, the far end. Nothing reads it after the
     // frame, so it is not stored.
@@ -240,7 +252,7 @@ void record_cube_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* g
     vkCmdBeginRendering(commands, &rendering);
 
     // The vertex shader pulls the vertices through their buffer's address.
-    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle());
+    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, draw.pipeline->handle());
     const VkViewport viewport = {
         .x = 0.0F,
         .y = 0.0F,
@@ -252,19 +264,54 @@ void record_cube_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* g
     vkCmdSetViewport(commands, 0, 1, &viewport);
     const VkRect2D scissor = {.offset = {.x = 0, .y = 0}, .extent = target.extent};
     vkCmdSetScissor(commands, 0, 1, &scissor);
-    vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout(), 0, 1,
-                            &textures, 0, nullptr);
-    vkCmdPushConstants(commands, pipeline.layout(), push_stages, 0, sizeof(push), &push);
-    vkCmdDraw(commands, static_cast<std::uint32_t>(cube_vertices.size()), cubes, 0, 0);
+    vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, draw.pipeline->layout(), 0,
+                            1, &draw.textures, 0, nullptr);
+    vkCmdPushConstants(commands, draw.pipeline->layout(), push_stages, 0, sizeof(draw.push),
+                       &draw.push);
+    vkCmdDraw(commands, static_cast<std::uint32_t>(cube_vertices.size()), draw.cubes, 0, 0);
 
+    vkCmdEndRendering(commands);
+}
+
+// Records the overlay's pass, inside the GPU zone Overlay pass: ImGui's draw
+// lists over the target, which keeps what the cube pass drew. It has no depth.
+void record_overlay_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_profiler,
+                         const FrameTarget& target, ImDrawData* overlay) {
+    TracyVkNamedZone(gpu_profiler, overlay_zone, commands, "Overlay pass", gpu_profiler != nullptr);
+
+    const VkRenderingAttachmentInfo attachment = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .pNext = nullptr,
+        .imageView = target.view,
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .resolveMode = VK_RESOLVE_MODE_NONE,
+        .resolveImageView = VK_NULL_HANDLE,
+        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue = {},
+    };
+    const VkRenderingInfo rendering = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .renderArea = {.offset = {.x = 0, .y = 0}, .extent = target.extent},
+        .layerCount = 1,
+        .viewMask = 0,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &attachment,
+        .pDepthAttachment = nullptr,
+        .pStencilAttachment = nullptr,
+    };
+    vkCmdBeginRendering(commands, &rendering);
+    ImGui_ImplVulkan_RenderDrawData(overlay, commands);
     vkCmdEndRendering(commands);
 }
 
 // Records a frame's work into `commands`, inside the GPU zone Frame: the
 // targets' transitions around the cube pass.
 void record_passes(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_profiler,
-                   const FrameTarget& target, Color clear, const GraphicsPipeline& pipeline,
-                   VkDescriptorSet textures, const DrawPush& push, std::uint32_t cubes) {
+                   const FrameTarget& target, const FrameDraw& draw) {
     TracyVkNamedZone(gpu_profiler, frame_zone, commands, "Frame", gpu_profiler != nullptr);
 
     // For a swapchain image, the submission waits for the acquired image at
@@ -289,7 +336,17 @@ void record_passes(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_
                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                VK_IMAGE_ASPECT_DEPTH_BIT);
 
-    record_cube_pass(commands, gpu_profiler, target, clear, pipeline, textures, push, cubes);
+    record_cube_pass(commands, gpu_profiler, target, draw);
+    if (draw.overlay != nullptr) {
+        // The overlay draws over what the cube pass stored, so its pass waits
+        // for those writes.
+        transition(
+            commands, target.image, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        record_overlay_pass(commands, gpu_profiler, target, draw.overlay);
+    }
 
     if (target.kind == Target::swapchain) {
         // Presentation waits on the semaphore the submission signals after all
@@ -305,15 +362,30 @@ void record_passes(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_
 // frames whose timestamps have landed. Collecting resets their queries for
 // reuse, which must happen outside any rendering.
 void record_frame(VkCommandBuffer commands, tracy::VkCtx* gpu_profiler, const FrameTarget& target,
-                  Color clear, const GraphicsPipeline& pipeline, VkDescriptorSet textures,
-                  const DrawPush& push, std::uint32_t cubes) {
+                  const FrameDraw& draw) {
     ZoneScopedN("Record");
     begin_commands(commands);
     if (gpu_profiler != nullptr) {
         TracyVkCollect(gpu_profiler, commands);
     }
-    record_passes(commands, gpu_profiler, target, clear, pipeline, textures, push, cubes);
+    record_passes(commands, gpu_profiler, target, draw);
     vkEndCommandBuffer(commands);
+}
+
+// The overlay's pipeline: one color attachment of `format`, which must
+// outlive the call it is passed to, and no depth.
+ImGui_ImplVulkan_PipelineInfo overlay_pipeline_info(const VkFormat* format) {
+    ImGui_ImplVulkan_PipelineInfo info{};
+    info.PipelineRenderingCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .pNext = nullptr,
+        .viewMask = 0,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = format,
+        .depthAttachmentFormat = VK_FORMAT_UNDEFINED,
+        .stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
+    };
+    return info;
 }
 
 // Tracy's timing of the device's queue, for RFC 0001's GPU zones: null
@@ -538,6 +610,12 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     if (const Result<void> uploaded = renderer.upload_cube(); !uploaded.has_value()) {
         return uploaded.error();
     }
+    if (desc.overlay != nullptr) {
+        if (const Result<void> started = renderer.start_overlay(desc.overlay);
+            !started.has_value()) {
+            return started.error();
+        }
+    }
     renderer.gpu_profiler_ = make_gpu_profiler(renderer.context_.device());
     return renderer;
 }
@@ -559,7 +637,8 @@ Renderer::Renderer(Renderer&& other) noexcept
       slots_(std::exchange(other.slots_, {})), origins_(std::move(other.origins_)),
       image_rendered_(std::exchange(other.image_rendered_, {})),
       frames_done_(std::exchange(other.frames_done_, VK_NULL_HANDLE)), frame_(other.frame_),
-      gpu_profiler_(std::exchange(other.gpu_profiler_, nullptr)) {}
+      gpu_profiler_(std::exchange(other.gpu_profiler_, nullptr)),
+      overlay_(std::exchange(other.overlay_, nullptr)) {}
 
 Renderer::~Renderer() {
     destroy();
@@ -675,6 +754,34 @@ Result<void> Renderer::upload_cube() {
     return {};
 }
 
+// Starts ImGui's Vulkan backend on the app's context: the overlay's pipeline
+// for the target's format, and the font texture, which it uploads itself,
+// through a command buffer of its own, when the overlay first draws.
+Result<void> Renderer::start_overlay(ImGuiContext* overlay) {
+    ZoneScopedN("Start overlay");
+    ImGui::SetCurrentContext(overlay);
+    const VkFormat format = cube_.pipeline.color_format();
+    ImGui_ImplVulkan_InitInfo info{};
+    info.ApiVersion = VK_API_VERSION_1_3;
+    info.Instance = context_.instance().handle();
+    info.PhysicalDevice = context_.device().physical_device();
+    info.Device = context_.device().handle();
+    info.QueueFamily = context_.device().queue_family();
+    info.Queue = context_.device().queue();
+    info.DescriptorPoolSize = IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE;
+    // ImGui reuses its vertex buffers after this many frames: the frames in
+    // flight, each done before its slot comes round again.
+    info.MinImageCount = frames_in_flight;
+    info.ImageCount = frames_in_flight;
+    info.UseDynamicRendering = true;
+    info.PipelineInfoMain = overlay_pipeline_info(&format);
+    if (!ImGui_ImplVulkan_Init(&info)) {
+        return Error{"ImGui's Vulkan backend did not start"};
+    }
+    overlay_ = overlay;
+    return {};
+}
+
 Result<void> Renderer::recreate_target() {
     ZoneScopedN("Recreate target");
     // The last frames, and their presentation, may still use the old target.
@@ -700,6 +807,12 @@ Result<void> Renderer::recreate_target() {
                 return rebuilt.error();
             }
             cube_.pipeline = std::move(rebuilt).value();
+            if (overlay_ != nullptr) {
+                ImGui::SetCurrentContext(overlay_);
+                const ImGui_ImplVulkan_PipelineInfo overlay_pipeline =
+                    overlay_pipeline_info(&format);
+                ImGui_ImplVulkan_CreateMainPipeline(&overlay_pipeline);
+            }
         }
     } else {
         Result<Image> replacement =
@@ -724,8 +837,14 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
         return Error{"a frame draws at most " + std::to_string(max_cubes) + " cubes, not " +
                      std::to_string(inputs.cubes.size())};
     }
+    if (inputs.overlay != nullptr && overlay_ == nullptr) {
+        return Error{"a frame's overlay needs a renderer made with an overlay context"};
+    }
     if (framebuffer_.width == 0 || framebuffer_.height == 0) {
         return Frame::skipped;
+    }
+    if (overlay_ != nullptr) {
+        ImGui::SetCurrentContext(overlay_); // ImGui's backend keeps its state there
     }
     if (swapchain_stale_ || framebuffer_.width != target_framebuffer_.width ||
         framebuffer_.height != target_framebuffer_.height) {
@@ -773,11 +892,14 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
                       .extent = offscreen_->extent(),
                       .depth_image = depth_.image(),
                       .depth_view = depth_.view()},
-                     inputs.sky, cube_.pipeline, textures_.set(),
-                     make_draw_push(inputs.camera, split, offscreen_->extent(),
-                                    cube_.vertices.address(), origins.address(),
-                                    cube_.checker_slot),
-                     cubes);
+                     {.clear = inputs.sky,
+                      .pipeline = &cube_.pipeline,
+                      .textures = textures_.set(),
+                      .push = make_draw_push(inputs.camera, split, offscreen_->extent(),
+                                             cube_.vertices.address(), origins.address(),
+                                             cube_.checker_slot),
+                      .cubes = cubes,
+                      .overlay = inputs.overlay});
         if (const Result<void> submitted =
                 submit(queue, slot.command_buffer, {}, std::span(&frame_done, 1));
             !submitted.has_value()) {
@@ -801,17 +923,21 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
     swapchain_stale_ = acquired == VK_SUBOPTIMAL_KHR; // draw this frame, replace after it
 
     vkResetCommandPool(device, slot.command_pool, 0);
-    record_frame(slot.command_buffer, gpu_profiler_,
-                 {.kind = Target::swapchain,
-                  .image = swapchain.images()[index],
-                  .view = swapchain.views()[index],
-                  .extent = swapchain.choice().extent,
-                  .depth_image = depth_.image(),
-                  .depth_view = depth_.view()},
-                 inputs.sky, cube_.pipeline, textures_.set(),
-                 make_draw_push(inputs.camera, split, swapchain.choice().extent,
+    record_frame(
+        slot.command_buffer, gpu_profiler_,
+        {.kind = Target::swapchain,
+         .image = swapchain.images()[index],
+         .view = swapchain.views()[index],
+         .extent = swapchain.choice().extent,
+         .depth_image = depth_.image(),
+         .depth_view = depth_.view()},
+        {.clear = inputs.sky,
+         .pipeline = &cube_.pipeline,
+         .textures = textures_.set(),
+         .push = make_draw_push(inputs.camera, split, swapchain.choice().extent,
                                 cube_.vertices.address(), origins.address(), cube_.checker_slot),
-                 cubes);
+         .cubes = cubes,
+         .overlay = inputs.overlay});
 
     const VkSemaphoreSubmitInfo wait =
         semaphore_submit(slot.image_acquired, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
@@ -938,6 +1064,11 @@ void Renderer::destroy() noexcept {
     if (gpu_profiler_ != nullptr) {
         TracyVkDestroy(gpu_profiler_);
         gpu_profiler_ = nullptr;
+    }
+    if (overlay_ != nullptr) {
+        ImGui::SetCurrentContext(overlay_);
+        ImGui_ImplVulkan_Shutdown();
+        overlay_ = nullptr;
     }
     for (VkSemaphore semaphore : image_rendered_) {
         vkDestroySemaphore(device, semaphore, nullptr);
