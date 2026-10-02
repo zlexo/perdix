@@ -1,10 +1,13 @@
 #include <vx/render/swapchain.hpp>
 
+#include "debug_name.hpp"
 #include "vk_result.hpp"
 
 #include <tracy/Tracy.hpp>
 
+#include <cstddef>
 #include <cstdint>
+#include <string>
 #include <utility>
 
 namespace vx::render {
@@ -66,6 +69,7 @@ Result<Swapchain> Swapchain::create(const Device& device, VkSurfaceKHR surface, 
         result != VK_SUCCESS) {
         return Error{"vkCreateSwapchainKHR failed: " + vk_result_name(result)};
     }
+    set_debug_name(swapchain.device_, swapchain.swapchain_, "swapchain");
 
     std::uint32_t count = 0;
     vkGetSwapchainImagesKHR(swapchain.device_, swapchain.swapchain_, &count, nullptr);
@@ -74,7 +78,11 @@ Result<Swapchain> Swapchain::create(const Device& device, VkSurfaceKHR surface, 
                             swapchain.images_.data());
 
     swapchain.views_.reserve(count);
-    for (VkImage image : swapchain.images_) {
+    for (std::size_t index = 0; index < swapchain.images_.size(); ++index) {
+        const VkImage image = swapchain.images_[index];
+        // The image and its view: what a frame draws to, image by image.
+        const std::string name = "swapchain image " + std::to_string(index);
+        set_debug_name(swapchain.device_, image, name);
         const VkImageViewCreateInfo view_info = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .pNext = nullptr,
@@ -96,9 +104,9 @@ Result<Swapchain> Swapchain::create(const Device& device, VkSurfaceKHR surface, 
         if (const VkResult result =
                 vkCreateImageView(swapchain.device_, &view_info, nullptr, &view);
             result != VK_SUCCESS) {
-            return Error{"vkCreateImageView failed for a swapchain image: " +
-                         vk_result_name(result)};
+            return Error{"vkCreateImageView failed for " + name + ": " + vk_result_name(result)};
         }
+        set_debug_name(swapchain.device_, view, name);
         swapchain.views_.push_back(view);
     }
     return swapchain;
