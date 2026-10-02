@@ -1,4 +1,5 @@
 include(FetchContent)
+include(VxShaders)
 
 # Vulkan's headers and volk come at the Vulkan SDK's version, so building needs
 # no SDK; at run time the SDK (or a system driver) provides the loader, the
