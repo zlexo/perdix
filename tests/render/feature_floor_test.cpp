@@ -31,6 +31,8 @@ TEST_CASE("each missing floor feature is named") {
         {&vx::render::DeviceFeatures::runtime_descriptor_array, "runtimeDescriptorArray"},
         {&vx::render::DeviceFeatures::descriptor_binding_partially_bound,
          "descriptorBindingPartiallyBound"},
+        {&vx::render::DeviceFeatures::shader_sampled_image_array_dynamic_indexing,
+         "shaderSampledImageArrayDynamicIndexing"},
         {&vx::render::DeviceFeatures::multi_draw_indirect, "multiDrawIndirect"},
         {&vx::render::DeviceFeatures::draw_indirect_first_instance, "drawIndirectFirstInstance"},
     };
@@ -69,6 +71,7 @@ TEST_CASE("an empty report lists the whole floor, in order") {
                                                     "descriptorIndexing",
                                                     "runtimeDescriptorArray",
                                                     "descriptorBindingPartiallyBound",
+                                                    "shaderSampledImageArrayDynamicIndexing",
                                                     "multiDrawIndirect",
                                                     "drawIndirectFirstInstance"};
     CHECK_FALSE(report.supported);

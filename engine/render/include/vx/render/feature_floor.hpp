@@ -18,6 +18,7 @@ struct DeviceFeatures {
     bool descriptor_indexing = false;
     bool runtime_descriptor_array = false;
     bool descriptor_binding_partially_bound = false;
+    bool shader_sampled_image_array_dynamic_indexing = false;
     bool multi_draw_indirect = false;
     bool draw_indirect_first_instance = false;
 };

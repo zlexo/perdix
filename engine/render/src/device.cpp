@@ -114,6 +114,8 @@ DeviceInfo describe_device(VkPhysicalDevice physical_device, VkSurfaceKHR surfac
     info.features.runtime_descriptor_array = features12.runtimeDescriptorArray == VK_TRUE;
     info.features.descriptor_binding_partially_bound =
         features12.descriptorBindingPartiallyBound == VK_TRUE;
+    info.features.shader_sampled_image_array_dynamic_indexing =
+        features.features.shaderSampledImageArrayDynamicIndexing == VK_TRUE;
     info.features.multi_draw_indirect = features.features.multiDrawIndirect == VK_TRUE;
     info.features.draw_indirect_first_instance =
         features.features.drawIndirectFirstInstance == VK_TRUE;
@@ -154,6 +156,7 @@ Result<Device> Device::create(VkInstance instance, VkPhysicalDevice physical_dev
     VkPhysicalDeviceFeatures2 features{};
     features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features.pNext = &vulkan12;
+    features.features.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
     features.features.multiDrawIndirect = VK_TRUE;
     features.features.drawIndirectFirstInstance = VK_TRUE;
     features.features.samplerAnisotropy = vk_bool(info.optional.sampler_anisotropy);
