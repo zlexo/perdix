@@ -55,3 +55,12 @@ add_executable(vx_render_vulkan_tests
 target_link_libraries(vx_render_vulkan_tests PRIVATE vx::render doctest::doctest)
 vx_target_warnings(vx_render_vulkan_tests)
 doctest_discover_tests(vx_render_vulkan_tests PROPERTIES ${VX_VULKAN_DOCTEST_PROPERTIES})
+
+# A frame's heap allocations, counted by replacing the global operator new:
+# an executable of its own, since the count would take in every other test.
+add_executable(vx_render_allocation_tests
+    main.cpp
+    render/allocation_test.cpp)
+target_link_libraries(vx_render_allocation_tests PRIVATE vx::render doctest::doctest)
+vx_target_warnings(vx_render_allocation_tests)
+doctest_discover_tests(vx_render_allocation_tests PROPERTIES ${VX_VULKAN_DOCTEST_PROPERTIES})
