@@ -199,7 +199,7 @@ The prototype column comes from a throwaway implementation of culling, occlusion
 - **Borders:** an opaque neighbor chunk hides this chunk's border faces; an unloaded one does not.
 - **Ambient occlusion:** known corner arrangements give the values in Lysenko's table.
 - **Diagonal:** for all 256 combinations of four 2-bit occlusion values, the decoded quad's two triangles share the diagonal that a reference implementation of Lysenko's comparison picks (ties through corners 0 and 2), and keep their winding.
-- **Coverage property:** for many random chunks (seeded), the merged mesh covers exactly the faces the unmerged mesh produces, each once, with the same texture and occlusion. This one test proves merging never adds, drops or changes a face.
+- **Coverage property:** for many random chunks (seeded), the merged mesh covers exactly the faces the unmerged mesh produces, each once, with the same texture and occlusion. On every chunk it tries, this one test checks that merging never adds, drops or changes a face.
 - **Look, by hand:** the chunk renders with merging on and off and looks identical; occlusion darkens inner corners the way Minecraft's smooth lighting does.
 
 ## Pull request plan
