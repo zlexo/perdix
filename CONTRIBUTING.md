@@ -58,4 +58,4 @@ Numbers come from the benchmark harness on the reference machine (an Apple M3 wi
 
 ## Code style
 
-Formatting is enforced by `clang-format` with the configuration in the repository root. Naming, error handling and the rest of the conventions are set in RFC 0000.
+Formatting is enforced by `clang-format` with the configuration in the repository root, at the version CI pins. Install the same release with `pipx install clang-format==22.1.8` and check that `clang-format --version` reports 22.1.8: other versions format the same file differently, and older ones, such as Homebrew's 14, reject the configuration. Naming, error handling and the rest of the conventions are set in RFC 0000.
