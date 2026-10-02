@@ -192,9 +192,6 @@ void begin_commands(VkCommandBuffer commands) {
     vkBeginCommandBuffer(commands, &begin);
 }
 
-// One frame's commands: the image becomes a color attachment, is cleared, has
-// the cubes drawn, and, for a swapchain, becomes presentable. An offscreen
-// image stays a color attachment, ready for the next frame or for capture.
 // What a frame's passes draw, besides the target they draw into.
 struct FrameDraw {
     Color clear;
@@ -202,15 +199,21 @@ struct FrameDraw {
     VkDescriptorSet textures; // set 0, the texture table
     DrawPush push;
     std::uint32_t cubes;
-    ImDrawData* overlay; // null: no overlay pass
+    ImDrawData* overlay; // null: no overlay
 };
 
-// Records the pass that clears the target and draws the cubes, inside the
-// GPU zone Cube pass. The zone's timestamps fall outside the pass: KosmicKrisp
-// drops timestamps written within rendering.
-void record_cube_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_profiler,
+// Records the frame's one pass, inside the GPU zone Main pass: it clears the
+// target, draws the cubes, then the overlay over them when there is one. The
+// zone's timestamps fall outside the pass: KosmicKrisp drops timestamps
+// written within rendering.
+//
+// The overlay draws here, not in a pass of its own: a second pass loads and
+// stores the whole target again, which took 0.57 ms of GPU time a frame on
+// MoltenVK and 0.92 ms on KosmicKrisp at 2560 by 1440, where drawing it here
+// takes 0.10 ms and 0.16 ms.
+void record_main_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_profiler,
                       const FrameTarget& target, const FrameDraw& draw) {
-    TracyVkNamedZone(gpu_profiler, pass_zone, commands, "Cube pass", gpu_profiler != nullptr);
+    TracyVkNamedZone(gpu_profiler, pass_zone, commands, "Main pass", gpu_profiler != nullptr);
 
     const VkRenderingAttachmentInfo attachment = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -271,47 +274,19 @@ void record_cube_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* g
     vkCmdPushConstants(commands, draw.pipeline->layout(), push_stages, 0, sizeof(draw.push),
                        &draw.push);
     vkCmdDraw(commands, static_cast<std::uint32_t>(cube_vertices.size()), draw.cubes, 0, 0);
+    if (draw.overlay != nullptr) {
+        // Last in the pass, so it draws over everything else. Its pipeline
+        // neither tests nor writes depth.
+        ImGui_ImplVulkan_RenderDrawData(draw.overlay, commands);
+    }
 
-    vkCmdEndRendering(commands);
-}
-
-// Records the overlay's pass, inside the GPU zone Overlay pass: ImGui's draw
-// lists over the target, which keeps what the cube pass drew. It has no depth.
-void record_overlay_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_profiler,
-                         const FrameTarget& target, ImDrawData* overlay) {
-    TracyVkNamedZone(gpu_profiler, overlay_zone, commands, "Overlay pass", gpu_profiler != nullptr);
-
-    const VkRenderingAttachmentInfo attachment = {
-        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .pNext = nullptr,
-        .imageView = target.view,
-        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .resolveMode = VK_RESOLVE_MODE_NONE,
-        .resolveImageView = VK_NULL_HANDLE,
-        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .clearValue = {},
-    };
-    const VkRenderingInfo rendering = {
-        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .renderArea = {.offset = {.x = 0, .y = 0}, .extent = target.extent},
-        .layerCount = 1,
-        .viewMask = 0,
-        .colorAttachmentCount = 1,
-        .pColorAttachments = &attachment,
-        .pDepthAttachment = nullptr,
-        .pStencilAttachment = nullptr,
-    };
-    vkCmdBeginRendering(commands, &rendering);
-    ImGui_ImplVulkan_RenderDrawData(overlay, commands);
     vkCmdEndRendering(commands);
 }
 
 // Records a frame's work into `commands`, inside the GPU zone Frame: the
-// targets' transitions around the cube pass.
+// target becomes a color attachment, the main pass clears it and draws into
+// it, and a swapchain image then becomes presentable. An offscreen image
+// stays a color attachment, ready for the next frame or for capture.
 void record_passes(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_profiler,
                    const FrameTarget& target, const FrameDraw& draw) {
     TracyVkNamedZone(gpu_profiler, frame_zone, commands, "Frame", gpu_profiler != nullptr);
@@ -338,17 +313,7 @@ void record_passes(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_
                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                VK_IMAGE_ASPECT_DEPTH_BIT);
 
-    record_cube_pass(commands, gpu_profiler, target, draw);
-    if (draw.overlay != nullptr) {
-        // The overlay draws over what the cube pass stored, so its pass waits
-        // for those writes.
-        transition(
-            commands, target.image, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        record_overlay_pass(commands, gpu_profiler, target, draw.overlay);
-    }
+    record_main_pass(commands, gpu_profiler, target, draw);
 
     if (target.kind == Target::swapchain) {
         // Presentation waits on the semaphore the submission signals after all
@@ -379,8 +344,9 @@ void record_frame(VkCommandBuffer commands, GpuTimer& timer, std::uint32_t slot,
     vkEndCommandBuffer(commands);
 }
 
-// The overlay's pipeline: one color attachment of `format`, which must
-// outlive the call it is passed to, and no depth.
+// The overlay's pipeline, for the main pass: one color attachment of
+// `format`, which must outlive the call it is passed to, and the pass's
+// depth attachment, which the pipeline neither tests nor writes.
 ImGui_ImplVulkan_PipelineInfo overlay_pipeline_info(const VkFormat* format) {
     ImGui_ImplVulkan_PipelineInfo info{};
     info.PipelineRenderingCreateInfo = {
@@ -389,7 +355,7 @@ ImGui_ImplVulkan_PipelineInfo overlay_pipeline_info(const VkFormat* format) {
         .viewMask = 0,
         .colorAttachmentCount = 1,
         .pColorAttachmentFormats = format,
-        .depthAttachmentFormat = VK_FORMAT_UNDEFINED,
+        .depthAttachmentFormat = depth_format,
         .stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
     };
     return info;
