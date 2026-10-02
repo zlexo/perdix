@@ -363,3 +363,12 @@ Pull request plan item 5, frames in flight:
 - **Two frames in flight, as designed.** Each slot has its own command pool, command buffer and acquire semaphore, and frame N waits on the timeline for frame N - 2 before reusing its slot. The timeline semaphore and the per-image present semaphores came with item 4.
 - **On the reference machine the clear loop went from about 42 to about 118 frames per second under FIFO** in a release build.
 - **FIFO did not pace at the display's refresh in these runs:** about 118 frames per second on both drivers against a 60 Hz panel (its `maximumFramesPerSecond` is 60), with no swapchain recreation, no suboptimal or out-of-date result, an unlocked session, and SDL reporting the window visible. Still open: whether presentation paces while someone watches the window, and why it does not here; Xcode's frame capture (item 12) can show when each drawable is shown.
+
+Pull request plan item 6, headless rendering and the lavapipe job, landed as two pull requests: drawing headless with the job, then reading frames back.
+
+- **The offscreen image is `R8G8B8A8_SRGB`**, so a captured frame reads in RGBA byte order. The swapchain keeps preferring `B8G8R8A8_SRGB`.
+- **Any validation message fails the Vulkan test that caused it**, through CTest's `FAIL_REGULAR_EXPRESSION`, whatever the test's own checks say.
+- **The job runs Ubuntu 26.04, for its validation layers:** 1.4.341, with Mesa 26.0.8. Those of Ubuntu 24.04, 1.3.275, do not check the layout of an image drawn to through dynamic rendering, so with the offscreen image's first barrier dropped the job stayed green there: only a later barrier that expects the image's layout, such as the readback's, exposed it. The 26.04 image has no Clang 18, so the job builds through its own preset, with Clang 22.
+- **Both controls turn the job red:** dropping the offscreen image's first barrier (`VUID-vkCmdBeginRendering-pRenderingInfo-09592`), and dropping the barrier before the readback's copy (`VUID-vkCmdDraw-None-09600`, which the layers report at submission when an image is not in the layout the command buffer expects).
+- **Synchronization validation does not report the first barrier's access mask missing**, in the reference machine's layers, 1.4.363. The barrier keeps it: with two frames in flight, two frames write the one image, and the memory model requires their writes to be made available in between.
+- **"Renders a few frames of the cube" waits for the cube**, in item 8. Until then the frames clear to one color, and the readback checks every pixel.
