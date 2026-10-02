@@ -19,7 +19,8 @@ FetchContent_Declare(sdl3
 FetchContent_MakeAvailable(sdl3)
 
 add_executable(vx_app
-    src/main.cpp)
+    src/main.cpp
+    src/window.cpp)
 target_link_libraries(vx_app PRIVATE vx::core vx::render SDL3::SDL3-static)
 set_target_properties(vx_app PROPERTIES OUTPUT_NAME perdix)
 vx_target_warnings(vx_app)
