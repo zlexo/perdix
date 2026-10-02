@@ -20,7 +20,7 @@ How much the approach matters, for one 32 by 32 by 32 chunk:
 |---|---|
 | Every face of every solid block | up to 196,608 |
 | Only faces between a solid block and air | about 1,000 to 3,000 for typical terrain |
-| Faces merged into larger quads | a further 2 to 10 times fewer, depending on how varied the surface is |
+| Faces merged into larger quads | 1.3 to 1.8 times fewer with occlusion in the merge key, 2.1 to 3.5 times fewer without it (measured on two seeded terrain chunks) |
 | Worst case (a 3D checkerboard, nothing merges) | 98,304 |
 
 ## Goals and non-goals
@@ -167,12 +167,14 @@ Changing a block remeshes its chunk, plus each neighbor whose border it touches 
 
 On the reference machine, release build, single thread, measured with nanobench on fixed, seeded test chunks:
 
-| Case | Target |
-|---|---|
-| Typical terrain chunk (surface, mixed blocks) | under 150 µs |
-| Flat layered chunk | under 50 µs |
-| Worst case: 3D checkerboard | under 2 ms |
-| Quad output, typical terrain chunk | under 32 KiB |
+| Case | Target | Prototype |
+|---|---|---|
+| Typical terrain chunk (surface, mixed blocks) | under 150 µs | 49 µs (rougher terrain: 63 µs) |
+| Flat layered chunk | under 50 µs | 36 µs |
+| Worst case: 3D checkerboard | under 2 ms | 1.1 ms |
+| Quad output, typical terrain chunk | under 32 KiB | 6.4 KiB (rougher terrain: 14.4 KiB) |
+
+The prototype column comes from a throwaway implementation of culling, occlusion and merging with texture and occlusion in the merge key, measured on the reference machine on 2026-10-02 (Apple Clang 17, `-O2 -mcpu=apple-m3`, median of seven runs). Its face counts matched a naive per-block check in every case, and its merged quads passed the coverage property below. Flat terrain has the least headroom, because about 25 µs of every mesh goes into building masks whatever the chunk holds; the x-rows-only layout described under Merging halves that. The implementation's own benchmarks replace this column.
 
 ## Test plan
 
