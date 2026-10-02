@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Accepted (2026-10-02) |
 | **Milestone** | M2 First Chunk |
 | **Issue** | #21 |
 
@@ -261,10 +261,12 @@ Targets on the reference machine, release build. CPU numbers from nanobench, GPU
 4. Faces: texture lookup, variants, turns, the `BlockVisual` table and the texture list.
 5. stb_image and the CPU texture pipeline: decode, turn, fill and mipmaps, with tests.
 6. The GPU array: upload, the new binding in the global set and the sampler, with the lavapipe readback test.
-7. The `core` pack for M2: blocks, textures (open question 4) and `assets/LICENSE`, with the shipped-pack test.
+7. The `core` pack for M2: blocks, textures (original 16 by 16 pixel art, open question 4) and `assets/LICENSE`, with the shipped-pack test.
 8. The sharpened filter, anisotropic filtering and their overlay toggles, with GPU time before and after.
 
 ## Open questions
+
+All settled on 2026-10-02: every recommendation below was accepted.
 
 1. **Data files or C++ tables.** C++ tables need no parser and catch some mistakes at compile time, but every content change is a rebuild, content lives inside engine code, and mistakes surface as compiler errors instead of a file and a line. Recommendation: **data files, in TOML**: a restart instead of a rebuild, errors that point at the content, and the same files for a dedicated server later.
 2. **Derived or pinned ids.** Pinned ids, from a checked-in table that gives every key its number forever, would let saves skip the remap. The cost is a generated file that every branch adding blocks edits by hand, and gaps when blocks are removed. Recommendation: **derived ids**, with saves storing keys, as Minecraft and Luanti store names.
