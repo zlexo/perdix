@@ -20,6 +20,10 @@
 #include <span>
 #include <vector>
 
+namespace tracy {
+class VkCtx; // Tracy's GPU timing context, defined in profiling builds only
+} // namespace tracy
+
 namespace vx::render {
 
 struct RendererDesc {
@@ -137,6 +141,9 @@ private:
     // A timeline semaphore: frame N signals N.
     VkSemaphore frames_done_ = VK_NULL_HANDLE;
     std::uint64_t frame_ = 0;
+    // Tracy's timing of the queue, for RFC 0001's GPU zones: null without
+    // VX_PROFILE, or when the queue writes no timestamps.
+    tracy::VkCtx* gpu_profiler_ = nullptr;
 };
 
 } // namespace vx::render

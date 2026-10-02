@@ -13,6 +13,7 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 #include <tracy/Tracy.hpp>
+#include <tracy/TracyVulkan.hpp>
 
 #include <array>
 #include <cassert>
@@ -22,7 +23,9 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace vx::render {
 namespace {
@@ -188,33 +191,13 @@ void begin_commands(VkCommandBuffer commands) {
 // One frame's commands: the image becomes a color attachment, is cleared, has
 // the cubes drawn, and, for a swapchain, becomes presentable. An offscreen
 // image stays a color attachment, ready for the next frame or for capture.
-void record_frame(VkCommandBuffer commands, const FrameTarget& target, Color clear,
-                  const GraphicsPipeline& pipeline, VkDescriptorSet textures, const DrawPush& push,
-                  std::uint32_t cubes) {
-    ZoneScopedN("Record");
-    begin_commands(commands);
-
-    // For a swapchain image, the submission waits for the acquired image at
-    // this stage, so starting the barrier there chains onto that wait. The
-    // offscreen image has no such wait: the barrier waits for the previous
-    // frame's writes to it instead. The old contents do not matter either way.
-    transition(commands, target.image, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-               target.kind == Target::swapchain ? VK_ACCESS_2_NONE
-                                                : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    // Depth is cleared every frame, so its old contents never matter either;
-    // with two frames in flight, the barrier waits for the previous frame's
-    // depth writes.
-    constexpr VkPipelineStageFlags2 depth_stages =
-        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    transition(commands, target.depth_image, depth_stages,
-               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, depth_stages,
-               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                   VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-               VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-               VK_IMAGE_ASPECT_DEPTH_BIT);
+// Records the pass that clears the target and draws the cubes, inside the
+// GPU zone Cube pass. The zone's timestamps fall outside the pass: KosmicKrisp
+// drops timestamps written within rendering.
+void record_cube_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_profiler,
+                      const FrameTarget& target, Color clear, const GraphicsPipeline& pipeline,
+                      VkDescriptorSet textures, const DrawPush& push, std::uint32_t cubes) {
+    TracyVkNamedZone(gpu_profiler, pass_zone, commands, "Cube pass", gpu_profiler != nullptr);
 
     const VkRenderingAttachmentInfo attachment = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -275,6 +258,38 @@ void record_frame(VkCommandBuffer commands, const FrameTarget& target, Color cle
     vkCmdDraw(commands, static_cast<std::uint32_t>(cube_vertices.size()), cubes, 0, 0);
 
     vkCmdEndRendering(commands);
+}
+
+// Records a frame's work into `commands`, inside the GPU zone Frame: the
+// targets' transitions around the cube pass.
+void record_passes(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_profiler,
+                   const FrameTarget& target, Color clear, const GraphicsPipeline& pipeline,
+                   VkDescriptorSet textures, const DrawPush& push, std::uint32_t cubes) {
+    TracyVkNamedZone(gpu_profiler, frame_zone, commands, "Frame", gpu_profiler != nullptr);
+
+    // For a swapchain image, the submission waits for the acquired image at
+    // this stage, so starting the barrier there chains onto that wait. The
+    // offscreen image has no such wait: the barrier waits for the previous
+    // frame's writes to it instead. The old contents do not matter either way.
+    transition(commands, target.image, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               target.kind == Target::swapchain ? VK_ACCESS_2_NONE
+                                                : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    // Depth is cleared every frame, so its old contents never matter either;
+    // with two frames in flight, the barrier waits for the previous frame's
+    // depth writes.
+    constexpr VkPipelineStageFlags2 depth_stages =
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    transition(commands, target.depth_image, depth_stages,
+               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, depth_stages,
+               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                   VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+               VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+               VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    record_cube_pass(commands, gpu_profiler, target, clear, pipeline, textures, push, cubes);
 
     if (target.kind == Target::swapchain) {
         // Presentation waits on the semaphore the submission signals after all
@@ -284,7 +299,69 @@ void record_frame(VkCommandBuffer commands, const FrameTarget& target, Color cle
                    VK_ACCESS_2_NONE, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     }
+}
+
+// Records a frame: its passes, after handing Tracy the GPU zones of earlier
+// frames whose timestamps have landed. Collecting resets their queries for
+// reuse, which must happen outside any rendering.
+void record_frame(VkCommandBuffer commands, tracy::VkCtx* gpu_profiler, const FrameTarget& target,
+                  Color clear, const GraphicsPipeline& pipeline, VkDescriptorSet textures,
+                  const DrawPush& push, std::uint32_t cubes) {
+    ZoneScopedN("Record");
+    begin_commands(commands);
+    if (gpu_profiler != nullptr) {
+        TracyVkCollect(gpu_profiler, commands);
+    }
+    record_passes(commands, gpu_profiler, target, clear, pipeline, textures, push, cubes);
     vkEndCommandBuffer(commands);
+}
+
+// Tracy's timing of the device's queue, for RFC 0001's GPU zones: null
+// without VX_PROFILE, when the queue writes no timestamps, or when its
+// command pool cannot be made. Creating it begins one command buffer several
+// times, submitting and waiting each time, so it gets one of its own, from a
+// pool that allows that, and the frames' pools need not.
+tracy::VkCtx* make_gpu_profiler(const Device& device) {
+#ifndef TRACY_ENABLE
+    static_cast<void>(device);
+    return nullptr;
+#else
+    std::uint32_t count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device.physical_device(), &count, nullptr);
+    std::vector<VkQueueFamilyProperties> families(count);
+    vkGetPhysicalDeviceQueueFamilyProperties(device.physical_device(), &count, families.data());
+    if (families.at(device.queue_family()).timestampValidBits == 0) {
+        return nullptr;
+    }
+
+    const VkCommandPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = device.queue_family(),
+    };
+    VkCommandPool pool = VK_NULL_HANDLE;
+    if (vkCreateCommandPool(device.handle(), &pool_info, nullptr, &pool) != VK_SUCCESS) {
+        return nullptr;
+    }
+    const VkCommandBufferAllocateInfo allocate = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .pNext = nullptr,
+        .commandPool = pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer commands = VK_NULL_HANDLE;
+    tracy::VkCtx* profiler = nullptr;
+    if (vkAllocateCommandBuffers(device.handle(), &allocate, &commands) == VK_SUCCESS) {
+        profiler =
+            TracyVkContext(device.physical_device(), device.handle(), device.queue(), commands);
+        constexpr std::string_view name = "Graphics queue";
+        TracyVkContextName(profiler, name.data(), static_cast<std::uint16_t>(name.size()));
+    }
+    vkDestroyCommandPool(device.handle(), pool, nullptr); // frees its command buffer
+    return profiler;
+#endif
 }
 
 Result<VkSemaphore> make_semaphore(VkDevice device, const void* type) {
@@ -461,6 +538,7 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     if (const Result<void> uploaded = renderer.upload_cube(); !uploaded.has_value()) {
         return uploaded.error();
     }
+    renderer.gpu_profiler_ = make_gpu_profiler(renderer.context_.device());
     return renderer;
 }
 
@@ -480,7 +558,8 @@ Renderer::Renderer(Renderer&& other) noexcept
       present_mode_(other.present_mode_), swapchain_stale_(other.swapchain_stale_),
       slots_(std::exchange(other.slots_, {})), origins_(std::move(other.origins_)),
       image_rendered_(std::exchange(other.image_rendered_, {})),
-      frames_done_(std::exchange(other.frames_done_, VK_NULL_HANDLE)), frame_(other.frame_) {}
+      frames_done_(std::exchange(other.frames_done_, VK_NULL_HANDLE)), frame_(other.frame_),
+      gpu_profiler_(std::exchange(other.gpu_profiler_, nullptr)) {}
 
 Renderer::~Renderer() {
     destroy();
@@ -687,7 +766,7 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
 
     if (offscreen_.has_value()) {
         vkResetCommandPool(device, slot.command_pool, 0);
-        record_frame(slot.command_buffer,
+        record_frame(slot.command_buffer, gpu_profiler_,
                      {.kind = Target::offscreen,
                       .image = offscreen_->image(),
                       .view = offscreen_->view(),
@@ -722,7 +801,7 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
     swapchain_stale_ = acquired == VK_SUBOPTIMAL_KHR; // draw this frame, replace after it
 
     vkResetCommandPool(device, slot.command_pool, 0);
-    record_frame(slot.command_buffer,
+    record_frame(slot.command_buffer, gpu_profiler_,
                  {.kind = Target::swapchain,
                   .image = swapchain.images()[index],
                   .view = swapchain.views()[index],
@@ -856,6 +935,10 @@ void Renderer::destroy() noexcept {
         return; // moved from
     }
     vkDeviceWaitIdle(device);
+    if (gpu_profiler_ != nullptr) {
+        TracyVkDestroy(gpu_profiler_);
+        gpu_profiler_ = nullptr;
+    }
     for (VkSemaphore semaphore : image_rendered_) {
         vkDestroySemaphore(device, semaphore, nullptr);
     }
