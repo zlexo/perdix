@@ -59,7 +59,7 @@ Non-goals:
 
 | Library | Role | Why |
 |---|---|---|
-| Vulkan SDK | headers, validation layers, shader compiler | the only manual install; ships both KosmicKrisp and MoltenVK on macOS |
+| Vulkan SDK | headers, validation layers, shader compiler | a manual install (RFC 0000 lists them all); ships both KosmicKrisp and MoltenVK on macOS |
 | volk | loads Vulkan entry points | calls go straight to the driver with no loader trampoline, and the code never links the loader statically |
 | Vulkan Memory Allocator | GPU memory | suballocation, memory type selection and budget tracking, done right once |
 | SDL3 or GLFW | window, input, surface | open question 1 |
