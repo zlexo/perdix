@@ -6,6 +6,9 @@ project(voxel_engine
     LANGUAGES CXX)
 
 set(CMAKE_CXX_EXTENSIONS OFF)
+# ADR 0001 rules out C++ modules, so skip the dependency scan CMake runs
+# for them by default under C++20 (it doubled the build steps on Clang 18).
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 option(VX_WARNINGS_AS_ERRORS "Treat compiler warnings in engine code as errors" ON)
 option(VX_BUILD_TESTS "Build the unit tests" ${PROJECT_IS_TOP_LEVEL})
