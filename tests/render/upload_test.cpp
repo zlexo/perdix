@@ -2,6 +2,8 @@
 // Linux CI runs these on Mesa's lavapipe; on macOS, source the Vulkan SDK's
 // setup-env.sh first.
 
+#include "one_shot.hpp"
+
 #include <vx/render/buffer.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/image.hpp>
@@ -22,70 +24,6 @@ namespace {
 vx::Result<vx::render::Context> create_context() {
     return vx::render::Context::create({.surface = std::nullopt, .validation = true});
 }
-
-// One command buffer, recorded, submitted and waited for.
-class OneShot {
-public:
-    explicit OneShot(const vx::render::Device& device) : device_(device) {
-        const VkCommandPoolCreateInfo pool_info = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
-            .queueFamilyIndex = device.queue_family(),
-        };
-        vkCreateCommandPool(device.handle(), &pool_info, nullptr, &pool_);
-        const VkCommandBufferAllocateInfo allocate = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .pNext = nullptr,
-            .commandPool = pool_,
-            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
-        };
-        vkAllocateCommandBuffers(device.handle(), &allocate, &commands_);
-        const VkCommandBufferBeginInfo begin = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .pNext = nullptr,
-            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-            .pInheritanceInfo = nullptr,
-        };
-        vkBeginCommandBuffer(commands_, &begin);
-    }
-    OneShot(const OneShot&) = delete;
-    OneShot& operator=(const OneShot&) = delete;
-    OneShot(OneShot&&) = delete;
-    OneShot& operator=(OneShot&&) = delete;
-    ~OneShot() { vkDestroyCommandPool(device_.handle(), pool_, nullptr); }
-
-    [[nodiscard]] VkCommandBuffer commands() const { return commands_; }
-
-    void submit_and_wait() {
-        vkEndCommandBuffer(commands_);
-        const VkCommandBufferSubmitInfo buffer_info = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-            .pNext = nullptr,
-            .commandBuffer = commands_,
-            .deviceMask = 0,
-        };
-        const VkSubmitInfo2 submit = {
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-            .pNext = nullptr,
-            .flags = 0,
-            .waitSemaphoreInfoCount = 0,
-            .pWaitSemaphoreInfos = nullptr,
-            .commandBufferInfoCount = 1,
-            .pCommandBufferInfos = &buffer_info,
-            .signalSemaphoreInfoCount = 0,
-            .pSignalSemaphoreInfos = nullptr,
-        };
-        vkQueueSubmit2(device_.queue(), 1, &submit, VK_NULL_HANDLE);
-        vkQueueWaitIdle(device_.queue());
-    }
-
-private:
-    const vx::render::Device& device_;
-    VkCommandPool pool_ = VK_NULL_HANDLE;
-    VkCommandBuffer commands_ = VK_NULL_HANDLE;
-};
 
 // Records a copy of all of `source` into `readback`, and the barrier that
 // makes it visible to the host once the queue is idle.
@@ -240,7 +178,7 @@ TEST_CASE("a buffer without a mapping is filled through staging copies") {
     const std::vector<std::byte> bytes = pattern(96, std::byte{0x10});
     const std::span<const std::byte> all(bytes);
     vx::render::UploadContext uploads(device);
-    OneShot shot(device);
+    vx::test::OneShot shot(device);
     for (const auto [offset, size] :
          std::array{std::array<std::size_t, 2>{64, 32}, std::array<std::size_t, 2>{0, 40},
                     std::array<std::size_t, 2>{40, 24}}) {
@@ -329,7 +267,7 @@ TEST_CASE("an image takes its pixels through a staging copy and gives back the s
 
     const std::vector<std::byte> pixels = pattern(8 * 4 * 4, std::byte{0x20});
     vx::render::UploadContext uploads(device);
-    OneShot shot(device);
+    vx::test::OneShot shot(device);
     const vx::Result<void> uploaded =
         vx::render::upload_image(uploads, shot.commands(), image.value(), pixels);
     INFO((uploaded.has_value() ? std::string() : uploaded.error().message));
