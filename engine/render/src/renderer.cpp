@@ -31,20 +31,54 @@ Result<AttachmentImage> make_offscreen_target(const Device& device, VkExtent2D e
                                    VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
+// RFC 0001: depth is a 32-bit float, so reversed-Z keeps its precision far
+// away. Vulkan promises a 24-bit or a 32-bit depth format, not both, so a
+// device without this one is told why here.
+constexpr VkFormat depth_format = VK_FORMAT_D32_SFLOAT;
+
+Result<AttachmentImage> make_depth_target(const Device& device, VkExtent2D extent) {
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(device.physical_device(), depth_format, &properties);
+    if ((properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) == 0) {
+        return Error{"the device cannot draw depth into 32-bit floats, which RFC 0001's "
+                     "reversed-Z needs"};
+    }
+    return AttachmentImage::create(device, extent, depth_format,
+                                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                                   VK_IMAGE_ASPECT_DEPTH_BIT);
+}
+
 enum class Target : std::uint8_t { swapchain, offscreen };
 
-// The triangle's vertices as triangle.slang reads them: positions in clip
-// space, where y points down the screen, and linear colors.
+// What a frame draws into: a color image, a swapchain's or the offscreen
+// target, and the depth attachment beside it.
+struct FrameTarget {
+    Target kind;
+    VkImage image;
+    VkImageView view;
+    VkExtent2D extent;
+    VkImage depth_image;
+    VkImageView depth_view;
+};
+
+// Triangle vertices as triangle.slang reads them: positions in clip space,
+// where y points down the screen and z is depth, and linear colors.
 struct TriangleVertex {
     std::array<float, 4> position;
     std::array<float, 4> color;
 };
 static_assert(sizeof(TriangleVertex) == 32, "triangle.slang's vertex stride");
 
-constexpr std::array<TriangleVertex, 3> triangle_vertices = {{
-    {.position = {0.0F, -0.6F, 0.0F, 1.0F}, .color = {1.0F, 0.0F, 0.0F, 1.0F}}, // top, red
-    {.position = {0.6F, 0.6F, 0.0F, 1.0F}, .color = {0.0F, 1.0F, 0.0F, 1.0F}},  // right, green
-    {.position = {-0.6F, 0.6F, 0.0F, 1.0F}, .color = {0.0F, 0.0F, 1.0F, 1.0F}}, // left, blue
+// Two triangles. The colored one is nearer, at depth 0.75, and drawn first;
+// the gray one is farther, at 0.25, and drawn over it, so where they overlap
+// the depth test decides which shows.
+constexpr std::array<TriangleVertex, 6> triangle_vertices = {{
+    {.position = {0.0F, -0.6F, 0.75F, 1.0F}, .color = {1.0F, 0.0F, 0.0F, 1.0F}}, // top, red
+    {.position = {0.6F, 0.6F, 0.75F, 1.0F}, .color = {0.0F, 1.0F, 0.0F, 1.0F}},  // right, green
+    {.position = {-0.6F, 0.6F, 0.75F, 1.0F}, .color = {0.0F, 0.0F, 1.0F, 1.0F}}, // left, blue
+    {.position = {-0.7F, -0.45F, 0.25F, 1.0F}, .color = {0.5F, 0.5F, 0.5F, 1.0F}},
+    {.position = {0.7F, -0.45F, 0.25F, 1.0F}, .color = {0.5F, 0.5F, 0.5F, 1.0F}},
+    {.position = {0.0F, 0.55F, 0.25F, 1.0F}, .color = {0.5F, 0.5F, 0.5F, 1.0F}},
 }};
 
 // triangle.slang's push constants.
@@ -57,13 +91,15 @@ Result<GraphicsPipeline> make_triangle_pipeline(const Device& device, VkFormat c
                                              .vertex_entry = "vertex_main",
                                              .fragment_entry = "fragment_main",
                                              .color_format = color_format,
+                                             .depth_format = depth_format,
                                              .push_constant_size = sizeof(TrianglePush),
                                              .push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT});
 }
 
 void transition(VkCommandBuffer commands, VkImage image, VkPipelineStageFlags2 src_stage,
                 VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage,
-                VkAccessFlags2 dst_access, VkImageLayout from, VkImageLayout to) {
+                VkAccessFlags2 dst_access, VkImageLayout from, VkImageLayout to,
+                VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
     const VkImageMemoryBarrier2 barrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext = nullptr,
@@ -78,7 +114,7 @@ void transition(VkCommandBuffer commands, VkImage image, VkPipelineStageFlags2 s
         .image = image,
         .subresourceRange =
             {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .aspectMask = aspect,
                 .baseMipLevel = 0,
                 .levelCount = 1,
                 .baseArrayLayer = 0,
@@ -110,28 +146,39 @@ void begin_commands(VkCommandBuffer commands) {
 }
 
 // One frame's commands: the image becomes a color attachment, is cleared, has
-// the triangle drawn over it, and, for a swapchain, becomes presentable. An
+// the triangles drawn over it, and, for a swapchain, becomes presentable. An
 // offscreen image stays a color attachment, ready for the next frame or for
 // capture.
-void record_frame(VkCommandBuffer commands, Target target, VkImage image, VkImageView view,
-                  VkExtent2D extent, Color clear, const GraphicsPipeline& pipeline,
-                  VkDeviceAddress vertices) {
+void record_frame(VkCommandBuffer commands, const FrameTarget& target, Color clear,
+                  const GraphicsPipeline& pipeline, VkDeviceAddress vertices) {
     begin_commands(commands);
 
     // For a swapchain image, the submission waits for the acquired image at
     // this stage, so starting the barrier there chains onto that wait. The
     // offscreen image has no such wait: the barrier waits for the previous
     // frame's writes to it instead. The old contents do not matter either way.
-    transition(
-        commands, image, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-        target == Target::swapchain ? VK_ACCESS_2_NONE : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    transition(commands, target.image, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               target.kind == Target::swapchain ? VK_ACCESS_2_NONE
+                                                : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    // Depth is cleared every frame, so its old contents never matter either;
+    // with two frames in flight, the barrier waits for the previous frame's
+    // depth writes.
+    constexpr VkPipelineStageFlags2 depth_stages =
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    transition(commands, target.depth_image, depth_stages,
+               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, depth_stages,
+               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                   VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+               VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+               VK_IMAGE_ASPECT_DEPTH_BIT);
 
     const VkRenderingAttachmentInfo attachment = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .pNext = nullptr,
-        .imageView = view,
+        .imageView = target.view,
         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .resolveMode = VK_RESOLVE_MODE_NONE,
         .resolveImageView = VK_NULL_HANDLE,
@@ -140,16 +187,30 @@ void record_frame(VkCommandBuffer commands, Target target, VkImage image, VkImag
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
         .clearValue = {.color = {.float32 = {clear.r, clear.g, clear.b, clear.a}}},
     };
+    // Reversed-Z: depth clears to 0, the far end. Nothing reads it after the
+    // frame, so it is not stored.
+    const VkRenderingAttachmentInfo depth_attachment = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .pNext = nullptr,
+        .imageView = target.depth_view,
+        .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+        .resolveMode = VK_RESOLVE_MODE_NONE,
+        .resolveImageView = VK_NULL_HANDLE,
+        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .clearValue = {.depthStencil = {.depth = 0.0F, .stencil = 0}},
+    };
     const VkRenderingInfo rendering = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .renderArea = {.offset = {.x = 0, .y = 0}, .extent = extent},
+        .renderArea = {.offset = {.x = 0, .y = 0}, .extent = target.extent},
         .layerCount = 1,
         .viewMask = 0,
         .colorAttachmentCount = 1,
         .pColorAttachments = &attachment,
-        .pDepthAttachment = nullptr,
+        .pDepthAttachment = &depth_attachment,
         .pStencilAttachment = nullptr,
     };
     vkCmdBeginRendering(commands, &rendering);
@@ -159,13 +220,13 @@ void record_frame(VkCommandBuffer commands, Target target, VkImage image, VkImag
     const VkViewport viewport = {
         .x = 0.0F,
         .y = 0.0F,
-        .width = static_cast<float>(extent.width),
-        .height = static_cast<float>(extent.height),
+        .width = static_cast<float>(target.extent.width),
+        .height = static_cast<float>(target.extent.height),
         .minDepth = 0.0F,
         .maxDepth = 1.0F,
     };
     vkCmdSetViewport(commands, 0, 1, &viewport);
-    const VkRect2D scissor = {.offset = {.x = 0, .y = 0}, .extent = extent};
+    const VkRect2D scissor = {.offset = {.x = 0, .y = 0}, .extent = target.extent};
     vkCmdSetScissor(commands, 0, 1, &scissor);
     const TrianglePush push = {.vertices = vertices};
     vkCmdPushConstants(commands, pipeline.layout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push),
@@ -174,10 +235,10 @@ void record_frame(VkCommandBuffer commands, Target target, VkImage image, VkImag
 
     vkCmdEndRendering(commands);
 
-    if (target == Target::swapchain) {
+    if (target.kind == Target::swapchain) {
         // Presentation waits on the semaphore the submission signals after all
         // of its commands, this layout transition included.
-        transition(commands, image, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        transition(commands, target.image, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE,
                    VK_ACCESS_2_NONE, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
@@ -272,6 +333,12 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
 
     const VkFormat color_format =
         swapchain.has_value() ? swapchain->choice().format.format : offscreen_format;
+    Result<AttachmentImage> depth = make_depth_target(
+        context.value().device(),
+        swapchain.has_value() ? swapchain->choice().extent : vk_extent(desc.framebuffer));
+    if (!depth.has_value()) {
+        return depth.error();
+    }
     Result<GraphicsPipeline> pipeline =
         make_triangle_pipeline(context.value().device(), color_format);
     if (!pipeline.has_value()) {
@@ -286,8 +353,8 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     }
 
     Renderer renderer(std::move(context).value(), std::move(swapchain), std::move(offscreen),
-                      std::move(pipeline).value(), std::move(vertices).value(), desc.framebuffer,
-                      desc.present_mode);
+                      std::move(depth).value(), std::move(pipeline).value(),
+                      std::move(vertices).value(), desc.framebuffer, desc.present_mode);
     if (const Result<void> made = renderer.create_frame_objects(); !made.has_value()) {
         return made.error();
     }
@@ -298,16 +365,18 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
 }
 
 Renderer::Renderer(Context context, std::optional<Swapchain> swapchain,
-                   std::optional<AttachmentImage> offscreen, GraphicsPipeline triangle_pipeline,
-                   Buffer triangle_buffer, Extent framebuffer, PresentMode present_mode)
+                   std::optional<AttachmentImage> offscreen, AttachmentImage depth,
+                   GraphicsPipeline triangle_pipeline, Buffer triangle_buffer, Extent framebuffer,
+                   PresentMode present_mode)
     : context_(std::move(context)), swapchain_(std::move(swapchain)),
-      offscreen_(std::move(offscreen)), triangle_pipeline_(std::move(triangle_pipeline)),
+      offscreen_(std::move(offscreen)), depth_(std::move(depth)),
+      triangle_pipeline_(std::move(triangle_pipeline)),
       triangle_buffer_(std::move(triangle_buffer)), framebuffer_(framebuffer),
       target_framebuffer_(framebuffer), present_mode_(present_mode) {}
 
 Renderer::Renderer(Renderer&& other) noexcept
     : context_(std::move(other.context_)), swapchain_(std::move(other.swapchain_)),
-      offscreen_(std::move(other.offscreen_)),
+      offscreen_(std::move(other.offscreen_)), depth_(std::move(other.depth_)),
       triangle_pipeline_(std::move(other.triangle_pipeline_)),
       triangle_buffer_(std::move(other.triangle_buffer_)), framebuffer_(other.framebuffer_),
       target_framebuffer_(other.target_framebuffer_), present_mode_(other.present_mode_),
@@ -412,6 +481,7 @@ Result<void> Renderer::upload_triangle() {
 Result<void> Renderer::recreate_target() {
     // The last frames, and their presentation, may still use the old target.
     vkDeviceWaitIdle(context_.device().handle());
+    VkExtent2D extent = vk_extent(framebuffer_);
     if (swapchain_.has_value()) {
         Result<Swapchain> replacement =
             Swapchain::create(context_.device(), context_.surface(), framebuffer_, present_mode_,
@@ -421,6 +491,7 @@ Result<void> Renderer::recreate_target() {
         }
         swapchain_ = std::move(replacement).value(); // destroys the old one
         swapchain_stale_ = false;
+        extent = swapchain_->choice().extent; // the surface may have its own
         // A surface may offer a different format after a change, such as a
         // move to another display.
         if (const VkFormat format = swapchain_->choice().format.format;
@@ -439,6 +510,11 @@ Result<void> Renderer::recreate_target() {
         }
         offscreen_ = std::move(replacement).value();
     }
+    Result<AttachmentImage> depth = make_depth_target(context_.device(), extent);
+    if (!depth.has_value()) {
+        return depth.error();
+    }
+    depth_ = std::move(depth).value();
     target_framebuffer_ = framebuffer_;
     return add_rendered_semaphores();
 }
@@ -478,9 +554,14 @@ Result<Frame> Renderer::render(Color clear) {
 
     if (offscreen_.has_value()) {
         vkResetCommandPool(device, slot.command_pool, 0);
-        record_frame(slot.command_buffer, Target::offscreen, offscreen_->image(),
-                     offscreen_->view(), offscreen_->extent(), clear, triangle_pipeline_,
-                     triangle_buffer_.address());
+        record_frame(slot.command_buffer,
+                     {.kind = Target::offscreen,
+                      .image = offscreen_->image(),
+                      .view = offscreen_->view(),
+                      .extent = offscreen_->extent(),
+                      .depth_image = depth_.image(),
+                      .depth_view = depth_.view()},
+                     clear, triangle_pipeline_, triangle_buffer_.address());
         if (const Result<void> submitted =
                 submit(queue, slot.command_buffer, {}, std::span(&frame_done, 1));
             !submitted.has_value()) {
@@ -505,9 +586,14 @@ Result<Frame> Renderer::render(Color clear) {
     swapchain_stale_ = acquired == VK_SUBOPTIMAL_KHR; // draw this frame, replace after it
 
     vkResetCommandPool(device, slot.command_pool, 0);
-    record_frame(slot.command_buffer, Target::swapchain, swapchain.images()[index],
-                 swapchain.views()[index], swapchain.choice().extent, clear, triangle_pipeline_,
-                 triangle_buffer_.address());
+    record_frame(slot.command_buffer,
+                 {.kind = Target::swapchain,
+                  .image = swapchain.images()[index],
+                  .view = swapchain.views()[index],
+                  .extent = swapchain.choice().extent,
+                  .depth_image = depth_.image(),
+                  .depth_view = depth_.view()},
+                 clear, triangle_pipeline_, triangle_buffer_.address());
 
     const VkSemaphoreSubmitInfo wait =
         semaphore_submit(slot.image_acquired, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
