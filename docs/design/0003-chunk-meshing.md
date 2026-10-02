@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Accepted (2026-10-02) |
 | **Milestone** | M2 First Chunk |
 | **Issue** | #16 |
 
@@ -230,6 +230,8 @@ The prototype column comes from a throwaway implementation of culling, occlusion
 8. Overlay toggles: wireframe, merging, ambient occlusion, quad counts. Wireframe draws with `VK_POLYGON_MODE_LINE`, which needs the `fillModeNonSolid` feature. Like `samplerAnisotropy`, it is outside RFC 0001's floor: enabled when the device offers it, and without it the toggle is hidden. KosmicKrisp does not offer it (RFC 0001), so on the reference machine the toggle shows only under MoltenVK (`VK_DRIVER_FILES`); edges drawn in the fragment shader from quad-local coordinates would need no feature at all.
 
 ## Open questions
+
+All settled on 2026-10-02: every recommendation below was accepted.
 
 1. **How ambient occlusion looks.** Recommendation: on by default, four levels as in Minecraft's smooth lighting, with its strength on a slider in the overlay so the final value is chosen by eye.
 2. **Faces between leaves (and other cutout blocks of one kind).** Minecraft has two looks: "Fast" leaves render opaque, and "Fancy" leaves are see-through and also draw the faces between two leaves. Culled cutout leaves sit between them: see-through like Fancy, without the faces inside a canopy. Recommendation: **cull them** by default. Fewer quads and less overdraw, which serves the north star. Drawing them, as Fancy does, can be a setting later. Culling them needs to know which cutouts are "of one kind", which the visual table does not say yet: if this is the answer, `BlockVisual` gains a cull group that the registry (RFC 0004) fills, and two cutouts with the same nonzero group hide each other's shared faces.
