@@ -255,8 +255,8 @@ On the reference machine, release build, placeholder terrain, measured by the fl
 | Bookkeeping per loaded chunk | under 128 bytes |
 | Frame time p99, `cruise` against `hover` | within 1 ms |
 | Longest streaming step on the world thread | under 1 ms |
-| A full 1,024-block region from nothing (`load`) | under 1 s |
-| Generation and meshing throughput in `load` | 20,000 chunks per second each |
+| A full 1,024-block region from nothing (`load`), placeholder terrain | under 1 s |
+| Generation and meshing throughput in `load`, placeholder terrain | 20,000 chunks per second each; re-based on RFC 0008's per-chunk budgets when its terrain replaces the placeholder (at its targets, six workers build at most about 15,000 mixed chunks per second) |
 | Holes within 256 blocks during `sprint` | none at p99 |
 | Chunk data at 1,024 blocks | under 128 MiB on the placeholder terrain; under 256 MiB on RFC 0008's (about 240 MiB expected) |
 
