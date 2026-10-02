@@ -58,7 +58,7 @@ Non-goals:
 enum class BlockState : std::uint16_t { air = 0 };
 ```
 
-16 bits give 65,536 states. Minecraft Java Edition has roughly 25,000, so there is headroom. The block registry RFC assigns the ids.
+16 bits give 65,536 states. Minecraft Java Edition has about 30,000 (29,873 in 26.1, by the state ids in PrismarineJS/minecraft-data), so there is headroom. The block registry RFC assigns the ids.
 
 ### Coordinates
 
