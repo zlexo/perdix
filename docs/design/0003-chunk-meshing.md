@@ -27,7 +27,7 @@ How much the approach matters, for one 32 by 32 by 32 chunk:
 
 Goals:
 
-- Emit only faces that can be seen: between a solid block and a non-solid one, including across chunk borders.
+- Emit only faces that can be seen: where a block that draws faces meets one that does not hide them, including across chunk borders.
 - Merge neighboring faces that look identical (same texture, same ambient occlusion) into one quad.
 - Per-vertex ambient occlusion in the style of Minecraft's smooth lighting.
 - An 8-byte quad format, decoded by the vertex shader.
@@ -171,7 +171,7 @@ Changing a block remeshes its chunk, plus each neighbor whose padded border hold
 
 ## Alternatives considered
 
-- **Culled faces, no merging:** simplest, and each face can carry its own lighting with no merge rules. Two to ten times more quads to store and draw. Kept as the runtime toggle.
+- **Culled faces, no merging:** simplest, and each face can carry its own lighting with no merge rules. On the measured terrain chunks, 1.3 to 1.8 times more quads to store and draw. Kept as the runtime toggle.
 - **Classic greedy meshing over block loops** (0fps): the same output as the bitmask version, several times slower to compute.
 - **Four or six vertices per face, float formats:** easy to read and debug, 16 times the memory.
 - **Six vertices per quad without an index buffer:** one buffer fewer, but every corner is shaded 1.5 times as often.
@@ -196,7 +196,7 @@ The prototype column comes from a throwaway implementation of culling, occlusion
 - **Two neighboring blocks of one kind:** 6 quads with merging (four of them 2 wide), 10 without.
 - **A full chunk surrounded by air:** 6 quads of 32 by 32.
 - **Quad encoding:** every field round-trips at its limits (positions 0 and 31, sizes 1 and 32, all six faces), and the +x, +y and +z quads of a block at 31 decode to corners at 32.
-- **Borders:** a solid neighbor chunk hides this chunk's border faces; an unloaded one does not.
+- **Borders:** an opaque neighbor chunk hides this chunk's border faces; an unloaded one does not.
 - **Ambient occlusion:** known corner arrangements give the values in Lysenko's table.
 - **Diagonal:** for all 256 combinations of four 2-bit occlusion values, the decoded quad's two triangles share the diagonal that a reference implementation of Lysenko's comparison picks (ties through corners 0 and 2), and keep their winding.
 - **Coverage property:** for many random chunks (seeded), the merged mesh covers exactly the faces the unmerged mesh produces, each once, with the same texture and occlusion. This one test proves merging never adds, drops or changes a face.
