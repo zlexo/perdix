@@ -165,7 +165,7 @@ On the reference machine, release build, single thread, measured with nanobench 
 ## Test plan
 
 - **Single block in empty space:** 6 quads, every corner fully lit.
-- **Two neighboring blocks of one kind:** 6 quads with merging (two of them 2 wide), 10 without.
+- **Two neighboring blocks of one kind:** 6 quads with merging (four of them 2 wide), 10 without.
 - **A full chunk surrounded by air:** 6 quads of 32 by 32.
 - **Borders:** a solid neighbor chunk hides this chunk's border faces; an unloaded one does not.
 - **Ambient occlusion:** known corner arrangements give the values in Lysenko's table, and the diagonal choice is checked for each case.
