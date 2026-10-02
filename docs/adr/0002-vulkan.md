@@ -12,7 +12,7 @@ The engine is developed on macOS and must also run on Windows and Linux.
 - **OpenGL** on macOS stops at version 4.1 and is deprecated: no compute shaders, no multi-draw indirect.
 - **Metal** is excellent and Apple-only.
 - **WebGPU** is portable and runs in browsers, but its standard form lacks multi-draw indirect and bindless resources, which caps how far rendering can be optimized.
-- **Vulkan** runs natively on Windows and Linux. On macOS it runs on top of Metal: KosmicKrisp (LunarG) is a Vulkan 1.4 conformant driver for Apple Silicon on macOS 26, shipped in the Vulkan SDK since September 2026, and MoltenVK covers older systems.
+- **Vulkan** runs natively on Windows and Linux. On macOS it runs on top of Metal: KosmicKrisp (LunarG) is a Vulkan 1.4 conformant driver for Apple Silicon on macOS 26. It has shipped in the Vulkan SDK since 1.4.335.0 (December 2025, as an alpha), and its conformant version since 1.4.363.0 (September 2026). MoltenVK covers older systems.
 
 ## Decision
 
