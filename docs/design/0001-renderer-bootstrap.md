@@ -357,3 +357,9 @@ Pull request plan item 4, the window, its surface, the swapchain and a clear col
 - **With one frame in flight, the reference machine draws about 42 to 45 frames per second under FIFO on its 60 Hz display**, and about 160 with immediate presentation: each frame's wait for the previous one costs about 6 ms, so frames miss vsyncs. Item 5 overlaps frames, and Tracy (item 10) will show where the time goes.
 - **The swapchain is recreated when the framebuffer's size changes**, compared with the size it was made for rather than its extent, so a surface that fixes its own size cannot cause a recreation every frame, and after an out-of-date or suboptimal result. A minimized window reports a framebuffer with no area, and its frames are skipped.
 - **A debug run with validation errors exits with 3**, so a run with `--frames` is a validation check.
+
+Pull request plan item 5, frames in flight:
+
+- **Two frames in flight, as designed.** Each slot has its own command pool, command buffer and acquire semaphore, and frame N waits on the timeline for frame N - 2 before reusing its slot. The timeline semaphore and the per-image present semaphores came with item 4.
+- **On the reference machine the clear loop went from about 42 to about 118 frames per second under FIFO** in a release build.
+- **FIFO did not pace at the display's refresh in these runs:** about 118 frames per second on both drivers against a 60 Hz panel (its `maximumFramesPerSecond` is 60), with no swapchain recreation, no suboptimal or out-of-date result, an unlocked session, and SDL reporting the window visible. Still open: whether presentation paces while someone watches the window, and why it does not here; Xcode's frame capture (item 12) can show when each drawable is shown.
