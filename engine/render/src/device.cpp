@@ -1,9 +1,13 @@
 #include <vx/render/device.hpp>
 
+#include "vk_result.hpp"
+
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace vx::render {
@@ -12,6 +16,10 @@ namespace {
 // Declared in vulkan_beta.h, which needs VK_ENABLE_BETA_EXTENSIONS; the name is
 // all the engine needs.
 constexpr const char* portability_subset_extension = "VK_KHR_portability_subset";
+
+VkBool32 vk_bool(bool value) {
+    return value ? VK_TRUE : VK_FALSE;
+}
 
 bool lists_extension(VkPhysicalDevice physical_device, std::string_view name) {
     std::uint32_t count = 0;
@@ -94,6 +102,128 @@ DeviceInfo describe_device(VkPhysicalDevice physical_device) {
     info.portability_subset = lists_extension(physical_device, portability_subset_extension);
     info.queue_family = graphics_and_compute_family(physical_device);
     return info;
+}
+
+Result<Device> Device::create(VkInstance instance, VkPhysicalDevice physical_device,
+                              const DeviceInfo& info) {
+    assert(info.queue_family.has_value() && "the device must have passed selection");
+    const std::uint32_t family = *info.queue_family;
+
+    // The feature floor, then the optional features the device offers.
+    VkPhysicalDeviceVulkan13Features vulkan13{};
+    vulkan13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    vulkan13.synchronization2 = VK_TRUE;
+    vulkan13.dynamicRendering = VK_TRUE;
+
+    VkPhysicalDeviceVulkan12Features vulkan12{};
+    vulkan12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    vulkan12.pNext = &vulkan13;
+    vulkan12.descriptorIndexing = VK_TRUE;
+    vulkan12.descriptorBindingPartiallyBound = VK_TRUE;
+    vulkan12.runtimeDescriptorArray = VK_TRUE;
+    vulkan12.timelineSemaphore = VK_TRUE;
+    vulkan12.bufferDeviceAddress = VK_TRUE;
+
+    VkPhysicalDeviceFeatures2 features{};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features.pNext = &vulkan12;
+    features.features.multiDrawIndirect = VK_TRUE;
+    features.features.drawIndirectFirstInstance = VK_TRUE;
+    features.features.samplerAnisotropy = vk_bool(info.optional.sampler_anisotropy);
+    features.features.fillModeNonSolid = vk_bool(info.optional.fill_mode_non_solid);
+
+    // VUID-VkDeviceCreateInfo-pProperties-04451: a device that lists
+    // VK_KHR_portability_subset must enable it.
+    std::vector<const char*> extensions;
+    if (info.portability_subset) {
+        extensions.push_back(portability_subset_extension);
+    }
+
+    const float priority = 1.0F;
+    const VkDeviceQueueCreateInfo queue_info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .queueFamilyIndex = family,
+        .queueCount = 1,
+        .pQueuePriorities = &priority,
+    };
+    const VkDeviceCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = &features,
+        .flags = 0,
+        .queueCreateInfoCount = 1,
+        .pQueueCreateInfos = &queue_info,
+        .enabledLayerCount = 0,
+        .ppEnabledLayerNames = nullptr,
+        .enabledExtensionCount = static_cast<std::uint32_t>(extensions.size()),
+        .ppEnabledExtensionNames = extensions.data(),
+        .pEnabledFeatures = nullptr, // in features, through pNext
+    };
+
+    Device device;
+    device.physical_device_ = physical_device;
+    device.queue_family_ = family;
+    if (const VkResult result =
+            vkCreateDevice(physical_device, &create_info, nullptr, &device.device_);
+        result != VK_SUCCESS) {
+        return Error{"vkCreateDevice failed: " + vk_result_name(result)};
+    }
+    volkLoadDevice(device.device_);
+    vkGetDeviceQueue(device.device_, family, 0, &device.queue_);
+
+    // VMA loads the rest of its functions through these two.
+    VmaVulkanFunctions functions{};
+    functions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+    functions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
+    VmaAllocatorCreateInfo allocator_info{};
+    allocator_info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    allocator_info.physicalDevice = physical_device;
+    allocator_info.device = device.device_;
+    allocator_info.pVulkanFunctions = &functions;
+    allocator_info.instance = instance;
+    allocator_info.vulkanApiVersion = VK_API_VERSION_1_3;
+    if (const VkResult result = vmaCreateAllocator(&allocator_info, &device.allocator_);
+        result != VK_SUCCESS) {
+        return Error{"vmaCreateAllocator failed: " + vk_result_name(result)};
+    }
+    return device;
+}
+
+Device::Device(Device&& other) noexcept
+    : physical_device_(std::exchange(other.physical_device_, VK_NULL_HANDLE)),
+      device_(std::exchange(other.device_, VK_NULL_HANDLE)),
+      queue_(std::exchange(other.queue_, VK_NULL_HANDLE)), queue_family_(other.queue_family_),
+      allocator_(std::exchange(other.allocator_, VK_NULL_HANDLE)) {}
+
+Device& Device::operator=(Device&& other) noexcept {
+    if (this != &other) {
+        destroy();
+        physical_device_ = std::exchange(other.physical_device_, VK_NULL_HANDLE);
+        device_ = std::exchange(other.device_, VK_NULL_HANDLE);
+        queue_ = std::exchange(other.queue_, VK_NULL_HANDLE);
+        queue_family_ = other.queue_family_;
+        allocator_ = std::exchange(other.allocator_, VK_NULL_HANDLE);
+    }
+    return *this;
+}
+
+Device::~Device() {
+    destroy();
+}
+
+void Device::destroy() noexcept {
+    if (device_ == VK_NULL_HANDLE) {
+        return; // moved from, or never created: the allocator comes after the device
+    }
+    vkDeviceWaitIdle(device_);
+    if (allocator_ != VK_NULL_HANDLE) {
+        vmaDestroyAllocator(allocator_);
+        allocator_ = VK_NULL_HANDLE;
+    }
+    vkDestroyDevice(device_, nullptr);
+    device_ = VK_NULL_HANDLE;
+    queue_ = VK_NULL_HANDLE;
 }
 
 } // namespace vx::render

@@ -50,7 +50,7 @@ add_library(vx_render STATIC
 add_library(vx::render ALIAS vx_render)
 
 target_include_directories(vx_render PUBLIC include)
-target_link_libraries(vx_render PUBLIC vx::core vx_volk)
+target_link_libraries(vx_render PUBLIC vx::core vx_volk vx_vma)
 target_compile_features(vx_render PUBLIC cxx_std_20)
 vx_target_warnings(vx_render)
 vx_target_engine_options(vx_render)
