@@ -282,7 +282,7 @@ On the reference machine, release build, placeholder terrain, measured by the fl
 8. The memory budget, eviction and the effective view distance, with RFC 0007's arena signal; overlay counters.
 9. The benchmark flythrough with its CI smoke run, the "Benchmark result" issue template and a page on running it.
 
-This plan interleaves with RFC 0005's: item 2 here, RFC 0005's item 8 (pins and the world thread), items 3 to 5 here, RFC 0005's item 9 (the world loop, forwarding, batches, backpressure and catch-up), then items 6 to 9 here.
+This plan interleaves with RFC 0005's: item 2 here, RFC 0005's item 7 (versions and pins), items 3 to 5 here, RFC 0005's item 8 (the world thread and its loop: forwarding, batches, backpressure and catch-up), then items 6 to 9 here.
 
 ## Open questions
 
