@@ -75,6 +75,7 @@ rotate_x = 90
 | Key | Meaning | Default |
 |---|---|---|
 | `opacity` | `opaque`, or `cutout` for leaves and glass | `opaque` |
+| `cull_group` | a name; cutout blocks with the same group hide each other's shared faces (RFC 0003, open question 2) | none |
 | `properties` | property name to its values: strings, integers or booleans | none |
 | `textures` | face to texture: `all`, `side`, `top`, `bottom`, `north`, `south`, `east`, `west` | required |
 | `variant` | `when` (property to one value or a list), then `textures`, `rotate_x`, `rotate_y` | none |
@@ -102,7 +103,7 @@ Ids depend only on the set of definitions, so every run and machine agrees and t
 
 ### The visual table
 
-The registry fills RFC 0003's `BlockVisual`, one per state, with faces in RFC 0003's order (+x, -x, +y, -y, +z, -z). `Opacity` and `BlockVisual` move into `world`, because `world` builds them and cannot include `mesh` headers (ADR 0003); `mesh` includes them from there.
+The registry fills RFC 0003's `BlockVisual`, one per state, indexed by RFC 0002's `Face` (+x, -x, +y, -y, +z, -z). `Opacity` and `BlockVisual` live in `world` (RFC 0003), because `world` builds them and cannot include `mesh` headers (ADR 0003); `mesh` includes them from there. The cull group joins them: `{ Opacity opacity; std::uint8_t cull_group; std::array<std::uint16_t, 6> texture; }` is still 14 bytes. Group 0 means none, and named groups are numbered in sorted order, like ids.
 
 A texture layer stands for a texture plus a number of clockwise quarter turns. Turning a block turns its textures within each face (a log on its side has its bark running along the log), and every turned texture is baked into a layer of its own at load. The quad and the shader never deal with rotation, and turned faces never merge with unturned ones, because their layers differ. Turned copies of symmetric textures are duplicates; at 1,364 bytes each they are not worth detecting. Layer 0 is a built-in magenta and black checker, so a zeroed or missing entry is visibly wrong instead of quietly showing another block's texture.
 
@@ -148,14 +149,14 @@ assets/core/blocks/oak_log.toml:12:12: error: rotate_x must be 0, 90, 180 or 270
 assets/core/blocks/glass.toml:1:1: error: unknown key 'opacty'; did you mean 'opacity'?
 ```
 
-Errors: TOML syntax; unknown keys and wrong value types; bad characters in a name, property or value; a file that redefines `core:air`; a property with one value or a repeated value; a variant naming an unknown property or value, turning by other than 90 degree steps, or changing nothing; a face left without a texture; more than 65,536 states; a texture file that is missing, is not a PNG or is not 16 by 16. Warnings: transparent texels in a texture an opaque block uses, none in a texture only cutout blocks use, and texture files no block uses. Any error stops startup with a non-zero exit code. The test that loads the shipped pack also fails on any warning, so main stays clean.
+Errors: TOML syntax; unknown keys and wrong value types; bad characters in a name, property or value; a file that redefines `core:air`; a property with one value or a repeated value; a variant naming an unknown property or value, turning by other than 90 degree steps, or changing nothing; a face left without a texture; a `cull_group` on a block that is not cutout; more than 65,536 states; a texture file that is missing, is not a PNG or is not 16 by 16. Warnings: transparent texels in a texture an opaque block uses, none in a texture only cutout blocks use, and texture files no block uses. Any error stops startup with a non-zero exit code. The test that loads the shipped pack also fails on any warning, so main stays clean.
 
 ### API sketch
 
 ```cpp
 namespace vx {
 
-// Opacity and BlockVisual are RFC 0003's, unchanged, declared in world from now on.
+// Opacity and BlockVisual are RFC 0003's, declared in world, with the cull group above.
 // Diagnostic (core) holds a severity, a file, a 1-based line and column, and a message.
 
 enum class BlockType : std::uint16_t { air = 0 };   // one per block: air, then name order
