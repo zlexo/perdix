@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <span>
+#include <string_view>
 
 namespace vx::render {
 
@@ -37,8 +38,10 @@ struct GraphicsPipelineDesc {
 // resize does not rebuild it.
 class GraphicsPipeline {
 public:
-    [[nodiscard]] static Result<GraphicsPipeline> create(const Device& device,
-                                                         const GraphicsPipelineDesc& desc);
+    // `name` is the debug name of the pipeline, its layout and its shader
+    // module (RFC 0001), and is in its errors too.
+    [[nodiscard]] static Result<GraphicsPipeline>
+    create(const Device& device, const GraphicsPipelineDesc& desc, std::string_view name);
 
     GraphicsPipeline(GraphicsPipeline&& other) noexcept;
     GraphicsPipeline& operator=(GraphicsPipeline&& other) noexcept;

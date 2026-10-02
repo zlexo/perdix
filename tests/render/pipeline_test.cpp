@@ -23,12 +23,14 @@ TEST_CASE("the triangle's pipeline builds for the offscreen format and the swapc
         INFO("color format ", static_cast<int>(format));
         // One push constant: the vertices' buffer address.
         vx::Result<vx::render::GraphicsPipeline> made = vx::render::GraphicsPipeline::create(
-            context.device(), {.spirv = vx::shaders::triangle,
-                               .vertex_entry = "vertex_main",
-                               .fragment_entry = "fragment_main",
-                               .color_format = format,
-                               .push_constant_size = sizeof(VkDeviceAddress),
-                               .push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT});
+            context.device(),
+            {.spirv = vx::shaders::triangle,
+             .vertex_entry = "vertex_main",
+             .fragment_entry = "fragment_main",
+             .color_format = format,
+             .push_constant_size = sizeof(VkDeviceAddress),
+             .push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT},
+            "triangle");
         INFO((made.has_value() ? std::string() : made.error().message));
         REQUIRE(made.has_value());
         CHECK(made.value().handle() != VK_NULL_HANDLE);
