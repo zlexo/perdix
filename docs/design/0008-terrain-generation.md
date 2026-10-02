@@ -173,13 +173,13 @@ Every chunk applies the same placements in the same order, so a tree split acros
 
 A column's surface range spans `sea_level + height + jag` plus or minus `1 / squash` over its 81 lattice columns, raised by the tallest feature that can reach it from the column or its 8 neighbors, and rounded out to whole chunks. Caves start at a parameter depth below the surface and taper there, so with the default preset none opens to the sky; a preset that lets them open widens the range by their depth.
 
-All three need a uniform `ChunkStorage` of any state, not only air. RFC 0002's API has only the default constructor and `from_dense`, so this RFC adds `ChunkStorage::uniform(BlockState)`.
+All three need a uniform `ChunkStorage` of any state, not only air, which RFC 0002's `ChunkStorage::uniform(BlockState)` provides.
 
 ### The taste loop
 
 - **One list.** `visit(TerrainParams&, Visitor&)` names every tunable value with its range and the earliest stage it affects. The file reader, the file writer and the overlay are visitors, so a new parameter is one line.
 - **Sliders.** The overlay (RFC 0001's Dear ImGui) has a section per group: a slider per value, a small plot per curve with draggable points, the seed with a "new seed" button, and save, save as, load and revert.
-- **Instant regeneration.** A change publishes a new immutable snapshot with a new version, and streaming (RFC 0006) regenerates from the earliest affected stage, nearest the camera first: a surface value rebuilds without replanning; a climate value also clears the column caches. While a slider moves, the 9 by 9 columns around the camera regenerate continuously, newest value wins; on release the rest of the view follows. Results from older versions are dropped.
+- **Instant regeneration.** A change publishes a new immutable snapshot with a new version, and streaming (RFC 0006) regenerates from the earliest affected stage, nearest the camera first: a surface value rebuilds without replanning; a climate value also clears the column caches. While a slider moves, the 9 by 9 columns around the camera regenerate continuously, newest value wins; on release the rest of the view follows. Results from older versions are dropped. Jobs pin the snapshot they started with (RFC 0005), so publishing a new one never frees what a running job reads.
 - **Map view.** Continents are thousands of blocks across, wider than any view, so the overlay also draws a top-down map (height, climate or biome, 16 blocks per pixel by default) from stage 1 alone, redrawn on every change.
 - **The price.** The overlay shows the shares of out-of-reach, uniform and mixed chunks, plan and build times, and memory per chunk, so taller mountains or deeper caves show their cost while being tuned.
 - **The file.** `assets/core/terrain/default.toml`, in the repository. It is read with toml++, which RFC 0004 brings for block files, and written by a small writer of our own that puts each value's range in a comment and prints floats to 9 significant digits, which round-trips every `float`. It also keeps camera bookmarks (seed, position, direction) for comparing looks. Blocks are named by key (`core:stone`) and resolved through the registry on load; problems are reported in RFC 0004's file, line and column format. The golden hashes are computed from this preset, so a new look is a reviewed diff.
@@ -285,7 +285,7 @@ What that buys: in RFC 0006's region for a 1,024-block view, flying at 64 blocks
 4. Noise: the 4-wide path for NEON and SSE2, bit-equal to scalar, with before and after numbers.
 5. Curves with Bezier bounds, `TerrainParams`, the visitor, reading the preset with toml++ and writing it back, and the default preset.
 6. Climate and shape with the per-worker column cache, `surface_range`, and the map view: the first look at continents.
-7. Density, interpolation and fill; the out-of-reach and uniform paths; `ChunkStorage::uniform`; the golden hashes start here.
+7. Density, interpolation and fill; the out-of-reach and uniform paths (RFC 0002's `ChunkStorage::uniform`); the golden hashes start here.
 8. Caves: cheese, pillars, spaghetti and noodles.
 9. Biomes and surface rules.
 10. Plans, placements and the gather build, with ores and trees; the region and thread-count tests.
