@@ -56,7 +56,7 @@ All presets use Ninja and build into `build/<preset>`. CMake 3.28 or newer. A Wi
 
 ### Dependencies
 
-Dependencies come from CMake's built-in `FetchContent`, pinned to a release tag, shallow-cloned, and declared `SYSTEM` so their headers never trigger our warnings. Each dependency is added by the pull request that first needs it, in the CMake file of the layer that uses it.
+Dependencies come from CMake's built-in `FetchContent`, pinned to a release tag (or, for a library that publishes no releases, such as stb, to a commit), shallow-cloned, and declared `SYSTEM` so their headers never trigger our warnings. Each dependency is added by the pull request that first needs it, in the CMake file of the layer that uses it.
 
 | Dependency | Version | Used by | Since |
 |---|---|---|---|
