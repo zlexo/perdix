@@ -23,6 +23,8 @@ enum class BufferMemory : std::uint8_t {
     // Written by the GPU, read by the CPU: host-visible, cached where the
     // device offers it, and always mapped.
     readback,
+    // The CPU's side of a copy into GPU memory: host-visible and always mapped.
+    staging,
 };
 
 // A buffer and its memory, from VMA.
