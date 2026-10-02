@@ -59,15 +59,15 @@ At 1,024 blocks, assuming the surface spans 2 chunks per column (M4 replaces thi
 
 | Shape | Drawn | Loaded |
 |---|---|---|
-| Sphere | 137,065 | 150,555 |
+| Sphere | 137,065 | 157,107 |
 | Box, 65 by 65 columns, 17 chunks tall | 71,825 | 85,291 |
-| Cylinder, 17 chunks tall | 54,553 | 64,771 |
-| **Terrain disc and near cylinder** | **about 9,400** | **about 17,400** |
-| The same at 2,048 blocks | about 28,700 | about 56,900 |
+| Cylinder, 17 chunks tall | 54,553 | 65,987 |
+| **Terrain disc and near cylinder** | **about 9,400** | **about 17,900** |
+| The same at 2,048 blocks | about 28,700 | about 57,500 |
 
 The disc reaches 2,048 blocks with fewer chunks than a cylinder loads at 1,024. Most loaded chunks are uniform: the margins are sky above and rock below, and so is most of the near cylinder. With RFC 0002's estimate for the rest (4 bits per block, 16 KiB), block data is about 100 MiB at 1,024 blocks and 400 MiB at 2,048, against RFC 0002's 320 MiB for the cylinder at 1,024. Because the disc follows the terrain and not the camera, the ground stays loaded at any height. A generator that cannot bound a column tightly returns a wider range: the cost is more chunks, never holes.
 
-**Hysteresis.** A chunk loads when it enters the region and unloads only when it leaves the region recomputed with every distance 2 chunks larger. The camera's chunk changes by one at each border, so a camera wandering within 64 blocks loads and unloads nothing. The cost is at most 13% more loaded columns at 1,024 blocks (444 on top of 3,409). Meshes follow the same rule one chunk further in, so a drawn chunk never loses a neighbor.
+**Hysteresis.** A chunk loads when it enters the region and unloads only when it leaves the region recomputed with every distance 2 chunks larger. The camera's chunk changes by one at each border, so a camera wandering within 64 blocks loads and unloads nothing. The cost is about 12% more loaded columns at 1,024 blocks (432 on top of 3,473). Meshes follow the same rule one chunk further in, so a drawn chunk never loses a neighbor.
 
 ### The chunk map
 
@@ -89,7 +89,7 @@ struct ChunkRecord {                  // 40 bytes, one per loaded chunk
 ```
 
 - Open addressing with linear probing over a power-of-two array, doubled when more than half full. At half full a hit averages 1.5 probes and a miss 2.5 (Knuth); eight slots share a 128-byte cache line on the reference machine. Erasing shifts the rest of the probe run back instead of leaving tombstones, so hours of streaming do not slow lookups.
-- At 17,400 chunks the map is 65,536 slots, 1 MiB. Bookkeeping per chunk is the record, 32 to 64 bytes of map and 16 bytes of mesh state: about 2 MiB in all.
+- At 17,900 chunks the map is 65,536 slots, 1 MiB. Bookkeeping per chunk is the record, 32 to 64 bytes of map and 16 bytes of mesh state: about 2 MiB in all.
 
 Chunk coordinates use 27 bits each (block >> 5), 81 bits in all, so they do not pack losslessly into 64 bits the way Minecraft's protocol packs a block position (26, 26 and 12 bits, in a bounded world). The hash packs the low 21 bits of each and mixes them with MurmurHash3's 64-bit finalizer (Austin Appleby, public domain). Both multipliers are odd and each xor-shift can be undone, so the finalizer is a bijection: chunks less than 2^21 chunks (67 million blocks) apart on every axis never share a 64-bit hash, and equality still compares all 12 bytes.
 
@@ -145,7 +145,7 @@ Columns, plans, builds and meshes each keep a backlog on the world thread, order
 
 - The 27 chunks around the camera score 0; uniform chunks never queue. Generation tests the chunk's box grown by one chunk against the frustum, so the neighbors a visible chunk needs rank as visible.
 - Doubling means what is just behind the camera arrives with what is in view at twice the distance: turning around shows nearby terrain, while distant terrain behind waits.
-- Scores are recomputed when the camera crosses a chunk border or turns more than 15 degrees, and the backlogs are rebuilt as heaps in linear time: up to the 17,400 chunks of a region after a teleport, a few hundred while flying.
+- Scores are recomputed when the camera crosses a chunk border or turns more than 15 degrees, and the backlogs are rebuilt as heaps in linear time: up to the 17,900 chunks of a region after a teleport, a few hundred while flying.
 
 ### Per-frame budgets
 
@@ -257,7 +257,7 @@ On the reference machine, release build, placeholder terrain, measured by the fl
 ## Test plan
 
 - **Map and hash:** seeded random inserts, erases and lookups agree with `std::unordered_map`, with negative coordinates and keys at the edges of the range; probe runs stay short after heavy churn; the table doubles at half full. The 2,097,152 positions of a 128 by 128 by 128 block of chunks share no 64-bit hash, at the origin and at both edges of the range.
-- **Region:** counts match the formulas (3,209 columns at 32 chunks); for random cameras and surface ranges, every drawn chunk has its 26 neighbors loaded and every loaded chunk its 26 neighbors planned; crossing a border back and forth loads and unloads nothing after the first time; climbing keeps the disc; nothing outside the 32-bit world is requested.
+- **Region:** counts match the formulas (3,209 drawn and 3,473 loaded columns at 32 chunks); for random cameras and surface ranges, every drawn chunk has its 26 neighbors loaded and every loaded chunk its 26 neighbors planned; crossing a border back and forth loads and unloads nothing after the first time; climbing keeps the disc; nothing outside the 32-bit world is requested.
 - **Lifecycle,** in RFC 0005's deterministic mode: each transition in both tables; a chunk builds exactly when its 26th neighbor's plan lands and is complete exactly at its 26th ready neighbor, and back to ready when one unloads; leaving while a job runs frees the record when the job ends, and coming back keeps its result; uniform chunks never create jobs; a corner edit changes 8 chunks and an inner one 1; a stale mesh newer than the last forwarded one is forwarded and the chunk stays queued; edited chunks survive leaving the region; a generator version change regenerates unedited chunks nearest first and drops older results.
 - **Budgets and memory,** with a fake clock: a burst of 10,000 results is integrated in steps of at most 0.5 ms plus one result. With a small memory budget, eviction takes hysteresis chunks farthest first, then lowers the view distance, never touches the region or edited chunks, and raises it again later.
 - **Placeholder:** chunks generated on different threads in different orders are byte-identical; `out_of_reach` and the chunks above a column's surface range agree with a full build; no surface lies outside `surface_range`.
@@ -278,8 +278,8 @@ On the reference machine, release build, placeholder terrain, measured by the fl
 
 ## Open questions
 
-1. **Default view distance** (the owner's taste call). Recommendation: **32 chunks (1,024 blocks)**, with a slider from 4 to 64. About 17,400 loaded chunks and 100 MiB of block data by the estimate above; confirmed or lowered with the first flythrough numbers before M3 ends.
-2. **Vertical policy: a terrain disc plus a near cylinder, or a plain cylinder around the camera.** Recommendation: **the disc**. It keeps the ground at any height and loads about a quarter of the cylinder's chunks at the same distance (17,400 against 64,771). The costs: RFC 0008 must add `surface_range` (its per-column first pass already finds each column's highest surface), and caves more than 256 blocks away are not loaded. It also assumes RFC 0002's open question 2 is settled as unlimited height; with a fixed height, columns load whole and this question goes away.
+1. **Default view distance** (the owner's taste call). Recommendation: **32 chunks (1,024 blocks)**, with a slider from 4 to 64. About 17,900 loaded chunks and 100 MiB of block data by the estimate above; confirmed or lowered with the first flythrough numbers before M3 ends.
+2. **Vertical policy: a terrain disc plus a near cylinder, or a plain cylinder around the camera.** Recommendation: **the disc**. It keeps the ground at any height and loads about a quarter of the cylinder's chunks at the same distance (17,900 against 65,987). The costs: RFC 0008 must add `surface_range` (its per-column first pass already finds each column's highest surface), and caves more than 256 blocks away are not loaded. It also assumes RFC 0002's open question 2 is settled as unlimited height; with a fixed height, columns load whole and this question goes away.
 3. **Memory budget: a fixed 512 MiB, or a share of physical memory.** Recommendation: **fixed**, with a setting. Benchmark results compare across machines only if the budget is the same, and 512 MiB holds the 2,048-block maximum by the estimate.
 4. **Our own chunk map, or `ankerl::unordered_dense`.** Recommendation: **our own**. It is small, keeps slots at 16 bytes and is the part worth understanding. unordered_dense (by nanobench's author) is excellent and would save that code; its erase takes a second lookup to move the last entry into the hole, and it adds a dependency for one narrow use.
 
