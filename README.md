@@ -13,6 +13,7 @@ Nothing renders yet. The project is being set up in the open, one reviewed pull 
 - [Decisions](docs/adr/): architecture decision records
 - [Designs](docs/design/): one RFC per system, accepted before any of it is written
 - [Contributing](CONTRIBUTING.md): how work moves from design to merged code
+- [Debugging the renderer](docs/DEBUGGING.md): drivers, validation, debug names, the overlay and frame captures
 
 ## License
 
