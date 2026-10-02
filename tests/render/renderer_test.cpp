@@ -6,6 +6,7 @@
 
 #include <doctest/doctest.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -24,16 +25,33 @@ vx::Result<vx::render::Renderer> headless_renderer() {
                                          .present_mode = vx::render::PresentMode::fifo});
 }
 
-// How many pixels differ from `expected` by more than one step in a channel,
-// a margin for how each driver rounds while encoding to sRGB.
-std::size_t pixels_off(const std::vector<std::uint8_t>& pixels,
-                       const std::vector<std::uint8_t>& expected) {
+using Pixel = std::array<std::uint8_t, 4>;
+
+Pixel pixel_at(const std::vector<std::uint8_t>& pixels, std::uint32_t width, std::uint32_t x,
+               std::uint32_t y) {
+    const std::size_t at = (std::size_t{y} * width + x) * 4;
+    return {pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]};
+}
+
+// Whether two pixels are within one step in every channel, a margin for how
+// each driver rounds while encoding to sRGB.
+bool near(const Pixel& pixel, const Pixel& expected) {
+    for (std::size_t channel = 0; channel < 4; ++channel) {
+        if (std::abs(int{pixel[channel]} - int{expected[channel]}) > 1) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// How many pixels in rows [first, end) are not near `expected`.
+std::size_t pixels_off(const std::vector<std::uint8_t>& pixels, std::uint32_t width,
+                       std::uint32_t first, std::uint32_t end, const Pixel& expected) {
     std::size_t off = 0;
-    for (std::size_t pixel = 0; pixel + 4 <= pixels.size(); pixel += 4) {
-        for (std::size_t channel = 0; channel < 4; ++channel) {
-            if (std::abs(int{pixels[pixel + channel]} - int{expected[channel]}) > 1) {
+    for (std::uint32_t y = first; y < end; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            if (!near(pixel_at(pixels, width, x, y), expected)) {
                 ++off;
-                break;
             }
         }
     }
@@ -42,7 +60,7 @@ std::size_t pixels_off(const std::vector<std::uint8_t>& pixels,
 
 } // namespace
 
-TEST_CASE("a headless renderer clears its image to the color it was given") {
+TEST_CASE("a headless renderer clears around the triangle to the color it was given") {
     vx::Result<vx::render::Renderer> created = headless_renderer();
     INFO((created.has_value() ? std::string() : created.error().message));
     REQUIRE(created.has_value());
@@ -61,7 +79,10 @@ TEST_CASE("a headless renderer clears its image to the color it was given") {
     REQUIRE(pixels.has_value());
     REQUIRE(pixels.value().size() == std::size_t{image_size.width} * image_size.height * 4);
 
-    CHECK(pixels_off(pixels.value(), {255, 0, 128, 255}) == 0);
+    // The rows above and below the image's middle keep the clear color: the
+    // middle is where the first pipeline will draw.
+    CHECK(pixels_off(pixels.value(), image_size.width, 0, 6, {255, 0, 128, 255}) == 0);
+    CHECK(pixels_off(pixels.value(), image_size.width, 27, 32, {255, 0, 128, 255}) == 0);
     CHECK(renderer.context().instance().validation_counts().errors == 0);
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }
@@ -78,7 +99,12 @@ TEST_CASE("a headless renderer follows a resize") {
     const vx::Result<std::vector<std::uint8_t>> pixels = renderer.capture();
     REQUIRE(pixels.has_value());
 
-    CHECK(pixels.value().size() == std::size_t{16} * 8 * 4);
-    CHECK(pixels_off(pixels.value(), {0, 255, 0, 255}) == 0);
+    REQUIRE(pixels.value().size() == std::size_t{16} * 8 * 4);
+    // The image's corners keep the new color.
+    for (const auto [x, y] :
+         std::array{std::array<std::uint32_t, 2>{0, 0}, std::array<std::uint32_t, 2>{15, 0},
+                    std::array<std::uint32_t, 2>{0, 7}, std::array<std::uint32_t, 2>{15, 7}}) {
+        CHECK(near(pixel_at(pixels.value(), 16, x, y), {0, 255, 0, 255}));
+    }
     CHECK(renderer.context().instance().validation_counts().errors == 0);
 }
