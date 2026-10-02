@@ -8,6 +8,7 @@
 #include <vx/render/pipeline.hpp>
 #include <vx/render/swapchain.hpp>
 #include <vx/render/swapchain_choice.hpp>
+#include <vx/render/texture_table.hpp>
 
 #include <glm/ext/vector_int3_sized.hpp>
 #include <volk.h>
@@ -87,8 +88,17 @@ public:
     }
 
 private:
+    // The cube: its pipeline, its 36 vertices, and its texture, a generated
+    // checker, in the texture table.
+    struct Cube {
+        GraphicsPipeline pipeline;
+        Buffer vertices;
+        Image checker;
+        std::uint32_t checker_slot = 0;
+    };
+
     Renderer(Context context, std::optional<Swapchain> swapchain, std::optional<Image> offscreen,
-             Image depth, GraphicsPipeline cube_pipeline, Buffer cube_buffer, Extent framebuffer,
+             Image depth, TextureTable textures, Cube cube, Extent framebuffer,
              PresentMode present_mode);
     [[nodiscard]] Result<void> create_frame_objects();
     [[nodiscard]] Result<void> upload_cube();
@@ -99,10 +109,9 @@ private:
     Context context_;                    // declared first, so it is destroyed last
     std::optional<Swapchain> swapchain_; // exactly one of these two
     std::optional<Image> offscreen_;
-    Image depth_; // beside either target, the size of its images
-    // The cube: its pipeline and its 36 vertices.
-    GraphicsPipeline cube_pipeline_;
-    Buffer cube_buffer_;
+    Image depth_;           // beside either target, the size of its images
+    TextureTable textures_; // RFC 0001's one global descriptor set
+    Cube cube_;
     Extent framebuffer_;
     Extent target_framebuffer_; // the size the target was made for
     PresentMode present_mode_;

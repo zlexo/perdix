@@ -5,6 +5,7 @@
 
 #include <vx/render/buffer.hpp>
 #include <vx/render/camera_relative.hpp>
+#include <vx/render/texture_table.hpp>
 #include <vx/render/upload.hpp>
 #include <vx/shaders/cube.hpp>
 
@@ -71,11 +72,13 @@ struct FrameTarget {
 struct CubeVertex {
     std::array<float, 4> position;
     std::array<float, 4> color;
+    std::array<float, 2> uv;
+    std::array<float, 2> padding;
 };
-static_assert(sizeof(CubeVertex) == 32, "cube.slang's vertex stride");
+static_assert(sizeof(CubeVertex) == 48, "cube.slang's vertex stride");
 
 // A face: its corners counterclockwise seen from outside, so it is a front
-// face from there, and one color each until textures come (item 9).
+// face from there, and its color, which tints the texture.
 struct Face {
     std::array<std::array<float, 3>, 4> corners;
     std::array<float, 4> color;
@@ -91,14 +94,19 @@ constexpr std::array<Face, 6> cube_faces = {{
     {.corners = {{{1, 0, 0}, {0, 0, 0}, {0, 1, 0}, {1, 1, 0}}}, .color = {1, 1, 0, 1}}, // -z yellow
 }};
 
-// Two triangles a face, both counterclockwise: 36 vertices.
+// Two triangles a face, both counterclockwise: 36 vertices. Each face shows
+// the whole texture, its first corner at the texture's.
 constexpr std::array<CubeVertex, 36> make_cube_vertices() {
+    constexpr std::array<std::array<float, 2>, 4> corner_uv = {{{0, 0}, {1, 0}, {1, 1}, {0, 1}}};
     std::array<CubeVertex, 36> vertices{};
     std::size_t next = 0;
     for (const Face& face : cube_faces) {
         for (const std::size_t corner : std::array<std::size_t, 6>{0, 1, 2, 0, 2, 3}) {
             const auto& [x, y, z] = face.corners.at(corner);
-            vertices.at(next++) = {.position = {x, y, z, 1.0F}, .color = face.color};
+            vertices.at(next++) = {.position = {x, y, z, 1.0F},
+                                   .color = face.color,
+                                   .uv = corner_uv.at(corner),
+                                   .padding = {0, 0}};
         }
     }
     return vertices;
@@ -106,36 +114,64 @@ constexpr std::array<CubeVertex, 36> make_cube_vertices() {
 
 constexpr std::array<CubeVertex, 36> cube_vertices = make_cube_vertices();
 
+// RFC 0001's cube texture, until RFC 0004's block textures: 16 by 16
+// texels, a checker of two grays, as sRGB bytes.
+constexpr std::uint32_t checker_size = 16;
+constexpr std::uint8_t checker_light = 230;
+constexpr std::uint8_t checker_dark = 150;
+
+std::array<std::byte, std::size_t{checker_size} * checker_size * 4> make_checker() {
+    std::array<std::byte, std::size_t{checker_size} * checker_size * 4> texels{};
+    for (std::uint32_t y = 0; y < checker_size; ++y) {
+        for (std::uint32_t x = 0; x < checker_size; ++x) {
+            const std::uint8_t gray = (x + y) % 2 == 0 ? checker_light : checker_dark;
+            const std::size_t at = ((std::size_t{y} * checker_size) + x) * 4;
+            texels.at(at) = std::byte{gray};
+            texels.at(at + 1) = std::byte{gray};
+            texels.at(at + 2) = std::byte{gray};
+            texels.at(at + 3) = std::byte{255};
+        }
+    }
+    return texels;
+}
+
+// The vertex shader reads the push constants' positions and addresses, the
+// fragment shader its texture.
+constexpr VkShaderStageFlags push_stages =
+    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
 // RFC 0001's push constants, as cube.slang reads them.
 struct DrawPush {
     glm::mat4 view_projection; // offset 0: rotation and projection only
     VkDeviceAddress vertices;  // offset 64
     VkDeviceAddress origins;   // offset 72: one float4 per instance
     glm::vec3 camera_fraction; // offset 80: the camera's place within its block
-    std::uint32_t texture;     // offset 92: the bindless texture, item 9
+    std::uint32_t texture;     // offset 92: the texture table's slot
 };
 static_assert(sizeof(DrawPush) == 96 && offsetof(DrawPush, texture) == 92);
 
 // One frame's push constants for a target of `extent`.
 DrawPush make_draw_push(const Camera& camera, const BlockAndFraction& split, VkExtent2D extent,
-                        VkDeviceAddress vertices, VkDeviceAddress origins) {
+                        VkDeviceAddress vertices, VkDeviceAddress origins, std::uint32_t texture) {
     const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
     return {.view_projection = view_projection(camera, aspect),
             .vertices = vertices,
             .origins = origins,
             .camera_fraction = split.fraction,
-            .texture = 0};
+            .texture = texture};
 }
 
-Result<GraphicsPipeline> make_cube_pipeline(const Device& device, VkFormat color_format) {
+Result<GraphicsPipeline> make_cube_pipeline(const Device& device, VkFormat color_format,
+                                            VkDescriptorSetLayout textures) {
     return GraphicsPipeline::create(device, {.spirv = shaders::cube,
                                              .vertex_entry = "vertex_main",
                                              .fragment_entry = "fragment_main",
                                              .color_format = color_format,
                                              .depth_format = depth_format,
                                              .cull_mode = VK_CULL_MODE_BACK_BIT,
+                                             .set_layout = textures,
                                              .push_constant_size = sizeof(DrawPush),
-                                             .push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT});
+                                             .push_constant_stages = push_stages});
 }
 
 void begin_commands(VkCommandBuffer commands) {
@@ -152,7 +188,8 @@ void begin_commands(VkCommandBuffer commands) {
 // the cubes drawn, and, for a swapchain, becomes presentable. An offscreen
 // image stays a color attachment, ready for the next frame or for capture.
 void record_frame(VkCommandBuffer commands, const FrameTarget& target, Color clear,
-                  const GraphicsPipeline& pipeline, const DrawPush& push, std::uint32_t cubes) {
+                  const GraphicsPipeline& pipeline, VkDescriptorSet textures, const DrawPush& push,
+                  std::uint32_t cubes) {
     begin_commands(commands);
 
     // For a swapchain image, the submission waits for the acquired image at
@@ -230,8 +267,9 @@ void record_frame(VkCommandBuffer commands, const FrameTarget& target, Color cle
     vkCmdSetViewport(commands, 0, 1, &viewport);
     const VkRect2D scissor = {.offset = {.x = 0, .y = 0}, .extent = target.extent};
     vkCmdSetScissor(commands, 0, 1, &scissor);
-    vkCmdPushConstants(commands, pipeline.layout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push),
-                       &push);
+    vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout(), 0, 1,
+                            &textures, 0, nullptr);
+    vkCmdPushConstants(commands, pipeline.layout(), push_stages, 0, sizeof(push), &push);
     vkCmdDraw(commands, static_cast<std::uint32_t>(cube_vertices.size()), cubes, 0, 0);
 
     vkCmdEndRendering(commands);
@@ -340,9 +378,21 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     if (!depth.has_value()) {
         return depth.error();
     }
-    Result<GraphicsPipeline> pipeline = make_cube_pipeline(context.value().device(), color_format);
+    Result<TextureTable> textures = TextureTable::create(context.value().device());
+    if (!textures.has_value()) {
+        return textures.error();
+    }
+    Result<GraphicsPipeline> pipeline =
+        make_cube_pipeline(context.value().device(), color_format, textures.value().layout());
     if (!pipeline.has_value()) {
         return pipeline.error();
+    }
+    Result<Image> checker = Image::create(
+        context.value().device(), {.width = checker_size, .height = checker_size},
+        VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT);
+    if (!checker.has_value()) {
+        return checker.error();
     }
     Result<Buffer> vertices = Buffer::create(context.value().device(), sizeof(cube_vertices),
                                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -353,8 +403,11 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     }
 
     Renderer renderer(std::move(context).value(), std::move(swapchain), std::move(offscreen),
-                      std::move(depth).value(), std::move(pipeline).value(),
-                      std::move(vertices).value(), desc.framebuffer, desc.present_mode);
+                      std::move(depth).value(), std::move(textures).value(),
+                      {.pipeline = std::move(pipeline).value(),
+                       .vertices = std::move(vertices).value(),
+                       .checker = std::move(checker).value()},
+                      desc.framebuffer, desc.present_mode);
     if (const Result<void> made = renderer.create_frame_objects(); !made.has_value()) {
         return made.error();
     }
@@ -365,17 +418,17 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
 }
 
 Renderer::Renderer(Context context, std::optional<Swapchain> swapchain,
-                   std::optional<Image> offscreen, Image depth, GraphicsPipeline cube_pipeline,
-                   Buffer cube_buffer, Extent framebuffer, PresentMode present_mode)
+                   std::optional<Image> offscreen, Image depth, TextureTable textures, Cube cube,
+                   Extent framebuffer, PresentMode present_mode)
     : context_(std::move(context)), swapchain_(std::move(swapchain)),
-      offscreen_(std::move(offscreen)), depth_(std::move(depth)),
-      cube_pipeline_(std::move(cube_pipeline)), cube_buffer_(std::move(cube_buffer)),
-      framebuffer_(framebuffer), target_framebuffer_(framebuffer), present_mode_(present_mode) {}
+      offscreen_(std::move(offscreen)), depth_(std::move(depth)), textures_(std::move(textures)),
+      cube_(std::move(cube)), framebuffer_(framebuffer), target_framebuffer_(framebuffer),
+      present_mode_(present_mode) {}
 
 Renderer::Renderer(Renderer&& other) noexcept
     : context_(std::move(other.context_)), swapchain_(std::move(other.swapchain_)),
       offscreen_(std::move(other.offscreen_)), depth_(std::move(other.depth_)),
-      cube_pipeline_(std::move(other.cube_pipeline_)), cube_buffer_(std::move(other.cube_buffer_)),
+      textures_(std::move(other.textures_)), cube_(std::move(other.cube_)),
       framebuffer_(other.framebuffer_), target_framebuffer_(other.target_framebuffer_),
       present_mode_(other.present_mode_), swapchain_stale_(other.swapchain_stale_),
       slots_(std::exchange(other.slots_, {})), origins_(std::move(other.origins_)),
@@ -469,20 +522,29 @@ Result<void> Renderer::upload_cube() {
     UploadContext uploads(device);
     VkCommandBuffer commands = slots_[0].command_buffer;
     begin_commands(commands);
-    const Result<void> uploaded =
-        upload(uploads, commands, cube_buffer_, 0, std::as_bytes(std::span(cube_vertices)));
+    Result<void> uploaded =
+        upload(uploads, commands, cube_.vertices, 0, std::as_bytes(std::span(cube_vertices)));
+    if (uploaded.has_value()) {
+        uploaded = upload_image(uploads, commands, cube_.checker, make_checker());
+    }
     uploads.finish(commands);
     vkEndCommandBuffer(commands);
     if (!uploaded.has_value()) {
         return uploaded.error();
     }
-    if (uploads.staged_bytes() > 0) {
-        if (const Result<void> submitted = submit(device.queue(), commands, {}, {});
-            !submitted.has_value()) {
-            return submitted.error();
-        }
-        vkQueueWaitIdle(device.queue());
+    // The checker always stages, so there is always a copy to wait for before
+    // its staging buffer goes away with `uploads`.
+    if (const Result<void> submitted = submit(device.queue(), commands, {}, {});
+        !submitted.has_value()) {
+        return submitted.error();
     }
+    vkQueueWaitIdle(device.queue());
+
+    const Result<std::uint32_t> slot = textures_.add(cube_.checker.view());
+    if (!slot.has_value()) {
+        return slot.error();
+    }
+    cube_.checker_slot = slot.value();
     return {};
 }
 
@@ -503,12 +565,13 @@ Result<void> Renderer::recreate_target() {
         // A surface may offer a different format after a change, such as a
         // move to another display.
         if (const VkFormat format = swapchain_->choice().format.format;
-            format != cube_pipeline_.color_format()) {
-            Result<GraphicsPipeline> rebuilt = make_cube_pipeline(context_.device(), format);
+            format != cube_.pipeline.color_format()) {
+            Result<GraphicsPipeline> rebuilt =
+                make_cube_pipeline(context_.device(), format, textures_.layout());
             if (!rebuilt.has_value()) {
                 return rebuilt.error();
             }
-            cube_pipeline_ = std::move(rebuilt).value();
+            cube_.pipeline = std::move(rebuilt).value();
         }
     } else {
         Result<Image> replacement =
@@ -589,9 +652,10 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
                       .extent = offscreen_->extent(),
                       .depth_image = depth_.image(),
                       .depth_view = depth_.view()},
-                     inputs.sky, cube_pipeline_,
+                     inputs.sky, cube_.pipeline, textures_.set(),
                      make_draw_push(inputs.camera, split, offscreen_->extent(),
-                                    cube_buffer_.address(), origins.address()),
+                                    cube_.vertices.address(), origins.address(),
+                                    cube_.checker_slot),
                      cubes);
         if (const Result<void> submitted =
                 submit(queue, slot.command_buffer, {}, std::span(&frame_done, 1));
@@ -624,9 +688,9 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
                   .extent = swapchain.choice().extent,
                   .depth_image = depth_.image(),
                   .depth_view = depth_.view()},
-                 inputs.sky, cube_pipeline_,
+                 inputs.sky, cube_.pipeline, textures_.set(),
                  make_draw_push(inputs.camera, split, swapchain.choice().extent,
-                                cube_buffer_.address(), origins.address()),
+                                cube_.vertices.address(), origins.address(), cube_.checker_slot),
                  cubes);
 
     const VkSemaphoreSubmitInfo wait =
