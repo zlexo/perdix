@@ -1,9 +1,9 @@
 #pragma once
 
 #include <vx/core/result.hpp>
+#include <vx/render/attachment_image.hpp>
 #include <vx/render/buffer.hpp>
 #include <vx/render/context.hpp>
-#include <vx/render/offscreen_image.hpp>
 #include <vx/render/pipeline.hpp>
 #include <vx/render/swapchain.hpp>
 #include <vx/render/swapchain_choice.hpp>
@@ -73,7 +73,7 @@ public:
 
 private:
     Renderer(Context context, std::optional<Swapchain> swapchain,
-             std::optional<OffscreenImage> offscreen, GraphicsPipeline triangle_pipeline,
+             std::optional<AttachmentImage> offscreen, GraphicsPipeline triangle_pipeline,
              Buffer triangle_buffer, Extent framebuffer, PresentMode present_mode);
     [[nodiscard]] Result<void> create_frame_objects();
     [[nodiscard]] Result<void> upload_triangle();
@@ -83,7 +83,7 @@ private:
 
     Context context_;                    // declared first, so it is destroyed last
     std::optional<Swapchain> swapchain_; // exactly one of these two
-    std::optional<OffscreenImage> offscreen_;
+    std::optional<AttachmentImage> offscreen_;
     // RFC 0001's first pipeline: a triangle, its vertices pulled from a buffer.
     GraphicsPipeline triangle_pipeline_;
     Buffer triangle_buffer_;
