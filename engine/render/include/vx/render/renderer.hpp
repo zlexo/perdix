@@ -1,8 +1,10 @@
 #pragma once
 
 #include <vx/core/result.hpp>
+#include <vx/render/buffer.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/offscreen_image.hpp>
+#include <vx/render/pipeline.hpp>
 #include <vx/render/swapchain.hpp>
 #include <vx/render/swapchain_choice.hpp>
 
@@ -39,8 +41,9 @@ enum class Frame : std::uint8_t {
 };
 
 // Draws frames into a window's swapchain, or headless into an offscreen image
-// (RFC 0001). For now each frame clears its target to one color, with two
-// frames in flight: the CPU records frame N + 1 while the GPU draws frame N.
+// (RFC 0001). For now each frame clears its target to one color and draws a
+// triangle over it, with two frames in flight: the CPU records frame N + 1
+// while the GPU draws frame N.
 class Renderer {
 public:
     [[nodiscard]] static Result<Renderer> create(const RendererDesc& desc);
@@ -55,7 +58,8 @@ public:
     // The framebuffer has this size now; the target follows on the next frame.
     void resize(Extent framebuffer) noexcept { framebuffer_ = framebuffer; }
 
-    // Clears the target to `clear`, and presents it when it is a window's.
+    // Clears the target to `clear`, draws the triangle, and presents the
+    // target when it is a window's.
     [[nodiscard]] Result<Frame> render(Color clear);
 
     // Headless only: the last frame's pixels, 8-bit RGBA, row after row.
@@ -69,8 +73,10 @@ public:
 
 private:
     Renderer(Context context, std::optional<Swapchain> swapchain,
-             std::optional<OffscreenImage> offscreen, Extent framebuffer, PresentMode present_mode);
+             std::optional<OffscreenImage> offscreen, GraphicsPipeline triangle_pipeline,
+             Buffer triangle_buffer, Extent framebuffer, PresentMode present_mode);
     [[nodiscard]] Result<void> create_frame_objects();
+    [[nodiscard]] Result<void> upload_triangle();
     [[nodiscard]] Result<void> add_rendered_semaphores();
     [[nodiscard]] Result<void> recreate_target();
     void destroy() noexcept;
@@ -78,6 +84,9 @@ private:
     Context context_;                    // declared first, so it is destroyed last
     std::optional<Swapchain> swapchain_; // exactly one of these two
     std::optional<OffscreenImage> offscreen_;
+    // RFC 0001's first pipeline: a triangle, its vertices pulled from a buffer.
+    GraphicsPipeline triangle_pipeline_;
+    Buffer triangle_buffer_;
     Extent framebuffer_;
     Extent target_framebuffer_; // the size the target was made for
     PresentMode present_mode_;
