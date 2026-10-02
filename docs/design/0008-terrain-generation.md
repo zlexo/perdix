@@ -171,6 +171,8 @@ Every chunk applies the same placements in the same order, so a tree split acros
 | Uniform lattice | All 486 corners have one sign, and no gathered placement reaches the chunk | The block array and `from_dense` |
 | Mixed | | Nothing |
 
+A column's surface range spans `sea_level + height + jag` plus or minus `1 / squash` over its 81 lattice columns, raised by the tallest feature that can reach it from the column or its 8 neighbors, and rounded out to whole chunks. Caves start at a parameter depth below the surface and taper there, so with the default preset none opens to the sky; a preset that lets them open widens the range by their depth.
+
 All three need a uniform `ChunkStorage` of any state, not only air. RFC 0002's API has only the default constructor and `from_dense`, so this RFC adds `ChunkStorage::uniform(BlockState)`.
 
 ### The taste loop
@@ -209,18 +211,24 @@ struct ChunkPlan {
 };
 
 // Immutable and shared by all workers; mutable state lives in each worker's GenScratch.
-class TerrainGenerator {
+class TerrainGenerator final : public Generator {   // RFC 0006's interface
 public:
     TerrainGenerator(std::uint64_t seed, std::shared_ptr<const TerrainParams> params);
 
-    [[nodiscard]] std::optional<BlockState> out_of_reach(ChunkPos pos) const noexcept;
+    // RFC 0006's terrain disc: the chunks of a column where anything solid can meet the sky,
+    // including features that reach it from its 8 neighbors (a crown leaning over from a
+    // higher column). From stage 1 alone; never narrower than the truth. A job.
+    [[nodiscard]] ChunkRange surface_range(ColumnPos column, GenScratch& scratch) const override;
+
+    [[nodiscard]] std::optional<BlockState> out_of_reach(ChunkPos pos) const noexcept override;
 
     // Pass 1: needs nothing from other chunks.
-    [[nodiscard]] ChunkPlan plan(ChunkPos pos, GenScratch& scratch) const;
+    [[nodiscard]] ChunkPlan plan(ChunkPos pos, GenScratch& scratch) const override;
 
     // Pass 2: the 27 plans around and including the chunk, ordered like local_index over
-    // 3 by 3 by 3; null for an out-of-reach neighbor. Reads no other chunk's blocks.
-    [[nodiscard]] ChunkStorage build(std::span<const ChunkPlan* const, 27> plans, GenScratch& scratch) const;
+    // 3 by 3 by 3; null for a neighbor with no plan: out of reach, or above its column's
+    // surface range (RFC 0006). Reads no other chunk's blocks.
+    [[nodiscard]] ChunkStorage build(std::span<const ChunkPlan* const, 27> plans, GenScratch& scratch) const override;
 };
 
 } // namespace vx
@@ -259,6 +267,7 @@ What that buys: at RFC 0002's example view, flying at 64 blocks per second bring
 ## Test plan
 
 - **Golden hashes.** For three seeds and 64 chunk positions (surface, caves, sky, deep stone, negative coordinates, and positions at 2^20 and 2^30), a golden file holds two hashes per chunk: the blocks, hashed by state key (`core:stone`) rather than id, since RFC 0004's ids shift when a block is added, and the fields, the raw bits of lattice and climate floats, which catch float drift before it changes a block. CI checks them on Linux with GCC and Clang; the reference machine checks Apple Clang on arm64 and an x86-64 build under Rosetta 2 until a macOS job exists. Updating them takes an explicit flag and a reason in the pull request.
+- **Surface range.** Over the golden positions and random columns, including trees at column borders, no solid block under open sky lies outside `surface_range`.
 - **Controls.** An arm64 build with `-ffp-contract=fast` must fail the field hashes, and a build that applies features in reverse order must fail the region test. A check that cannot fail is not a check.
 - **Thread count.** A 9 by 9 by 9 region generated in RFC 0005's deterministic single-threaded mode, and with every worker in shuffled order, gives identical hashes per chunk, also under ThreadSanitizer.
 - **Purity.** Plans and builds repeated in another order, with cold and warm column caches, are identical.
@@ -275,7 +284,7 @@ What that buys: at RFC 0002's example view, flying at 64 blocks per second bring
 3. Noise: scalar OpenSimplex2 in 2D and 3D, fBm and the lattice call, with range, smoothness and far-coordinate tests and the first benchmarks.
 4. Noise: the 4-wide path for NEON and SSE2, bit-equal to scalar, with before and after numbers.
 5. Curves with Bezier bounds, `TerrainParams`, the visitor, reading the preset with toml++ and writing it back, and the default preset.
-6. Climate and shape with the per-worker column cache, and the map view: the first look at continents.
+6. Climate and shape with the per-worker column cache, `surface_range`, and the map view: the first look at continents.
 7. Density, interpolation and fill; the out-of-reach and uniform paths; `ChunkStorage::uniform`; the golden hashes start here.
 8. Caves: cheese, pillars, spaghetti and noodles.
 9. Biomes and surface rules.
