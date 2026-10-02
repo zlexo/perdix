@@ -17,13 +17,17 @@ struct GraphicsPipelineDesc {
     const char* vertex_entry = "vertex_main";
     const char* fragment_entry = "fragment_main";
     VkFormat color_format = VK_FORMAT_UNDEFINED;
+    // With a depth format, the pipeline tests and writes depth, reversed-Z:
+    // a fragment passes where it is nearer, its depth greater.
+    VkFormat depth_format = VK_FORMAT_UNDEFINED;
     // Push constants from offset 0, and the stages that read them.
     std::uint32_t push_constant_size = 0;
     VkShaderStageFlags push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT;
 };
 
 // A pipeline layout and a graphics pipeline that draws, through dynamic
-// rendering, into one color attachment of `color_format` (RFC 0001). It has
+// rendering, into one color attachment of `color_format` and, when given one,
+// a depth attachment of `depth_format` (RFC 0001). It has
 // no vertex input state: vertex pulling reads vertices through buffer
 // addresses in push constants. The viewport and scissor are dynamic, so a
 // resize does not rebuild it.

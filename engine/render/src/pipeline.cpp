@@ -94,7 +94,7 @@ Result<GraphicsPipeline> GraphicsPipeline::create(const Device& device,
         .scissorCount = 1,
         .pScissors = nullptr, // dynamic
     };
-    // No culling yet: the cube (item 8) brings faces worth culling.
+    // No culling yet: the cube brings faces worth culling.
     const VkPipelineRasterizationStateCreateInfo rasterization = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .pNext = nullptr,
@@ -142,6 +142,23 @@ Result<GraphicsPipeline> GraphicsPipeline::create(const Device& device,
         .pAttachments = &blend_attachment,
         .blendConstants = {0.0F, 0.0F, 0.0F, 0.0F},
     };
+    const bool depth = desc.depth_format != VK_FORMAT_UNDEFINED;
+    // Reversed-Z (RFC 0001): depth clears to 0, the far end, and a fragment
+    // passes where its depth is greater, that is nearer.
+    const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .depthTestEnable = VK_TRUE,
+        .depthWriteEnable = VK_TRUE,
+        .depthCompareOp = VK_COMPARE_OP_GREATER,
+        .depthBoundsTestEnable = VK_FALSE,
+        .stencilTestEnable = VK_FALSE,
+        .front = {},
+        .back = {},
+        .minDepthBounds = 0.0F,
+        .maxDepthBounds = 1.0F,
+    };
     const std::array dynamic_states = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     const VkPipelineDynamicStateCreateInfo dynamic = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
@@ -156,7 +173,7 @@ Result<GraphicsPipeline> GraphicsPipeline::create(const Device& device,
         .viewMask = 0,
         .colorAttachmentCount = 1,
         .pColorAttachmentFormats = &desc.color_format,
-        .depthAttachmentFormat = VK_FORMAT_UNDEFINED,
+        .depthAttachmentFormat = desc.depth_format,
         .stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
     };
     const VkGraphicsPipelineCreateInfo info = {
@@ -171,7 +188,7 @@ Result<GraphicsPipeline> GraphicsPipeline::create(const Device& device,
         .pViewportState = &viewport,
         .pRasterizationState = &rasterization,
         .pMultisampleState = &multisample,
-        .pDepthStencilState = nullptr,
+        .pDepthStencilState = depth ? &depth_stencil : nullptr,
         .pColorBlendState = &blend,
         .pDynamicState = &dynamic,
         .layout = pipeline.layout_,
