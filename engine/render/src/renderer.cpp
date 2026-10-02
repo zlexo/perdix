@@ -2,9 +2,13 @@
 
 #include "vk_result.hpp"
 
+#include <vx/render/buffer.hpp>
+
 #include <array>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <utility>
@@ -432,29 +436,13 @@ Result<std::vector<std::uint8_t>> Renderer::capture() {
     vkDeviceWaitIdle(device); // every frame is done, and every slot is free
 
     const VkExtent2D extent = image.extent();
-    const VkDeviceSize size = VkDeviceSize{extent.width} * extent.height * 4;
-    const VkBufferCreateInfo buffer_info = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .size = size,
-        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .queueFamilyIndexCount = 0,
-        .pQueueFamilyIndices = nullptr,
-    };
-    VmaAllocationCreateInfo allocation_info{};
-    allocation_info.flags =
-        VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-    allocation_info.usage = VMA_MEMORY_USAGE_AUTO;
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VmaAllocation allocation = VK_NULL_HANDLE;
-    VmaAllocationInfo mapped{};
-    if (const VkResult result = vmaCreateBuffer(allocator, &buffer_info, &allocation_info, &buffer,
-                                                &allocation, &mapped);
-        result != VK_SUCCESS) {
-        return Error{"vmaCreateBuffer failed for a capture: " + vk_result_name(result)};
+    Result<Buffer> readback =
+        Buffer::create(context_.device(), VkDeviceSize{extent.width} * extent.height * 4,
+                       VK_BUFFER_USAGE_TRANSFER_DST_BIT, BufferMemory::readback);
+    if (!readback.has_value()) {
+        return readback.error();
     }
+    const Buffer& buffer = readback.value();
 
     VkCommandBuffer commands = slots_[0].command_buffer;
     vkResetCommandPool(device, slots_[0].command_pool, 0);
@@ -484,7 +472,7 @@ Result<std::vector<std::uint8_t>> Renderer::capture() {
         .pNext = nullptr,
         .srcImage = image.image(),
         .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        .dstBuffer = buffer,
+        .dstBuffer = buffer.handle(),
         .regionCount = 1,
         .pRegions = &region,
     };
@@ -499,7 +487,7 @@ Result<std::vector<std::uint8_t>> Renderer::capture() {
         .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = buffer,
+        .buffer = buffer.handle(),
         .offset = 0,
         .size = VK_WHOLE_SIZE,
     };
@@ -518,15 +506,14 @@ Result<std::vector<std::uint8_t>> Renderer::capture() {
     vkEndCommandBuffer(commands);
 
     if (const Result<void> submitted = submit(queue, commands, {}, {}); !submitted.has_value()) {
-        vmaDestroyBuffer(allocator, buffer, allocation);
         return submitted.error();
     }
     vkQueueWaitIdle(queue);
-    vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
+    vmaInvalidateAllocation(allocator, buffer.allocation(), 0, VK_WHOLE_SIZE);
 
-    const auto* bytes = static_cast<const std::uint8_t*>(mapped.pMappedData);
-    std::vector<std::uint8_t> pixels(bytes, bytes + size);
-    vmaDestroyBuffer(allocator, buffer, allocation);
+    const std::span<const std::byte> bytes = buffer.mapping();
+    std::vector<std::uint8_t> pixels(bytes.size());
+    std::memcpy(pixels.data(), bytes.data(), bytes.size());
     return pixels;
 }
 

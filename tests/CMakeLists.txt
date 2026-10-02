@@ -41,6 +41,7 @@ set(VX_VULKAN_DOCTEST_PROPERTIES
     FAIL_REGULAR_EXPRESSION "test cases: +0 [|]|\\[vulkan (warning|error)\\]")
 add_executable(vx_render_vulkan_tests
     main.cpp
+    render/buffer_test.cpp
     render/context_test.cpp
     render/instance_test.cpp
     render/renderer_test.cpp
