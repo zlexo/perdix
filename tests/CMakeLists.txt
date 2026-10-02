@@ -32,6 +32,7 @@ doctest_discover_tests(vx_render_tests)
 # without one can leave them out.
 add_executable(vx_render_vulkan_tests
     main.cpp
+    render/context_test.cpp
     render/instance_test.cpp)
 target_link_libraries(vx_render_vulkan_tests PRIVATE vx::render doctest::doctest)
 vx_target_warnings(vx_render_vulkan_tests)
