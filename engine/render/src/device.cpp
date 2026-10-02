@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -122,12 +123,16 @@ DeviceInfo describe_device(VkPhysicalDevice physical_device, VkSurfaceKHR surfac
     info.portability_subset = lists_extension(physical_device, portability_subset_extension);
     const QueueChoice queue = choose_queue_family(physical_device, surface);
     info.queue_family = queue.family;
-    info.presents = queue.presents;
+    // A window needs swapchains too, which a device that can present supports
+    // in practice, but the extension is optional.
+    info.presents =
+        queue.presents && (surface == VK_NULL_HANDLE ||
+                           lists_extension(physical_device, VK_KHR_SWAPCHAIN_EXTENSION_NAME));
     return info;
 }
 
 Result<Device> Device::create(VkInstance instance, VkPhysicalDevice physical_device,
-                              const DeviceInfo& info) {
+                              const DeviceInfo& info, std::span<const char* const> extensions) {
     assert(info.queue_family.has_value() && "the device must have passed selection");
     const std::uint32_t family = *info.queue_family;
 
@@ -156,9 +161,9 @@ Result<Device> Device::create(VkInstance instance, VkPhysicalDevice physical_dev
 
     // VUID-VkDeviceCreateInfo-pProperties-04451: a device that lists
     // VK_KHR_portability_subset must enable it.
-    std::vector<const char*> extensions;
+    std::vector<const char*> enabled(extensions.begin(), extensions.end());
     if (info.portability_subset) {
-        extensions.push_back(portability_subset_extension);
+        enabled.push_back(portability_subset_extension);
     }
 
     const float priority = 1.0F;
@@ -178,8 +183,8 @@ Result<Device> Device::create(VkInstance instance, VkPhysicalDevice physical_dev
         .pQueueCreateInfos = &queue_info,
         .enabledLayerCount = 0,
         .ppEnabledLayerNames = nullptr,
-        .enabledExtensionCount = static_cast<std::uint32_t>(extensions.size()),
-        .ppEnabledExtensionNames = extensions.data(),
+        .enabledExtensionCount = static_cast<std::uint32_t>(enabled.size()),
+        .ppEnabledExtensionNames = enabled.data(),
         .pEnabledFeatures = nullptr, // in features, through pNext
     };
 

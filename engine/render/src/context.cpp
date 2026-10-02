@@ -86,8 +86,12 @@ Result<Context> Context::create(const ContextDesc& desc) {
     }
 
     Selection& chosen = selection.value();
+    std::vector<const char*> extensions;
+    if (chosen.surface.handle() != VK_NULL_HANDLE) {
+        extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    }
     Result<Device> device =
-        Device::create(chosen.instance.handle(), chosen.physical_device, chosen.info);
+        Device::create(chosen.instance.handle(), chosen.physical_device, chosen.info, extensions);
     if (!device.has_value()) {
         return device.error();
     }
