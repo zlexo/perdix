@@ -21,7 +21,8 @@ How much the approach matters, for one 32 by 32 by 32 chunk:
 | Every face of every solid block | up to 196,608 |
 | Only faces between a solid block and air | about 1,000 to 3,000 for typical terrain |
 | Faces merged into larger quads | 1.3 to 1.8 times fewer with occlusion in the merge key, 2.1 to 3.5 times fewer without it (measured on two seeded terrain chunks) |
-| Worst case (a 3D checkerboard, nothing merges) | 98,304 |
+| A 3D checkerboard of a solid block and air (nothing merges) | 98,304 |
+| Worst case: a 3D checkerboard of two different cutout blocks, such as glass and leaves (neither hides the other, nothing merges) | 196,608 |
 
 ## Goals and non-goals
 
@@ -103,7 +104,7 @@ Only opaque blocks occlude. A face's four corner values, 2 bits each, become par
 
 Within one slice (all faces of one direction at one depth), faces merge when their merge key matches: same texture layer and same four occlusion values. The merge runs on bitmasks too: take the lowest set bit of a row, extend the run along the row while the bits stay set and the keys match, then extend the run row by row while the next row holds the same run with the same key, and clear what was merged. A slice of uniform terrain becomes a handful of quads in a few dozen bit operations.
 
-Culling and merging want rows in different directions. Culling's rows run along the face normal, one bit per depth; merging's rows lie inside a slice. Between the two, each visible face bit moves into the row of its slice. A prototype on the reference machine spent about 4 ns per face on this step, about a third of the worst case's time (98,304 faces, 0.39 ms of 1.1 ms). The same prototype measured an alternative: build only the rows along x, and get the faces in the y and z directions by and-not between neighboring x rows, which already lie inside their slices, so only the x faces need moving. That halved the fixed cost of building masks, about 25 µs per chunk whatever the chunk holds. The implementation pull request picks between the two with benchmarks.
+Culling and merging want rows in different directions. Culling's rows run along the face normal, one bit per depth; merging's rows lie inside a slice. Between the two, each visible face bit moves into the row of its slice. A prototype on the reference machine spent about 4 ns per face on this step, about a third of the opaque checkerboard's time (98,304 faces, 0.39 ms of 1.1 ms). The same prototype measured an alternative: build only the rows along x, and get the faces in the y and z directions by and-not between neighboring x rows, which already lie inside their slices, so only the x faces need moving. That halved the fixed cost of building masks, about 25 µs per chunk whatever the chunk holds. The implementation pull request picks between the two with benchmarks.
 
 Textures repeat across a merged quad, which works because blocks use a texture array (RFC 0001) rather than an atlas, where repeating would bleed into neighboring tiles.
 
@@ -141,7 +142,7 @@ The four occlusion values sit in bits 16 to 23 of `material`, two bits per corne
 
 ### Drawing a quad
 
-Quads are drawn with one static index buffer shared by every chunk, holding the pattern 0, 1, 2, 2, 3, 0 for quad 0, then the same offset by 4 for each following quad. RFC 0007 makes the indices 32-bit, since 16-bit ones would stop at 16,384 quads per draw, and sizes the buffer for the worst case of 98,304 quads: 98,304 × 6 indices × 4 bytes = 2.25 MiB. The vertex shader finds its quad as `vertex_index >> 2` and its corner from `vertex_index & 3`, so each corner is shaded once and reused through the vertex cache.
+Quads are drawn with one static index buffer shared by every chunk, holding the pattern 0, 1, 2, 2, 3, 0 for quad 0, then the same offset by 4 for each following quad. RFC 0007 makes the indices 32-bit, since 16-bit ones would stop at 16,384 quads per draw, and sizes the buffer for the worst case of 196,608 quads, because one command can cover every cutout group of a chunk: 196,608 × 6 indices × 4 bytes = 4.5 MiB. The vertex shader finds its quad as `vertex_index >> 2` and its corner from `vertex_index & 3`, so each corner is shaded once and reused through the vertex cache.
 
 The pattern splits every quad along the diagonal through corners 0 and 2. Where the four occlusion values are not coplanar, the two possible splits interpolate them differently, so a fixed split shades the same arrangement of blocks differently depending on which way the quad is turned: a lone dark corner stays in its own triangle under one split and smears in a stripe along the diagonal under the other. Lysenko compares the sums of the two diagonals, `a00 + a11 > a01 + a10`, and splits along the one with the larger sum, the brighter one, which keeps a lone dark corner in its own triangle. His a00 and a11 are corners 0 and 2 here:
 
@@ -199,7 +200,8 @@ On the reference machine, release build, single thread, measured with nanobench 
 |---|---|---|
 | Typical terrain chunk (surface, mixed blocks) | under 150 µs | 49 µs (rougher terrain: 63 µs) |
 | Flat layered chunk | under 50 µs | 36 µs |
-| Worst case: 3D checkerboard | under 2 ms | 1.1 ms |
+| Opaque checkerboard (98,304 faces, nothing merges) | under 2 ms | 1.1 ms |
+| Worst case: checkerboard of two different cutout blocks (196,608 faces) | under 4 ms | not measured; about 2.2 ms at the opaque case's 11 ns per face |
 | Quad output, typical terrain chunk | under 32 KiB | 6.4 KiB (rougher terrain: 14.4 KiB) |
 
 The prototype column comes from a throwaway implementation of culling, occlusion and merging with texture and occlusion in the merge key, measured on the reference machine on 2026-10-02 (Apple Clang 17, `-O2 -mcpu=apple-m3`, median of seven runs). Its face counts matched a naive per-block check in every case, and its merged quads passed the coverage property below. Flat terrain has the least headroom, because about 25 µs of every mesh goes into building masks whatever the chunk holds; the x-rows-only layout described under Merging halves that. The implementation's own benchmarks replace this column.
