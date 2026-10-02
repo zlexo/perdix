@@ -3,9 +3,11 @@
 #include <vx/core/version.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/device_report.hpp>
+#include <vx/render/instance.hpp>
 #include <vx/render/swapchain.hpp>
 
 #include <SDL3/SDL.h>
+#include <glm/trigonometric.hpp>
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <tracy/Tracy.hpp>
@@ -75,7 +77,8 @@ float Overlay::History::average() const noexcept {
            static_cast<float>(count);
 }
 
-Overlay::Overlay(SDL_Window* window, bool shown) : context_(ImGui::CreateContext()), shown_(shown) {
+Overlay::Overlay(SDL_Window* window, bool validation, bool shown)
+    : context_(ImGui::CreateContext()), validation_(validation), shown_(shown) {
     ImGui::SetCurrentContext(context_);
     ImGui::GetIO().IniFilename = nullptr; // no imgui.ini beside the app
     ImGui_ImplSDL3_InitForVulkan(window);
@@ -133,7 +136,77 @@ void Overlay::record(std::chrono::nanoseconds interval, const render::FrameTimes
     }
 }
 
-ImDrawData* Overlay::build(const render::Renderer& renderer, bool mouse_captured) {
+void Overlay::update_reports(const render::Renderer& renderer) {
+    const render::Context& context = renderer.context();
+    if (device_report_.empty()) {
+        device_report_ = without_last_newline(
+            render::format_device_report(context.device_info(), context.portability_fallback()));
+    }
+    if (const render::Swapchain* swapchain = renderer.swapchain();
+        swapchain != nullptr &&
+        (swapchain_report_.empty() || !same_report(swapchain->choice(), reported_choice_))) {
+        reported_choice_ = swapchain->choice();
+        swapchain_report_ = without_last_newline(render::format_swapchain_report(reported_choice_));
+    }
+}
+
+void Overlay::draw_frame_times() const {
+    // Averages over the graphs' samples, which steady the numbers.
+    // Printf-style arguments go as doubles.
+    const auto frame_ms = static_cast<double>(frame_.average());
+    ImGui::Text("Frame %.2f ms, %.0f fps", frame_ms, frame_ms > 0.0 ? 1000.0 / frame_ms : 0.0);
+    graph("CPU", cpu_);
+    if (gpu_.count == 0) {
+        ImGui::TextUnformatted("GPU: no time yet, or no timestamps on this queue");
+    } else {
+        graph("GPU", gpu_);
+    }
+    ImGui::TextDisabled("Averages and graphs of the last %zu frames; the line is the "
+                        "%.1f ms budget",
+                        History::length, static_cast<double>(budget_ms));
+}
+
+void Overlay::draw_present_mode(render::Renderer& renderer) {
+    // The mode asked for; the swapchain line above says what presentation
+    // got, FIFO where the surface does not offer immediate.
+    ImGui::AlignTextToFramePadding(); // level with the radio buttons' text
+    ImGui::TextUnformatted("Present mode");
+    int mode = renderer.present_mode() == render::PresentMode::immediate ? 1 : 0;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("FIFO", &mode, 0)) {
+        renderer.set_present_mode(render::PresentMode::fifo);
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Immediate", &mode, 1)) {
+        renderer.set_present_mode(render::PresentMode::immediate);
+    }
+}
+
+void Overlay::draw_camera(const render::Camera& camera) {
+    ImGui::Text("Camera at x %.2f, y %.2f, z %.2f", camera.position.x, camera.position.y,
+                camera.position.z);
+    ImGui::Text("Yaw %.0f, pitch %.0f degrees", static_cast<double>(glm::degrees(camera.yaw)),
+                static_cast<double>(glm::degrees(camera.pitch)));
+}
+
+void Overlay::draw_validation(const render::Context& context) const {
+    // RFC 0001: in debug builds, validation errors show in red.
+    if (!validation_) {
+        ImGui::TextDisabled("Validation: off in this build");
+        return;
+    }
+    const render::ValidationCounts counts = context.instance().validation_counts();
+    if (counts.errors > 0) {
+        const ImVec4 red(1.0F, 0.35F, 0.35F, 1.0F);
+        ImGui::TextColored(red, "Validation: %u errors, %u warnings", counts.errors,
+                           counts.warnings);
+    } else {
+        ImGui::Text("Validation: no errors, %u warnings", counts.warnings);
+    }
+}
+
+ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& camera,
+                           bool mouse_captured) {
     if (!shown_) {
         return nullptr;
     }
@@ -149,18 +222,7 @@ ImDrawData* Overlay::build(const render::Renderer& renderer, bool mouse_captured
     } else {
         io.ConfigFlags &= ~flying;
     }
-
-    const render::Context& context = renderer.context();
-    if (device_report_.empty()) {
-        device_report_ = without_last_newline(
-            render::format_device_report(context.device_info(), context.portability_fallback()));
-    }
-    if (const render::Swapchain* swapchain = renderer.swapchain();
-        swapchain != nullptr &&
-        (swapchain_report_.empty() || !same_report(swapchain->choice(), reported_choice_))) {
-        reported_choice_ = swapchain->choice();
-        swapchain_report_ = without_last_newline(render::format_swapchain_report(reported_choice_));
-    }
+    update_reports(renderer);
 
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
@@ -177,24 +239,17 @@ ImDrawData* Overlay::build(const render::Renderer& renderer, bool mouse_captured
         const std::string_view version = vx::version_string();
         ImGui::Text("Perdix %.*s", static_cast<int>(version.size()), version.data());
         ImGui::Separator();
-        // Averages over the graphs' samples, which steady the numbers.
-        // Printf-style arguments go as doubles.
-        const auto frame_ms = static_cast<double>(frame_.average());
-        ImGui::Text("Frame %.2f ms, %.0f fps", frame_ms, frame_ms > 0.0 ? 1000.0 / frame_ms : 0.0);
-        graph("CPU", cpu_);
-        if (gpu_.count == 0) {
-            ImGui::TextUnformatted("GPU: no time yet, or no timestamps on this queue");
-        } else {
-            graph("GPU", gpu_);
-        }
-        ImGui::TextDisabled("Averages and graphs of the last %zu frames; the line is the "
-                            "%.1f ms budget",
-                            History::length, static_cast<double>(budget_ms));
+        draw_frame_times();
         ImGui::Separator();
         ImGui::TextUnformatted(device_report_.data(),
                                device_report_.data() + device_report_.size());
         ImGui::TextUnformatted(swapchain_report_.data(),
                                swapchain_report_.data() + swapchain_report_.size());
+        draw_present_mode(renderer);
+        ImGui::Separator();
+        draw_camera(camera);
+        ImGui::Separator();
+        draw_validation(renderer.context());
     }
     ImGui::End();
     ImGui::Render();

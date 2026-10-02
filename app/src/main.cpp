@@ -98,7 +98,7 @@ int main(int argc, char* argv[]) {
 
     // Before the renderer, so it is destroyed after it: the renderer draws
     // with the overlay's ImGui context until then.
-    vx::app::Overlay overlay(window.value().handle(), options.value().overlay);
+    vx::app::Overlay overlay(window.value().handle(), validation, options.value().overlay);
     vx::Result<vx::render::Renderer> renderer =
         vx::render::Renderer::create({.surface = window.value().surface_source(),
                                       .framebuffer = window.value().framebuffer_size(),
@@ -148,7 +148,8 @@ int main(int argc, char* argv[]) {
         vx::render::fly(camera, vx::app::read_fly_controls(window.value()), seconds);
 
         renderer.value().resize(window.value().framebuffer_size());
-        ImDrawData* const shown = overlay.build(renderer.value(), window.value().mouse_captured());
+        ImDrawData* const shown =
+            overlay.build(renderer.value(), camera, window.value().mouse_captured());
         const vx::Result<vx::render::Frame> rendered = renderer.value().render(
             {.sky = sky, .camera = camera, .cubes = cubes, .overlay = shown});
         if (!rendered.has_value()) {

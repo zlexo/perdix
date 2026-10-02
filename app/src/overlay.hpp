@@ -16,14 +16,16 @@ union SDL_Event;
 
 namespace vx::app {
 
-// RFC 0001's debug overlay, built with Dear ImGui over the window: what the
-// renderer measures and reports, and the switches it offers. F3 shows and
-// hides it. It owns the ImGui context, which the renderer it is given to
-// draws with, so it must outlive that renderer.
+// RFC 0001's debug overlay, built with Dear ImGui over the window: frame
+// time graphs, the GPU and driver, the present mode switch, the camera's
+// position and the validation count. F3 shows and hides it. It owns the ImGui
+// context, which the renderer it is given to draws with, so it must outlive
+// that renderer.
 class Overlay {
 public:
-    // An overlay for `window`, shown from the start or not.
-    Overlay(SDL_Window* window, bool shown);
+    // An overlay for `window`, shown from the start or not. `validation` says
+    // whether the renderer runs with validation, whose count it shows.
+    Overlay(SDL_Window* window, bool validation, bool shown);
     Overlay(const Overlay&) = delete;
     Overlay& operator=(const Overlay&) = delete;
     Overlay(Overlay&&) = delete;
@@ -45,7 +47,9 @@ public:
 
     // Builds this frame's overlay: its draw lists, or null while it is
     // hidden. A captured mouse flies the camera, and the overlay ignores it.
-    [[nodiscard]] ImDrawData* build(const render::Renderer& renderer, bool mouse_captured);
+    // Switching the present mode asks `renderer` for it.
+    [[nodiscard]] ImDrawData* build(render::Renderer& renderer, const render::Camera& camera,
+                                    bool mouse_captured);
 
 private:
     // A measure's last samples, in milliseconds, for its graph.
@@ -66,7 +70,17 @@ private:
     // the left, with RFC 0001's budget as a line across it.
     static void graph(const char* name, const History& history);
 
+    // Formats the startup report: the device's lines once, the swapchain's
+    // again whenever it changes.
+    void update_reports(const render::Renderer& renderer);
+    // The parts of the overlay's window, top to bottom.
+    void draw_frame_times() const;
+    static void draw_present_mode(render::Renderer& renderer);
+    static void draw_camera(const render::Camera& camera);
+    void draw_validation(const render::Context& context) const;
+
     ImGuiContext* context_;
+    bool validation_;
     bool shown_;
     History frame_;
     History cpu_;
