@@ -47,6 +47,7 @@ add_executable(vx_render_vulkan_tests
     render/buffer_test.cpp
     render/context_test.cpp
     render/instance_test.cpp
+    render/overlay_test.cpp
     render/pipeline_test.cpp
     render/renderer_test.cpp
     render/shader_test.cpp
