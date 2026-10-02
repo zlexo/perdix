@@ -89,16 +89,19 @@ VKAPI_ATTR VkBool32 VKAPI_CALL on_validation_message(
     return VK_FALSE;
 }
 
-VkDebugUtilsMessengerCreateInfoEXT messenger_info(ValidationCounts* counts) {
+constexpr VkDebugUtilsMessageTypeFlagsEXT validation_types =
+    VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+    VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+
+VkDebugUtilsMessengerCreateInfoEXT messenger_info(ValidationCounts* counts,
+                                                  VkDebugUtilsMessageTypeFlagsEXT types) {
     return {
         .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
         .pNext = nullptr,
         .flags = 0,
         .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
                            VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                       VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                       VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+        .messageType = types,
         .pfnUserCallback = on_validation_message,
         .pUserData = counts,
     };
@@ -133,12 +136,20 @@ Result<Instance> Instance::create(const InstanceDesc& desc) {
     instance.loader_version_ = loader_version;
     instance.portability_ = desc.portability;
 
-    VkDebugUtilsMessengerCreateInfoEXT messenger = messenger_info(instance.counts_.get());
+    // The messenger chained into vkCreateInstance and vkDestroyInstance leaves
+    // out the loader's general messages. With only portability drivers
+    // installed, the loader reports RFC 0001's first, conformant attempt at
+    // error severity, though failing there is how the fallback starts; the
+    // device selection names what it found instead.
+    const VkDebugUtilsMessengerCreateInfoEXT creation_messenger =
+        messenger_info(instance.counts_.get(), validation_types);
+    const VkDebugUtilsMessengerCreateInfoEXT messenger = messenger_info(
+        instance.counts_.get(), validation_types | VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT);
     const VkValidationFeatureEnableEXT synchronization_validation =
         VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
     VkValidationFeaturesEXT validation_features = {
         .sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
-        .pNext = &messenger,
+        .pNext = &creation_messenger,
         .enabledValidationFeatureCount = 1,
         .pEnabledValidationFeatures = &synchronization_validation,
         .disabledValidationFeatureCount = 0,
@@ -152,7 +163,7 @@ Result<Instance> Instance::create(const InstanceDesc& desc) {
         }
         layers.push_back(validation_layer);
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-        chain = &messenger;
+        chain = &creation_messenger;
         if (layer_has_extension(validation_layer, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME)) {
             extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
             chain = &validation_features;
