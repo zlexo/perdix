@@ -40,7 +40,7 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/):
 Scopes follow the source layout (`core`, `world`, `mesh`, `render`, `app`), plus `rfc` and `adr` for design documents and `github` for templates and repository settings. A commit to an RFC or an ADR puts its number after the scope (`docs(adr): 0003 keep the world layer free of GPU code`). The commit that adds a new RFC is the one exception to the imperative: its summary is the RFC's title, as in `docs(rfc): 0002 chunk storage`.
 
 - **Small and frequent.** One coherent step per commit. A change, its tests and its documentation are usually separate commits.
-- **Every commit builds and passes the tests,** so history stays bisectable.
+- **Every commit builds, and from the commit that adds a test on, the tests pass,** so history stays bisectable.
 - **Say why.** The summary says what changed; the body says why, and what it costs.
 - **Subjects are at most 72 characters,** type and scope included, like the body's lines.
 
