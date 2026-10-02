@@ -17,7 +17,7 @@ Every later milestone renders through this layer. The bugs that are hardest to f
 Three decisions made here shape everything after it and are expensive to change later:
 
 - **How depth works.** View distance is the north star, so depth precision far away matters from day one.
-- **Where positions live.** A world that is huge cannot be drawn with 32-bit float world coordinates; Minecraft's Far Lands are the famous example of what happens far from the origin.
+- **Where positions live.** A world that is huge cannot be drawn with 32-bit float world coordinates. A million blocks from the origin, neighboring floats are a sixteenth of a block apart, one texel; at 10 million they are a whole block apart, and vertices snap and jitter.
 - **How the GPU reads geometry.** The cube is drawn the way chunks will be: by pulling data from buffers, not through fixed vertex input.
 
 ## Goals and non-goals
@@ -51,7 +51,7 @@ Non-goals:
 - **zeux/niagara** (Arseny Kapoulkine): a compact modern Vulkan renderer built on volk and buffer device address; the model for keeping the C API readable without a heavy wrapper.
 - **"Depth Precision Visualized"** (Nathan Reed, 2015): reversed float depth gives nearly uniform precision with distance; with an infinite projection the far plane disappears.
 - **"Yet another blog explaining Vulkan synchronization"** (Hans-Kristian Arntzen): the mental model the synchronization code is written against.
-- **Minecraft's Far Lands**: what float precision does to a world far from its origin. Camera-relative rendering is the standard cure.
+- **Floating-point precision far from the origin.** Minecraft's Bedrock Edition uses 32-bit floats for positions: some blocks render wrongly from 131,072 blocks out, and from 16,777,216 every block snaps to even coordinates (Minecraft Wiki, "Bedrock Edition distance effects"). Unity's High Definition Render Pipeline renders camera-relative by default for the same reason. This is not what makes the Far Lands: those are an integer overflow in Minecraft's terrain noise at 12,550,824 blocks (Minecraft Wiki, "Far Lands"), which camera-relative rendering does not touch; RFC 0008's noise uses 64-bit lattice indices.
 
 ## Design
 
@@ -274,7 +274,7 @@ public:
 - **Vulkan-Hpp** (`vk::raii`): safer handles for free, but a multi-megabyte header in every translation unit. Thin hand-written types win on compile time.
 - **Classic vertex input** instead of vertex pulling: simpler for one cube, but a dead end for packed chunk quads, and a second path to maintain.
 - **Standard Z** (near 0, far 1): precision collapses with distance, which works against the north star.
-- **World-space float positions**: fine near the origin, jitter far from it. Retrofitting camera-relative rendering touches every system that produces positions, so it is done first.
+- **World-space float positions**: fine near the origin, but float precision loss makes them jitter far from it, by a whole block at 10 million blocks. Retrofitting camera-relative rendering touches every system that produces positions, so it is done first.
 - **Three frames in flight:** smoother when the CPU spikes, at the cost of a frame of latency. Revisited with numbers in M3.
 - **A dedicated transfer queue:** not worth it for one cube; M3's streaming RFC owns it.
 
