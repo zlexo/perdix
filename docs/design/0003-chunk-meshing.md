@@ -121,6 +121,16 @@ Four 32-byte vertices with float position, normal and texture coordinates would 
 
 Positions are local to the chunk, so 5 bits per axis suffice; the chunk's origin, relative to the camera (RFC 0001), comes from per-draw data. The face's normal and its texture coordinates are derived from the face direction and the quad size in the shader.
 
+The position is the quad's corner with the smallest coordinates. Width and height run along fixed axes per face direction:
+
+| Face | Width along | Height along |
+|---|---|---|
+| +x, -x | z | y |
+| +y, -y | x | z |
+| +z, -z | x | y |
+
+The four occlusion values sit in bits 16 to 23 of `material`, two bits per corner, corner 0 first. In the face's width and height axes, corner 0 is at (0, 0), corner 1 at (width, 0), corner 2 at (width, height) and corner 3 at (0, height). The vertex shader picks the winding per face direction, so every face is front-facing from outside the block.
+
 ### Drawing a quad
 
 Quads are drawn with one static index buffer shared by every chunk, holding the pattern 0, 1, 2, 2, 3, 0 for quad 0, then the same offset by 4 for each following quad. The vertex shader finds its quad as `vertex_index >> 2` and its corner as `vertex_index & 3`, so each corner is shaded once and reused through the vertex cache.
