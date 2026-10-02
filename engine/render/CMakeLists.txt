@@ -1,4 +1,5 @@
 include(FetchContent)
+include(VxShaders)
 
 # Vulkan's headers and volk come at the Vulkan SDK's version, so building needs
 # no SDK; at run time the SDK (or a system driver) provides the loader, the
@@ -59,6 +60,7 @@ target_link_libraries(vx_render PUBLIC vx::core vx_volk vx_vma)
 target_compile_features(vx_render PUBLIC cxx_std_20)
 vx_target_warnings(vx_render)
 vx_target_engine_options(vx_render)
+vx_add_shaders(vx_render shaders/triangle.slang)
 
 # macOS strips DYLD_LIBRARY_PATH from programs started through protected
 # binaries, so a loader that the SDK's setup script made findable by name can
