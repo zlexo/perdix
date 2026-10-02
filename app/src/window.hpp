@@ -2,6 +2,7 @@
 
 #include <vx/core/result.hpp>
 #include <vx/render/context.hpp>
+#include <vx/render/swapchain_choice.hpp>
 
 #include <string>
 
@@ -34,6 +35,10 @@ public:
     // How the renderer makes this window's Vulkan surface. Valid while the
     // window lives.
     [[nodiscard]] render::SurfaceSource surface_source() const;
+
+    // The drawable size in pixels, which on a high-density display is larger
+    // than the window's size in points.
+    [[nodiscard]] render::Extent framebuffer_size() const;
 
     [[nodiscard]] SDL_Window* handle() const noexcept { return window_; }
 

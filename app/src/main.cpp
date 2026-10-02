@@ -4,6 +4,8 @@
 #include <vx/render/context.hpp>
 #include <vx/render/device_report.hpp>
 #include <vx/render/instance.hpp>
+#include <vx/render/swapchain.hpp>
+#include <vx/render/swapchain_choice.hpp>
 
 #include <charconv>
 #include <chrono>
@@ -82,6 +84,15 @@ int main(int argc, char* argv[]) {
     }
     std::cout << vx::render::format_device_report(context.value().device_info(),
                                                   context.value().portability_fallback());
+
+    vx::Result<vx::render::Swapchain> swapchain = vx::render::Swapchain::create(
+        context.value().device(), context.value().surface(), window.value().framebuffer_size(),
+        vx::render::PresentMode::fifo, VK_NULL_HANDLE);
+    if (!swapchain.has_value()) {
+        std::cerr << "error: " << swapchain.error().message << '\n';
+        return 1;
+    }
+    std::cout << vx::render::format_swapchain_report(swapchain.value().choice());
     const std::uint64_t frames = options.value().frames;
     for (std::uint64_t frame = 0; frames == 0 || frame < frames; ++frame) {
         if (!window.value().handle_events()) {
