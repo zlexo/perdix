@@ -29,6 +29,19 @@ backport(94e58d4e
     "m_res = (int64_t*)tracy_malloc( sizeof( int64_t ) * m_queryCount );"
     "m_res = (int64_t*)tracy_malloc( sizeof( int64_t ) * m_queryCount * 2 );")
 
+# wolfpld/tracy e20c716b, in 0.14.0: Apple's drivers cannot make a pool of
+# 65,536 timestamp queries. KosmicKrisp answers VK_ERROR_OUT_OF_DEVICE_MEMORY
+# through the validation messenger, and Tracy halves the pool after each
+# failure until 4,096 succeeds, one message per failure. 0.13.1 holds the
+# count in an enum where upstream now has a constant.
+backport(e20c716b
+    [=[    enum { QueryCount = 64 * 1024 };]=]
+    [=[#if !defined __APPLE__
+    enum { QueryCount = 64 * 1024 };
+#else
+    enum { QueryCount = 4 * 1024 };
+#endif]=])
+
 if(NOT text STREQUAL original)
     file(WRITE "${file}" "${text}")
 endif()
