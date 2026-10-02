@@ -1,0 +1,27 @@
+name: Task
+description: One pull request's worth of work from an RFC's plan, or a chore.
+body:
+  - type: input
+    id: rfc
+    attributes:
+      label: RFC
+      description: The design document this implements, or "chore" if none is needed.
+      placeholder: docs/design/0002-chunk-storage.md
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What this pull request does, as a checklist.
+      value: |
+        - [ ] 
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: How a reviewer can tell it works (tests, numbers, what to look at).
+    validations:
+      required: true
