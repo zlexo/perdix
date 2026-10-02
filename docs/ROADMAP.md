@@ -1,6 +1,6 @@
 # Roadmap
 
-Milestones in order. Each ends with something you can see, a tagged release and a changelog entry. The designs listed are the RFCs a milestone needs; they get numbers as they are written.
+Milestones in order. Each ends with something you can see, a tagged release and a changelog entry. The designs listed are the RFCs a milestone needs; each gets its number when its issue is opened.
 
 | # | Milestone | You will see | Designs |
 |---|---|---|---|
