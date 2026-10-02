@@ -69,7 +69,7 @@ Non-goals:
 
 Everything comes through `FetchContent` as in RFC 0000, except the Vulkan SDK.
 
-We call the Vulkan C API directly, behind thin move-only C++ types (`Buffer`, `Image`, `Pipeline`) that own exactly one handle and its memory. Vulkan-Hpp was considered and left out: its single header is several megabytes and costs compile time in every file that includes it, while the thin types give the same safety at a fraction of the cost.
+We call the Vulkan C API directly, behind thin move-only C++ types (`Buffer`, `Image`, `Pipeline`) that own exactly one handle and its memory. Vulkan-Hpp was considered and left out: it is 14 headers, and including `vulkan.hpp` pulls in about 17 MiB of Vulkan headers (SDK 1.4.363.0), parsed again in every file that includes it, while the thin types give the same safety at a fraction of the cost.
 
 ### Layering
 
@@ -283,7 +283,7 @@ public:
 ## Alternatives considered
 
 - **vk-bootstrap** for instance, device and swapchain setup: saves a few hundred lines. Open question 3.
-- **Vulkan-Hpp** (`vk::raii`): safer handles for free, but a multi-megabyte header in every translation unit. Thin hand-written types win on compile time.
+- **Vulkan-Hpp** (`vk::raii`): safer handles for free, but `vulkan_raii.hpp` brings about 19 MiB of headers into every translation unit that includes it. Thin hand-written types win on compile time.
 - **Classic vertex input** instead of vertex pulling: simpler for one cube, but a dead end for packed chunk quads, and a second path to maintain.
 - **Standard Z** (near 0, far 1): precision collapses with distance, which works against the north star.
 - **World-space float positions**: fine near the origin, but float precision loss makes them jitter far from it, by a whole block at 10 million blocks. Retrofitting camera-relative rendering touches every system that produces positions, so it is done first.
