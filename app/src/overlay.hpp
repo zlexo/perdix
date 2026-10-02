@@ -4,6 +4,9 @@
 #include <vx/render/renderer.hpp>
 #include <vx/render/swapchain_choice.hpp>
 
+#include <array>
+#include <chrono>
+#include <cstddef>
 #include <string>
 
 struct ImDrawData;
@@ -35,13 +38,39 @@ public:
     // takes it from the app: a click on the overlay's window.
     bool take_event(const SDL_Event& event);
 
+    // Records a frame for the graphs, shown or not: `interval`, the time
+    // since the frame before, and what the renderer measured of it. The
+    // CPU's time is the interval less the renderer's waits.
+    void record(std::chrono::nanoseconds interval, const render::FrameTimes& times);
+
     // Builds this frame's overlay: its draw lists, or null while it is
     // hidden. A captured mouse flies the camera, and the overlay ignores it.
     [[nodiscard]] ImDrawData* build(const render::Renderer& renderer, bool mouse_captured);
 
 private:
+    // A measure's last samples, in milliseconds, for its graph.
+    struct History {
+        static constexpr std::size_t length = 240; // two seconds at 120 frames a second
+        std::array<float, length> samples{};
+        std::size_t next = 0;  // where the next sample goes: the oldest, once full
+        std::size_t count = 0; // samples so far, up to length
+
+        void add(float milliseconds) noexcept;
+        [[nodiscard]] float average() const noexcept;
+        [[nodiscard]] float peak() const noexcept;
+        // The sample nine in ten are at or below.
+        [[nodiscard]] float ninetieth_percentile() const noexcept;
+    };
+
+    // A measure's average over its samples, then their graph, the oldest on
+    // the left, with RFC 0001's budget as a line across it.
+    static void graph(const char* name, const History& history);
+
     ImGuiContext* context_;
     bool shown_;
+    History frame_;
+    History cpu_;
+    History gpu_;
     // The startup report, which the overlay shows too (RFC 0001), formatted
     // once and again only when the swapchain changes.
     std::string device_report_;

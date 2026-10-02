@@ -129,14 +129,20 @@ int main(int argc, char* argv[]) {
 
     using Clock = std::chrono::steady_clock;
     Clock::time_point last = Clock::now();
+    bool last_drawn = false;
     const std::uint64_t frames = options.value().frames;
     for (std::uint64_t frame = 0; frames == 0 || frame < frames; ++frame) {
         if (!window.value().handle_events(overlay)) {
             break;
         }
+        const Clock::time_point now = Clock::now();
+        // The last frame's times, unless it was skipped, and its interval
+        // holds the wait for the next.
+        if (last_drawn) {
+            overlay.record(now - last, renderer.value().frame_times());
+        }
         // The time since the last frame, at most a tenth of a second, so a
         // stall, such as dragging the window, does not fling the camera.
-        const Clock::time_point now = Clock::now();
         const float seconds = std::min(std::chrono::duration<float>(now - last).count(), 0.1F);
         last = now;
         vx::render::fly(camera, vx::app::read_fly_controls(window.value()), seconds);
@@ -149,7 +155,8 @@ int main(int argc, char* argv[]) {
             std::cerr << "error: " << rendered.error().message << '\n';
             return 1;
         }
-        if (rendered.value() == vx::render::Frame::skipped) {
+        last_drawn = rendered.value() == vx::render::Frame::drawn;
+        if (!last_drawn) {
             // Presenting paces the loop; with nothing to present, a 60 Hz wait does.
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }

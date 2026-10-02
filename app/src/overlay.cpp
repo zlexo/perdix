@@ -10,6 +10,9 @@
 #include <imgui_impl_sdl3.h>
 #include <tracy/Tracy.hpp>
 
+#include <algorithm>
+#include <chrono>
+#include <numeric>
 #include <string>
 #include <string_view>
 
@@ -31,7 +34,46 @@ bool same_report(const render::SwapchainChoice& a, const render::SwapchainChoice
            a.present_mode == b.present_mode;
 }
 
+// RFC 0001's budget for the CPU's and the GPU's time a frame, which their
+// graphs draw as a line, and the lowest top of a graph's scale. The scale
+// doubles until nine samples in ten fit: a lasting rise fits, and a lone
+// spike, such as the first frames', runs off the top, its height in the
+// label, instead of flattening the rest for as long as it is in the graph.
+constexpr float budget_ms = 0.5F;
+constexpr float lowest_top_ms = 2.0F;
+
 } // namespace
+
+void Overlay::History::add(float milliseconds) noexcept {
+    samples.at(next) = milliseconds;
+    next = (next + 1) % length;
+    count = std::min(count + 1, length);
+}
+
+float Overlay::History::peak() const noexcept {
+    const auto taken = static_cast<std::ptrdiff_t>(count);
+    return count == 0 ? 0.0F : *std::max_element(samples.begin(), samples.begin() + taken);
+}
+
+float Overlay::History::ninetieth_percentile() const noexcept {
+    if (count == 0) {
+        return 0.0F;
+    }
+    std::array<float, length> sorted = samples;
+    const auto taken = static_cast<std::ptrdiff_t>(count);
+    const auto at = static_cast<std::ptrdiff_t>((count - 1) * 9 / 10);
+    std::nth_element(sorted.begin(), sorted.begin() + at, sorted.begin() + taken);
+    return sorted.at(static_cast<std::size_t>(at));
+}
+
+float Overlay::History::average() const noexcept {
+    if (count == 0) {
+        return 0.0F;
+    }
+    const auto taken = static_cast<std::ptrdiff_t>(count);
+    return std::accumulate(samples.begin(), samples.begin() + taken, 0.0F) /
+           static_cast<float>(count);
+}
 
 Overlay::Overlay(SDL_Window* window, bool shown) : context_(ImGui::CreateContext()), shown_(shown) {
     ImGui::SetCurrentContext(context_);
@@ -53,6 +95,42 @@ bool Overlay::take_event(const SDL_Event& event) {
     ImGui_ImplSDL3_ProcessEvent(&event);
     // ImGui decides as of the last frame whether the mouse is over its window.
     return event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ImGui::GetIO().WantCaptureMouse;
+}
+
+void Overlay::graph(const char* name, const History& history) {
+    float top = lowest_top_ms;
+    for (const float most = history.ninetieth_percentile(); top < most;) {
+        top *= 2.0F;
+    }
+    // Printf-style arguments go as doubles.
+    ImGui::Text("%s %.2f ms, peak %.2f", name, static_cast<double>(history.average()),
+                static_cast<double>(history.peak()));
+    ImGui::SameLine();
+    ImGui::TextDisabled("(graph to %.0f ms)", static_cast<double>(top));
+
+    const auto count = static_cast<int>(history.count);
+    const int oldest = history.count < History::length ? 0 : static_cast<int>(history.next);
+    ImGui::PushID(name);
+    ImGui::PlotLines("##graph", history.samples.data(), count, oldest, nullptr, 0.0F, top,
+                     ImVec2(-1.0F, 48.0F));
+    ImGui::PopID();
+    // PlotLines draws inside its frame, less the frame padding.
+    const ImVec2 padding = ImGui::GetStyle().FramePadding;
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    const float bottom = max.y - padding.y;
+    const float y = bottom - ((budget_ms / top) * (bottom - (min.y + padding.y)));
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(min.x + padding.x, y), ImVec2(max.x - padding.x, y),
+                                        IM_COL32(255, 196, 0, 200));
+}
+
+void Overlay::record(std::chrono::nanoseconds interval, const render::FrameTimes& times) {
+    using Milliseconds = std::chrono::duration<float, std::milli>;
+    frame_.add(Milliseconds(interval).count());
+    cpu_.add(Milliseconds(std::max(interval - times.waited, std::chrono::nanoseconds(0))).count());
+    if (times.gpu.has_value()) {
+        gpu_.add(Milliseconds(*times.gpu).count());
+    }
 }
 
 ImDrawData* Overlay::build(const render::Renderer& renderer, bool mouse_captured) {
@@ -98,6 +176,20 @@ ImDrawData* Overlay::build(const render::Renderer& renderer, bool mouse_captured
     if (ImGui::Begin("Overlay", nullptr, window_flags)) {
         const std::string_view version = vx::version_string();
         ImGui::Text("Perdix %.*s", static_cast<int>(version.size()), version.data());
+        ImGui::Separator();
+        // Averages over the graphs' samples, which steady the numbers.
+        // Printf-style arguments go as doubles.
+        const auto frame_ms = static_cast<double>(frame_.average());
+        ImGui::Text("Frame %.2f ms, %.0f fps", frame_ms, frame_ms > 0.0 ? 1000.0 / frame_ms : 0.0);
+        graph("CPU", cpu_);
+        if (gpu_.count == 0) {
+            ImGui::TextUnformatted("GPU: no time yet, or no timestamps on this queue");
+        } else {
+            graph("GPU", gpu_);
+        }
+        ImGui::TextDisabled("Averages and graphs of the last %zu frames; the line is the "
+                            "%.1f ms budget",
+                            History::length, static_cast<double>(budget_ms));
         ImGui::Separator();
         ImGui::TextUnformatted(device_report_.data(),
                                device_report_.data() + device_report_.size());
