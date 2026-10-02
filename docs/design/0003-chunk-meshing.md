@@ -158,7 +158,7 @@ Grouping by face direction lets the renderer skip the ranges that face away from
 
 ### Edits
 
-Changing a block remeshes its chunk, plus each neighbor whose border it touches (up to 7 chunks for a corner block). At the budget below, that is well under a millisecond.
+Changing a block remeshes its chunk, plus each neighbor whose padded border holds that block: 1 neighbor for a block on a face of the chunk, 3 on an edge and 7 at a corner, so up to 8 meshes for one edit. At the prototype's speed that is about 0.4 to 0.5 ms (8 × 49 µs for typical terrain, 8 × 63 µs for rough); at the 150 µs budget below it is up to 1.2 ms on one thread. From M3, worker threads can mesh the 8 in parallel.
 
 ## Alternatives considered
 
