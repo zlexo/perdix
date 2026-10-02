@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Accepted (2026-10-02) |
 | **Milestone** | M3 Infinite |
 | **Issue** | #20 |
 
@@ -237,7 +237,7 @@ Targets on the reference machine, release build:
 ## Pull request plan
 
 1. This RFC.
-2. Draw overhead benchmark: indexed indirect draws, empty and real, and instanced clusters, on KosmicKrisp and MoltenVK. Settles open question 1.
+2. Draw overhead benchmark: indexed indirect draws, empty and real, and instanced clusters, on KosmicKrisp and MoltenVK. Confirms open question 1 (merged runs) or triggers the switch to clusters.
 3. `ChunkArena`: VMA virtual block, retire lists keyed by frame, statistics.
 4. Uploads: direct and staged paths through RFC 0001's `upload`, the time budget, generations, and `upload_batch` for edits.
 5. Draw list builder: frustum, face masks, runs, origins, commands; tests and nanobench.
@@ -247,6 +247,8 @@ Targets on the reference machine, release build:
 9. Compaction and repack, with the trace replay.
 
 ## Open questions
+
+All settled on 2026-10-02: every recommendation below was accepted.
 
 1. **Draw granularity on the Apple drivers.** Multi-draw indirect with merged runs, or one instanced draw over 64-quad clusters? Recommendation: **runs**, the standard path; switch only if the benchmark of PR 2 shows recording 10,000 draws takes over 2 ms on KosmicKrisp. Only the builder and the vertex shader would change.
 2. **One arena buffer or several.** Recommendation: **one**, sized for rough terrain (165 MiB at 1,024 blocks) so a repack is rare. Several buffers would avoid the repack's pause and its peak memory, at the cost of a base address per chunk or a draw call per buffer. Revisit if repacks show up in play.
