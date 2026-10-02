@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(voxel_engine
+project(perdix
     VERSION 0.0.0
     DESCRIPTION "A Minecraft-like voxel engine in C++20 and Vulkan"
     LANGUAGES CXX)

@@ -3,6 +3,6 @@
 #include <iostream>
 
 int main() {
-    std::cout << "Voxel Engine " << vx::version_string() << '\n';
+    std::cout << "Perdix " << vx::version_string() << '\n';
     return 0;
 }

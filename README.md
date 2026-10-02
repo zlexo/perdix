@@ -1,6 +1,8 @@
-# Voxel Engine (working title)
+# Perdix
 
 A Minecraft-like voxel engine in C++20 and Vulkan, built for speed and view distance first.
+
+Named after Perdix, who in Greek myth invented the saw and the compass: tools for cutting and measuring precisely.
 
 Nothing renders yet. The project is being set up in the open, one reviewed pull request at a time.
 
