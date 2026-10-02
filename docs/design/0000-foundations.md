@@ -124,7 +124,7 @@ GitHub Actions on every push to `main` and every pull request:
 | Format | the pinned `clang-format` in check mode over every source file |
 | macOS | configure, build, test with Apple Clang; only while the repository is public |
 
-While the repository is private, macOS minutes bill at ten times the Linux rate and Windows at twice, so those jobs wait for the repository to go public, where Actions minutes are free.
+While the repository is private, macOS minutes cost about ten times the Linux price and Windows about 1.7 times, so those jobs wait for the repository to go public, where Actions minutes are free.
 
 ## Alternatives considered
 
