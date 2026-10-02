@@ -14,7 +14,13 @@ FetchContent_Declare(volk
     GIT_TAG vulkan-sdk-1.4.363.0
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR sources-only)
-FetchContent_MakeAvailable(vulkan_headers volk)
+# The SDK does not ship VMA, so it comes at its latest release.
+FetchContent_Declare(vma
+    GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+    GIT_TAG v3.4.0
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR sources-only)
+FetchContent_MakeAvailable(vulkan_headers volk vma)
 
 # volk loads the Vulkan loader at run time and every entry point from it, so
 # nothing links the loader. Built without our warnings: it is not our code.
@@ -25,17 +31,26 @@ target_include_directories(vx_volk SYSTEM PUBLIC
 target_compile_definitions(vx_volk PUBLIC VK_NO_PROTOTYPES)
 target_link_libraries(vx_volk PRIVATE ${CMAKE_DL_LIBS})
 
+# VMA is one header; its implementation compiles once, here, with VMA's own
+# defaults like volk. Under VK_NO_PROTOTYPES it loads every Vulkan function it
+# needs through the two entry points the device hands it.
+add_library(vx_vma STATIC src/vma.cpp)
+target_include_directories(vx_vma SYSTEM PUBLIC "${vma_SOURCE_DIR}/include")
+target_compile_definitions(vx_vma PRIVATE VMA_IMPLEMENTATION)
+target_link_libraries(vx_vma PUBLIC vx_volk)
+
 add_library(vx_render STATIC
     src/context.cpp
     src/device.cpp
     src/device_report.cpp
     src/device_selection.cpp
     src/feature_floor.cpp
-    src/instance.cpp)
+    src/instance.cpp
+    src/vk_result.cpp)
 add_library(vx::render ALIAS vx_render)
 
 target_include_directories(vx_render PUBLIC include)
-target_link_libraries(vx_render PUBLIC vx::core vx_volk)
+target_link_libraries(vx_render PUBLIC vx::core vx_volk vx_vma)
 target_compile_features(vx_render PUBLIC cxx_std_20)
 vx_target_warnings(vx_render)
 vx_target_engine_options(vx_render)

@@ -337,3 +337,13 @@ Pull request plan item 2, the render skeleton:
 - **VMA moved to item 3**, the first code that creates an allocator.
 - **Validation messages go to standard error** with their message ID, and each instance counts them. The engine log does not exist yet.
 - **Tests that need a driver carry the CTest label `vulkan`.** The Linux presets leave them out until item 6's lavapipe job gives CI a driver.
+
+Pull request plan item 3, device selection and the device, landed as three pull requests of under about 400 changed lines each: selection and the startup report as pure functions, finding a device on the installed drivers, then the logical device.
+
+- **The fallback also follows a failed instance.** The conformant attempt is retried with portability drivers whenever it ends without a device, whether `vkCreateInstance` failed (`VK_ERROR_INCOMPATIBLE_DRIVER` when only portability drivers are installed) or no device passed the floor. The opted-in attempt's error is the one reported: that instance lists every driver, so it names every device.
+- **Selection also requires a queue family with graphics and compute.** Presentation support joins with the surface in item 4.
+- **The messenger chained into instance creation hears validation and performance messages only.** With only portability drivers installed, the loader reports the conformant attempt's expected failure at error severity; the persistent messenger still hears the loader.
+- **MoltenVK caps the Vulkan version it reports at the instance's:** 1.3.357 to the engine's 1.3 instance, 1.4.357 to vulkaninfo's. The floor's version check passes either way.
+- **The startup report has no present mode yet.** It joins with the swapchain in item 4. The app prints the report at startup, with validation in debug builds.
+- **VMA 3.4.0**, its latest release, since the SDK does not ship it. It loads its functions through `vkGetInstanceProcAddr` and `vkGetDeviceProcAddr`. Robustness features stay off in every build, not only release ones: nothing needs them yet.
+- **One device at a time.** volk loads device functions into globals, straight from the driver.

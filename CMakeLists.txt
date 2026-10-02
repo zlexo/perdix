@@ -1,4 +1,9 @@
 cmake_minimum_required(VERSION 3.28)
+# CMake 3.29 and later list each static library once where the linker does not
+# need it repeated. Apple's linker warns about the repeats.
+if(POLICY CMP0156)
+    cmake_policy(SET CMP0156 NEW)
+endif()
 
 project(perdix
     VERSION 0.0.0

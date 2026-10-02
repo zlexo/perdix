@@ -26,8 +26,43 @@ TEST_CASE("a context runs on a conformant driver when one passes the floor") {
 
     CHECK_FALSE(context.portability_fallback());
     CHECK_FALSE(context.device_info().portability_subset);
-    CHECK(context.physical_device() != VK_NULL_HANDLE);
+    CHECK(context.device().handle() != VK_NULL_HANDLE);
+    CHECK(context.device().queue() != VK_NULL_HANDLE);
     CHECK(context.instance().validation_counts().errors == 0);
+}
+
+TEST_CASE("the allocator hands out buffers with device addresses") {
+    vx::Result<vx::render::Context> created = create_context();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    const vx::render::Device& device = created.value().device();
+
+    const VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .size = 65536,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = nullptr,
+    };
+    VmaAllocationCreateInfo allocation_info{};
+    allocation_info.usage = VMA_MEMORY_USAGE_AUTO;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    REQUIRE(vmaCreateBuffer(device.allocator(), &buffer_info, &allocation_info, &buffer,
+                            &allocation, nullptr) == VK_SUCCESS);
+
+    const VkBufferDeviceAddressInfo address_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .pNext = nullptr,
+        .buffer = buffer,
+    };
+    CHECK(vkGetBufferDeviceAddress(device.handle(), &address_info) != 0);
+
+    vmaDestroyBuffer(device.allocator(), buffer, allocation);
+    CHECK(created.value().instance().validation_counts().errors == 0);
 }
 
 #ifdef __APPLE__
@@ -76,6 +111,8 @@ TEST_CASE("with only MoltenVK installed, the context falls back to portability d
     CHECK(context.portability_fallback());
     CHECK(context.device_info().driver_name == "MoltenVK");
     CHECK(context.device_info().portability_subset);
+    // Device creation must enable VK_KHR_portability_subset here, or validation
+    // reports VUID-VkDeviceCreateInfo-pProperties-04451.
     CHECK(context.instance().validation_counts().errors == 0);
 }
 
