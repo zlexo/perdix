@@ -372,3 +372,12 @@ Pull request plan item 6, headless rendering and the lavapipe job, landed as two
 - **Both controls turn the job red:** dropping the offscreen image's first barrier (`VUID-vkCmdBeginRendering-pRenderingInfo-09592`), and dropping the barrier before the readback's copy (`VUID-vkCmdDraw-None-09600`, which the layers report at submission when an image is not in the layout the command buffer expects).
 - **Synchronization validation does not report the first barrier's access mask missing**, in the reference machine's layers, 1.4.363. The barrier keeps it: with two frames in flight, two frames write the one image, and the memory model requires their writes to be made available in between.
 - **"Renders a few frames of the cube" waits for the cube**, in item 8. Until then the frames clear to one color, and the readback checks every pixel.
+
+Pull request plan item 7, the shader build step and the first pipeline, landed as five pull requests: the shader build, buffers, uploads, the pipeline and the triangle.
+
+- **The build brings its own shader compiler.** The Vulkan SDK was to supply `slangc`, but CI has no SDK and Ubuntu does not package Slang, so CMake fetches Slang 2026.18.3's release for the build machine, pinned by SHA-256 (decided 2026-10-02). Every machine compiles shaders with the same compiler, and the SDK supplies only what runs. Unpacked, the release takes 203 MB of each build directory on the Mac.
+- **Shaders are compiled into the engine:** each source becomes one SPIR-V module with all its entry points, embedded as an array of 32-bit words in a generated header, so nothing is looked up at run time.
+- **The vertex shader reads `SV_VulkanVertexID`.** Slang gives `SV_VertexID` Direct3D's meaning, without the base vertex, which needs the `shaderDrawParameters` feature the floor does not require.
+- **Buffers name what their memory is for:** an upload target, device-local, a readback or staging. `capture()` reads back through a readback buffer.
+- **`upload` decides by the destination's mapping**, not by the kind of GPU, so a device-local buffer takes the staging path on unified memory too, and a test runs it. Each staged upload gets its own staging buffer, freed when the context resets, where the design sketched one per frame slot: nothing uploads every frame yet, and RFC 0007's streaming can size a ring per slot from real numbers.
+- **The triangle's pipeline is made for the target's color format** and remade if a recreated swapchain changes it. Culling and depth wait for the cube.
