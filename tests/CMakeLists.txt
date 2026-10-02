@@ -39,10 +39,13 @@ doctest_discover_tests(vx_render_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 
 # Tests that talk to a real Vulkan loader and driver. Labeled so presets
 # without one can leave them out. Any validation message fails them as well,
-# warnings included (RFC 0001), whatever their own checks say.
+# warnings included (RFC 0001), whatever their own checks say. One that the
+# driver cannot run says why after "skipped: ", and CTest reports it skipped,
+# not passed.
 set(VX_VULKAN_DOCTEST_PROPERTIES
     LABELS vulkan
-    FAIL_REGULAR_EXPRESSION "test cases: +0 [|]|\\[vulkan (warning|error)\\]")
+    FAIL_REGULAR_EXPRESSION "test cases: +0 [|]|\\[vulkan (warning|error)\\]"
+    SKIP_REGULAR_EXPRESSION "MESSAGE: skipped: ")
 add_executable(vx_render_vulkan_tests
     main.cpp
     render/buffer_test.cpp
@@ -53,6 +56,7 @@ add_executable(vx_render_vulkan_tests
     render/pipeline_test.cpp
     render/renderer_test.cpp
     render/shader_test.cpp
+    render/swapchain_test.cpp
     render/texture_table_test.cpp
     render/upload_test.cpp)
 target_link_libraries(vx_render_vulkan_tests PRIVATE vx::render doctest::doctest)
