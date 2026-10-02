@@ -76,6 +76,9 @@ render::SurfaceSource Window::surface_source() const {
 }
 
 render::Extent Window::framebuffer_size() const {
+    if ((SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) != 0) {
+        return {}; // nothing to draw into: rendering pauses (RFC 0001)
+    }
     int width = 0;
     int height = 0;
     SDL_GetWindowSizeInPixels(window_, &width, &height);

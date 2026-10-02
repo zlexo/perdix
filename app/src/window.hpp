@@ -37,7 +37,7 @@ public:
     [[nodiscard]] render::SurfaceSource surface_source() const;
 
     // The drawable size in pixels, which on a high-density display is larger
-    // than the window's size in points.
+    // than the window's size in points; zero while the window is minimized.
     [[nodiscard]] render::Extent framebuffer_size() const;
 
     [[nodiscard]] SDL_Window* handle() const noexcept { return window_; }

@@ -4,7 +4,7 @@
 #include <vx/render/context.hpp>
 #include <vx/render/device_report.hpp>
 #include <vx/render/instance.hpp>
-#include <vx/render/swapchain.hpp>
+#include <vx/render/renderer.hpp>
 #include <vx/render/swapchain_choice.hpp>
 
 #include <charconv>
@@ -76,35 +76,42 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    vx::Result<vx::render::Context> context = vx::render::Context::create(
-        {.surface = window.value().surface_source(), .validation = validation});
-    if (!context.has_value()) {
-        std::cerr << "error: " << context.error().message << '\n';
+    vx::Result<vx::render::Renderer> renderer =
+        vx::render::Renderer::create({.surface = window.value().surface_source(),
+                                      .framebuffer = window.value().framebuffer_size(),
+                                      .validation = validation,
+                                      .present_mode = vx::render::PresentMode::fifo});
+    if (!renderer.has_value()) {
+        std::cerr << "error: " << renderer.error().message << '\n';
         return 1;
     }
-    std::cout << vx::render::format_device_report(context.value().device_info(),
-                                                  context.value().portability_fallback());
+    const vx::render::Context& context = renderer.value().context();
+    std::cout << vx::render::format_device_report(context.device_info(),
+                                                  context.portability_fallback())
+              << vx::render::format_swapchain_report(renderer.value().swapchain().choice());
 
-    vx::Result<vx::render::Swapchain> swapchain = vx::render::Swapchain::create(
-        context.value().device(), context.value().surface(), window.value().framebuffer_size(),
-        vx::render::PresentMode::fifo, VK_NULL_HANDLE);
-    if (!swapchain.has_value()) {
-        std::cerr << "error: " << swapchain.error().message << '\n';
-        return 1;
-    }
-    std::cout << vx::render::format_swapchain_report(swapchain.value().choice());
+    // A daytime sky blue, #78A7FF in sRGB.
+    constexpr vx::render::Color sky = {.r = 0.188F, .g = 0.386F, .b = 1.0F, .a = 1.0F};
     const std::uint64_t frames = options.value().frames;
     for (std::uint64_t frame = 0; frames == 0 || frame < frames; ++frame) {
         if (!window.value().handle_events()) {
             break;
         }
-        // Until presenting paces the frames (RFC 0001 plan item 4), wait out one at 60 Hz.
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        renderer.value().resize(window.value().framebuffer_size());
+        const vx::Result<vx::render::Frame> rendered = renderer.value().render(sky);
+        if (!rendered.has_value()) {
+            std::cerr << "error: " << rendered.error().message << '\n';
+            return 1;
+        }
+        if (rendered.value() == vx::render::Frame::skipped) {
+            // Presenting paces the loop; with nothing to present, a 60 Hz wait does.
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        }
     }
 
     // With validation on, a run that broke Vulkan's rules fails, so a smoke run
     // with --frames catches it. Messages from shutting down still print.
-    const std::uint32_t errors = context.value().instance().validation_counts().errors;
+    const std::uint32_t errors = context.instance().validation_counts().errors;
     if (errors > 0) {
         std::cerr << "error: Vulkan validation counted " << errors
                   << (errors == 1 ? " error\n" : " errors\n");
