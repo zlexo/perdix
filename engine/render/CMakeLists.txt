@@ -61,6 +61,7 @@ add_library(vx_render STATIC
     src/instance.cpp
     src/offscreen_image.cpp
     src/pipeline.cpp
+    src/projection.cpp
     src/renderer.cpp
     src/surface.cpp
     src/swapchain.cpp
