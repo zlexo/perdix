@@ -21,7 +21,7 @@ The development machine already shows the kind of drift this has to stop: the fi
 Goals:
 
 - One command each to configure, build and test, the same on macOS, Linux and Windows: `cmake --preset <p>`, `cmake --build --preset <p>`, `ctest --preset <p>`.
-- Dependencies pinned to exact versions and fetched by the build itself. The only manual install is the Vulkan SDK (RFC 0001).
+- Dependencies pinned to exact versions and fetched by the build itself. Beyond the toolchain (a compiler, CMake and Ninja), the only manual installs are the Vulkan SDK (RFC 0001) and the pinned `clang-format` (see Formatting).
 - Warnings are errors in our code, and never applied to third-party code.
 - The layer boundaries of [ADR 0003](../adr/0003-world-has-no-gpu-code.md) are enforced by the compiler.
 - CI runs on every push and pull request, and formatting is checked by a pinned `clang-format`.
@@ -101,7 +101,7 @@ Warnings are errors (`-Werror`, `/WX`) through the option `VX_WARNINGS_AS_ERRORS
 
 ### Formatting
 
-`clang-format` with the repository's `.clang-format`: LLVM style, 4-space indent, 100 columns, pointers bound to the type (`int* p`), includes grouped as local, engine, third-party, standard library. The version is pinned (CI installs the same release from PyPI), because different `clang-format` versions format the same file differently.
+`clang-format` with the repository's `.clang-format`: LLVM style, 4-space indent, 100 columns, pointers bound to the type (`int* p`), includes grouped as local, engine, third-party, standard library. The version is pinned to 22.1.8, because different `clang-format` versions format the same file differently. CI installs it from PyPI; locally, `pipx install clang-format==22.1.8` installs the same release. Check that `clang-format --version` reports 22.1.8: on the development machine the first `clang-format` on `PATH` is Homebrew's 14, which rejects the configuration (its `MainIncludeChar` key needs clang-format 19 or newer).
 
 ### Version
 
