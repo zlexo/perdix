@@ -56,3 +56,42 @@ TEST_CASE("a point straight ahead lands in the image's middle, in front of the c
     CHECK(static_cast<double>(clip.z / clip.w) ==
           doctest::Approx(0.005)); // the near distance, 0.05, over 10
 }
+
+TEST_CASE("flying forward follows the yaw and stays level, whatever the pitch") {
+    vx::render::Camera camera;
+    camera.yaw = quarter_turn; // facing -x
+    camera.pitch = 0.8F;
+    vx::render::fly(camera, {.move = {0.0F, 0.0F, 1.0F}}, 0.5F);
+
+    // Ten blocks a second for half a second.
+    CHECK(close(glm::vec3(camera.position), {-5.0F, 0.0F, 0.0F}));
+}
+
+TEST_CASE("up is the world's up, and a diagonal is no faster than a straight line") {
+    vx::render::Camera rising;
+    rising.pitch = -0.5F;
+    vx::render::fly(rising, {.move = {0.0F, 1.0F, 0.0F}}, 1.0F);
+    CHECK(close(glm::vec3(rising.position), {0.0F, 10.0F, 0.0F}));
+
+    vx::render::Camera diagonal;
+    vx::render::fly(diagonal, {.move = {1.0F, 0.0F, 1.0F}}, 1.0F);
+    CHECK(static_cast<double>(glm::length(glm::vec3(diagonal.position))) == doctest::Approx(10.0));
+}
+
+TEST_CASE("Ctrl flies four times as fast") {
+    vx::render::Camera camera;
+    vx::render::fly(camera, {.move = {0.0F, 0.0F, 1.0F}, .fast = true}, 1.0F);
+    CHECK(close(glm::vec3(camera.position), {0.0F, 0.0F, -40.0F}));
+}
+
+TEST_CASE("the pitch stops short of straight up and down, and the yaw wraps") {
+    vx::render::Camera camera;
+    vx::render::fly(camera, {.yaw_turn = 7.0F, .pitch_turn = 10.0F}, 0.0F);
+    CHECK(camera.pitch < quarter_turn);
+    CHECK(camera.pitch > quarter_turn - 0.01F);
+    // 7 radians is a full turn and about 0.717 more.
+    CHECK(static_cast<double>(camera.yaw) == doctest::Approx(7.0 - 2.0 * std::numbers::pi));
+
+    vx::render::fly(camera, {.pitch_turn = -20.0F}, 0.0F);
+    CHECK(camera.pitch > -quarter_turn);
+}
