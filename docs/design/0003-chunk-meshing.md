@@ -119,9 +119,9 @@ static_assert(sizeof(Quad) == 8);
 
 Four 32-byte vertices with float position, normal and texture coordinates would be 128 bytes for the same face; the packed quad is 16 times smaller, and size is what limits how many chunks fit on the GPU.
 
-Positions are local to the chunk, so 5 bits per axis suffice; the chunk's origin, relative to the camera (RFC 0001), comes from per-draw data. The face's normal and its texture coordinates are derived from the face direction and the quad size in the shader.
+Positions are local to the chunk; the chunk's origin, relative to the camera (RFC 0001), comes from per-draw data. The face's normal and its texture coordinates are derived from the face direction and the quad size in the shader.
 
-The position is the quad's corner with the smallest coordinates. Width and height run along fixed axes per face direction:
+The position is a block, 0 to 31 on each axis, so 5 bits per axis suffice: of the blocks whose faces the quad covers, the one with the smallest coordinates. For -x, -y and -z faces, that block's minimum corner is also the quad's. A +x, +y or +z face lies one block further along its normal, so the vertex shader adds 1 along the normal for those three directions. Storing the quad's own corner would not fit: the +x face of a block at x = 31 lies at x = 32. Width and height run along fixed axes per face direction:
 
 | Face | Width along | Height along |
 |---|---|---|
@@ -129,7 +129,7 @@ The position is the quad's corner with the smallest coordinates. Width and heigh
 | +y, -y | x | z |
 | +z, -z | x | y |
 
-The four occlusion values sit in bits 16 to 23 of `material`, two bits per corner, corner 0 first. In the face's width and height axes, corner 0 is at (0, 0), corner 1 at (width, 0), corner 2 at (width, height) and corner 3 at (0, height). The vertex shader picks the winding per face direction, so every face is front-facing from outside the block.
+The four occlusion values sit in bits 16 to 23 of `material`, two bits per corner, corner 0 first. In the face's width and height axes, measured from the quad's minimum corner, corner 0 is at (0, 0), corner 1 at (width, 0), corner 2 at (width, height) and corner 3 at (0, height). The vertex shader picks the winding per face direction, so every face is front-facing from outside the block.
 
 ### Drawing a quad
 
@@ -186,6 +186,7 @@ The prototype column comes from a throwaway implementation of culling, occlusion
 - **Single block in empty space:** 6 quads, every corner fully lit.
 - **Two neighboring blocks of one kind:** 6 quads with merging (four of them 2 wide), 10 without.
 - **A full chunk surrounded by air:** 6 quads of 32 by 32.
+- **Quad encoding:** every field round-trips at its limits (positions 0 and 31, sizes 1 and 32, all six faces), and the +x, +y and +z quads of a block at 31 decode to corners at 32.
 - **Borders:** a solid neighbor chunk hides this chunk's border faces; an unloaded one does not.
 - **Ambient occlusion:** known corner arrangements give the values in Lysenko's table, and the diagonal choice is checked for each case.
 - **Coverage property:** for many random chunks (seeded), the merged mesh covers exactly the faces the unmerged mesh produces, each once, with the same texture and occlusion. This one test proves merging never adds, drops or changes a face.
