@@ -31,7 +31,8 @@ add_executable(vx_render_tests
     render/device_selection_test.cpp
     render/feature_floor_test.cpp
     render/projection_test.cpp
-    render/swapchain_choice_test.cpp)
+    render/swapchain_choice_test.cpp
+    render/timestamp_test.cpp)
 target_link_libraries(vx_render_tests PRIVATE vx::render doctest::doctest)
 vx_target_warnings(vx_render_tests)
 doctest_discover_tests(vx_render_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
@@ -46,6 +47,7 @@ add_executable(vx_render_vulkan_tests
     main.cpp
     render/buffer_test.cpp
     render/context_test.cpp
+    render/gpu_timer_test.cpp
     render/instance_test.cpp
     render/overlay_test.cpp
     render/pipeline_test.cpp

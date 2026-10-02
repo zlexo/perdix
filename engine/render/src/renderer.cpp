@@ -5,6 +5,7 @@
 
 #include <vx/render/buffer.hpp>
 #include <vx/render/camera_relative.hpp>
+#include <vx/render/gpu_timer.hpp>
 #include <vx/render/texture_table.hpp>
 #include <vx/render/upload.hpp>
 #include <vx/shaders/cube.hpp>
@@ -398,11 +399,7 @@ tracy::VkCtx* make_gpu_profiler(const Device& device) {
     static_cast<void>(device);
     return nullptr;
 #else
-    std::uint32_t count = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(device.physical_device(), &count, nullptr);
-    std::vector<VkQueueFamilyProperties> families(count);
-    vkGetPhysicalDeviceQueueFamilyProperties(device.physical_device(), &count, families.data());
-    if (families.at(device.queue_family()).timestampValidBits == 0) {
+    if (timestamp_valid_bits(device) == 0) {
         return nullptr;
     }
 
