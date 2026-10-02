@@ -55,7 +55,7 @@ Non-goals:
 
 ### Input: a padded chunk
 
-The mesher reads a plain array of 34 by 34 by 34 states: the chunk plus a one-block border taken from its 26 neighbors. Faces need the 6 face neighbors (RFC 0002's `copy_face`); ambient occlusion at the chunk's edges and corners also needs the 12 edge and 8 corner neighbors, which are 392 single-block reads in total. A neighbor that is not loaded counts as air, and the chunk is remeshed when it arrives.
+The mesher reads a plain array of 34 by 34 by 34 states: the chunk plus a one-block border taken from its 26 neighbors. Faces need the 6 face neighbors (RFC 0002's `copy_face`); ambient occlusion at the chunk's edges and corners also needs the 12 edge and 8 corner neighbors, which are 392 single-block reads in total. Streaming (RFC 0006) meshes a chunk only once all 26 neighbors are loaded, and keeps a margin of loaded chunks it never draws around the drawn region, so a streamed mesh never guesses a neighbor. Without streaming, as for M2's single chunk and in tests, a missing neighbor reads as air.
 
 What a block looks like comes from a per-state table built by the block registry (RFC 0004). The types live in the world layer (`<vx/world/block_visual.hpp>`): the registry that fills them is world code, and the world cannot include mesh headers (ADR 0003).
 
@@ -210,7 +210,7 @@ The prototype column comes from a throwaway implementation of culling, occlusion
 - **Two neighboring blocks of one kind:** 6 quads with merging (four of them 2 wide), 10 without.
 - **A full chunk surrounded by air:** 6 quads of 32 by 32.
 - **Quad encoding:** every field round-trips at its limits (positions 0 and 31, sizes 1 and 32, all six faces), and the +x, +y and +z quads of a block at 31 decode to corners at 32.
-- **Borders:** an opaque neighbor chunk hides this chunk's border faces; an unloaded one does not.
+- **Borders:** an opaque neighbor chunk hides this chunk's border faces; a missing one, read as air, does not.
 - **Ambient occlusion:** known corner arrangements give the values in Lysenko's table.
 - **Diagonal:** for all 256 combinations of four 2-bit occlusion values, the decoded quad's two triangles share the diagonal that a reference implementation of Lysenko's comparison picks (ties through corners 0 and 2), and keep their winding.
 - **Coverage property:** for many random chunks (seeded), the merged mesh covers exactly the faces the unmerged mesh produces, each once, with the same texture and occlusion. On every chunk it tries, this one test checks that merging never adds, drops or changes a face.
