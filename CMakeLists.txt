@@ -18,6 +18,7 @@ include(VxWarnings)
 include(VxEngineOptions)
 
 add_subdirectory(engine/core)
+add_subdirectory(engine/render)
 add_subdirectory(app)
 
 if(VX_BUILD_TESTS)
