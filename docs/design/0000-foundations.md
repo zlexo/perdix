@@ -31,7 +31,7 @@ Non-goals:
 
 - Packaging, installers and release automation.
 - Anything Vulkan: RFC 0001.
-- Benchmarks: they arrive with the first hot path (chunk meshing, M2), using nanobench.
+- Benchmarks: RFC 0002, whose pull request plan adds the nanobench harness in `bench/` (M2).
 
 ## Prior art
 
@@ -75,6 +75,7 @@ engine/
   world/  mesh/  render/    added by the RFCs that need them
 app/                    the executable: window, input, main loop
 tests/                  one doctest executable per layer
+bench/                  nanobench benchmarks, added by RFC 0002
 docs/                   vision, roadmap, ADRs, RFCs
 ```
 
