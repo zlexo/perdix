@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.28)
 project(perdix
     VERSION 0.0.0
     DESCRIPTION "A Minecraft-like voxel engine in C++20 and Vulkan"
-    LANGUAGES CXX)
+    LANGUAGES C CXX)
 
 set(CMAKE_CXX_EXTENSIONS OFF)
 # ADR 0001 rules out C++ modules, so skip the dependency scan CMake runs
