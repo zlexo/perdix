@@ -5,7 +5,10 @@
 #include <tracy/Tracy.hpp>
 
 #include <algorithm>
+#include <cinttypes>
+#include <cstddef>
 #include <cstdio>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -67,6 +70,52 @@ bool layer_has_extension(const char* layer, std::string_view extension) {
     });
 }
 
+// What a validation message calls an object of `type`, for the kinds the
+// engine makes.
+const char* object_type_name(VkObjectType type) {
+    switch (type) {
+    case VK_OBJECT_TYPE_DEVICE:
+        return "device";
+    case VK_OBJECT_TYPE_QUEUE:
+        return "queue";
+    case VK_OBJECT_TYPE_COMMAND_POOL:
+        return "command pool";
+    case VK_OBJECT_TYPE_COMMAND_BUFFER:
+        return "command buffer";
+    case VK_OBJECT_TYPE_BUFFER:
+        return "buffer";
+    case VK_OBJECT_TYPE_IMAGE:
+        return "image";
+    case VK_OBJECT_TYPE_IMAGE_VIEW:
+        return "image view";
+    case VK_OBJECT_TYPE_SAMPLER:
+        return "sampler";
+    case VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT:
+        return "descriptor set layout";
+    case VK_OBJECT_TYPE_DESCRIPTOR_POOL:
+        return "descriptor pool";
+    case VK_OBJECT_TYPE_DESCRIPTOR_SET:
+        return "descriptor set";
+    case VK_OBJECT_TYPE_SHADER_MODULE:
+        return "shader module";
+    case VK_OBJECT_TYPE_PIPELINE_LAYOUT:
+        return "pipeline layout";
+    case VK_OBJECT_TYPE_PIPELINE:
+        return "pipeline";
+    case VK_OBJECT_TYPE_SEMAPHORE:
+        return "semaphore";
+    case VK_OBJECT_TYPE_QUERY_POOL:
+        return "query pool";
+    case VK_OBJECT_TYPE_SWAPCHAIN_KHR:
+        return "swapchain";
+    default:
+        return "object";
+    }
+}
+
+// Prints each message with its ID and the objects it is about, by their
+// debug names (RFC 0001): the validation layers (1.4.363) pass the names
+// beside the text, not in it.
 VKAPI_ATTR VkBool32 VKAPI_CALL on_validation_message(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT /*types*/,
     const VkDebugUtilsMessengerCallbackDataEXT* data, void* user) {
@@ -77,8 +126,19 @@ VKAPI_ATTR VkBool32 VKAPI_CALL on_validation_message(
     } else {
         ++counts->warnings;
     }
-    std::fprintf(stderr, "[vulkan %s] %s: %s\n", error ? "error" : "warning",
-                 data->pMessageIdName != nullptr ? data->pMessageIdName : "-", data->pMessage);
+    std::fprintf(stderr, "[vulkan %s] %s", error ? "error" : "warning",
+                 data->pMessageIdName != nullptr ? data->pMessageIdName : "-");
+    const std::span<const VkDebugUtilsObjectNameInfoEXT> objects(data->pObjects, data->objectCount);
+    for (std::size_t i = 0; i < objects.size(); ++i) {
+        const VkDebugUtilsObjectNameInfoEXT& object = objects[i];
+        std::fprintf(stderr, "%s%s ", i == 0 ? " (" : ", ", object_type_name(object.objectType));
+        if (object.pObjectName != nullptr) {
+            std::fprintf(stderr, "\"%s\"", object.pObjectName);
+        } else {
+            std::fprintf(stderr, "0x%" PRIx64, object.objectHandle);
+        }
+    }
+    std::fprintf(stderr, "%s: %s\n", objects.empty() ? "" : ")", data->pMessage);
     return VK_FALSE;
 }
 
