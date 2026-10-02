@@ -1,4 +1,5 @@
 #include "fly_controls.hpp"
+#include "overlay.hpp"
 #include "window.hpp"
 
 #include <vx/core/version.hpp>
@@ -38,14 +39,22 @@ constexpr bool validation = true;
 struct Options {
     // Quit after this many frames, for smoke tests; 0 runs until the window closes.
     std::uint64_t frames = 0;
+    // Show the overlay from the first frame, not only once F3 is pressed.
+    bool overlay = false;
 };
 
 vx::Result<Options> parse_options(std::span<char* const> args) {
     constexpr std::string_view frames_flag = "--frames=";
+    constexpr std::string_view overlay_flag = "--overlay";
     Options options;
     for (const std::string_view arg : args) {
+        if (arg == overlay_flag) {
+            options.overlay = true;
+            continue;
+        }
         if (!arg.starts_with(frames_flag)) {
-            return vx::Error{"unknown option \"" + std::string(arg) + "\": try --frames=N"};
+            return vx::Error{"unknown option \"" + std::string(arg) +
+                             "\": try --frames=N or --overlay"};
         }
         const std::string_view value = arg.substr(frames_flag.size());
         const auto [parsed_to, error] =
@@ -87,11 +96,15 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Before the renderer, so it is destroyed after it: the renderer draws
+    // with the overlay's ImGui context until then.
+    vx::app::Overlay overlay(window.value().handle(), options.value().overlay);
     vx::Result<vx::render::Renderer> renderer =
         vx::render::Renderer::create({.surface = window.value().surface_source(),
                                       .framebuffer = window.value().framebuffer_size(),
                                       .validation = validation,
-                                      .present_mode = vx::render::PresentMode::fifo});
+                                      .present_mode = vx::render::PresentMode::fifo,
+                                      .overlay = overlay.context()});
     if (!renderer.has_value()) {
         std::cerr << "error: " << renderer.error().message << '\n';
         return 1;
@@ -111,13 +124,14 @@ int main(int argc, char* argv[]) {
     camera.position = {0.5, 1.6, 3.0};
     camera.pitch = -0.4F;
     std::cout << "Click the window to fly: W A S D, Space and Shift for up and down, Ctrl "
-                 "to go faster, the mouse to look; Escape releases the mouse.\n";
+                 "to go faster, the mouse to look; Escape releases the mouse. F3 shows the "
+                 "overlay.\n";
 
     using Clock = std::chrono::steady_clock;
     Clock::time_point last = Clock::now();
     const std::uint64_t frames = options.value().frames;
     for (std::uint64_t frame = 0; frames == 0 || frame < frames; ++frame) {
-        if (!window.value().handle_events()) {
+        if (!window.value().handle_events(overlay)) {
             break;
         }
         // The time since the last frame, at most a tenth of a second, so a
@@ -128,8 +142,9 @@ int main(int argc, char* argv[]) {
         vx::render::fly(camera, vx::app::read_fly_controls(window.value()), seconds);
 
         renderer.value().resize(window.value().framebuffer_size());
-        const vx::Result<vx::render::Frame> rendered =
-            renderer.value().render({.sky = sky, .camera = camera, .cubes = cubes});
+        ImDrawData* const shown = overlay.build(renderer.value(), window.value().mouse_captured());
+        const vx::Result<vx::render::Frame> rendered = renderer.value().render(
+            {.sky = sky, .camera = camera, .cubes = cubes, .overlay = shown});
         if (!rendered.has_value()) {
             std::cerr << "error: " << rendered.error().message << '\n';
             return 1;

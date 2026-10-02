@@ -10,6 +10,8 @@ struct SDL_Window;
 
 namespace vx::app {
 
+class Overlay;
+
 // Relative mouse motion, in pixels: x to the right, y down.
 struct MouseMotion {
     float x = 0.0F;
@@ -37,8 +39,10 @@ public:
 
     // Handles every pending event. False once the window should close. A
     // click into the window captures the mouse and Escape releases it, so a
-    // run that is never clicked, such as a smoke run, never grabs it.
-    [[nodiscard]] bool handle_events();
+    // run that is never clicked, such as a smoke run, never grabs it. F3
+    // shows and hides the overlay, which has the events while it shows and
+    // the mouse is free; a click it takes captures nothing.
+    [[nodiscard]] bool handle_events(Overlay& overlay);
 
     [[nodiscard]] bool mouse_captured() const;
     // The captured mouse's motion since the last call.
