@@ -30,12 +30,14 @@ Result<Window> Window::create(const char* title, int width, int height,
     return Window(window);
 }
 
-Window::Window(Window&& other) noexcept : window_(std::exchange(other.window_, nullptr)) {}
+Window::Window(Window&& other) noexcept
+    : window_(std::exchange(other.window_, nullptr)), motion_(std::exchange(other.motion_, {})) {}
 
 Window& Window::operator=(Window&& other) noexcept {
     if (this != &other) {
         destroy();
         window_ = std::exchange(other.window_, nullptr);
+        motion_ = std::exchange(other.motion_, {});
     }
     return *this;
 }
@@ -45,17 +47,36 @@ Window::~Window() {
 }
 
 bool Window::handle_events() {
+    const SDL_WindowID id = SDL_GetWindowID(window_);
     SDL_Event event{};
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT) {
             return false; // the whole application, such as Cmd+Q
         }
-        if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
-            event.window.windowID == SDL_GetWindowID(window_)) {
+        if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == id) {
             return false;
+        }
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.windowID == id) {
+            SDL_SetWindowRelativeMouseMode(window_, true);
+        }
+        if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE) {
+            SDL_SetWindowRelativeMouseMode(window_, false);
+        }
+        if (event.type == SDL_EVENT_MOUSE_MOTION && event.motion.windowID == id &&
+            mouse_captured()) {
+            motion_.x += event.motion.xrel;
+            motion_.y += event.motion.yrel;
         }
     }
     return true;
+}
+
+bool Window::mouse_captured() const {
+    return SDL_GetWindowRelativeMouseMode(window_);
+}
+
+MouseMotion Window::take_mouse_motion() noexcept {
+    return std::exchange(motion_, {});
 }
 
 render::SurfaceSource Window::surface_source() const {

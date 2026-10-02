@@ -1,3 +1,4 @@
+#include "fly_controls.hpp"
 #include "window.hpp"
 
 #include <vx/core/version.hpp>
@@ -11,6 +12,7 @@
 
 #include <glm/ext/vector_int3_sized.hpp>
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <chrono>
@@ -99,17 +101,28 @@ int main(int argc, char* argv[]) {
 
     // A daytime sky blue, #78A7FF in sRGB.
     constexpr vx::render::Color sky = {.r = 0.188F, .g = 0.386F, .b = 1.0F, .a = 1.0F};
-    // One cube, seen from a little above and in front of it, until the fly
-    // camera comes.
+    // One cube to fly around, seen first from a little above and in front.
     const std::array cubes = {glm::i64vec3(0, 0, 0)};
     vx::render::Camera camera;
     camera.position = {0.5, 1.6, 3.0};
     camera.pitch = -0.4F;
+    std::cout << "Click the window to fly: W A S D, Space and Shift for up and down, Ctrl "
+                 "to go faster, the mouse to look; Escape releases the mouse.\n";
+
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point last = Clock::now();
     const std::uint64_t frames = options.value().frames;
     for (std::uint64_t frame = 0; frames == 0 || frame < frames; ++frame) {
         if (!window.value().handle_events()) {
             break;
         }
+        // The time since the last frame, at most a tenth of a second, so a
+        // stall, such as dragging the window, does not fling the camera.
+        const Clock::time_point now = Clock::now();
+        const float seconds = std::min(std::chrono::duration<float>(now - last).count(), 0.1F);
+        last = now;
+        vx::render::fly(camera, vx::app::read_fly_controls(window.value()), seconds);
+
         renderer.value().resize(window.value().framebuffer_size());
         const vx::Result<vx::render::Frame> rendered =
             renderer.value().render({.sky = sky, .camera = camera, .cubes = cubes});
