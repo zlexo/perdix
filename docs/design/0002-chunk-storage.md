@@ -40,7 +40,7 @@ Goals:
 
 Non-goals:
 
-- The world's map of loaded chunks, streaming and threading: M3.
+- The world's map of loaded chunks and streaming: RFC 0006. Threading: RFC 0005. Both are M3.
 - What a block *is* (names, properties, textures): the block registry RFC.
 - The on-disk format: M8. The in-memory layout is chosen so it can be written out as is, then compressed.
 - Light storage: M6.
@@ -191,7 +191,7 @@ public:
 } // namespace vx
 ```
 
-`ChunkStorage` is a move-only value type with no locks inside. Who may touch a chunk from which thread is the job system's design (M3); until then, everything runs on one thread.
+`ChunkStorage` is a move-only value type with no locks inside. Which thread may touch a chunk is RFC 0005's design: once a chunk is in the world, only the world thread writes it, and jobs on workers read pinned versions, several jobs at once, while an edit to a pinned chunk writes to a `clone`. So `const` methods never write hidden state (no caches, counters or lazy compaction), and every write to a chunk in the world, `compact` included, runs on the world thread.
 
 ## Alternatives considered
 
@@ -225,6 +225,7 @@ The prototype column comes from a throwaway implementation of this design measur
 - **Round trips:** random chunks (seeded, so failures reproduce) survive `from_dense` then `to_dense` unchanged at every width, all through one reused `PaletteScratch`, and `get` agrees with a plain array after thousands of random `set` calls.
 - **Memory:** `memory_bytes` matches the table above at every width.
 - **Pools:** several threads allocate and free block data of every size class at once, under ThreadSanitizer (RFC 0005's `linux-tsan` job).
+- **Concurrent reads:** several threads read one chunk through its `const` methods at once, under ThreadSanitizer.
 - **Layering control:** `engine/world` is the second layer, so its pull request proves that including a header from a layer it does not link fails to compile (RFC 0000's test plan).
 
 ## Pull request plan
