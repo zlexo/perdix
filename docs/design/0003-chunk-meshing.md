@@ -173,7 +173,7 @@ Changing a block remeshes its chunk, plus each neighbor whose padded border hold
 
 - **Culled faces, no merging:** simplest, and each face can carry its own lighting with no merge rules. On the measured terrain chunks, 1.3 to 1.8 times more quads to store and draw. Kept as the runtime toggle.
 - **Classic greedy meshing over block loops** (0fps): the same output as the bitmask version, several times slower to compute.
-- **Four or six vertices per face, float formats:** easy to read and debug, 16 times the memory.
+- **Four or six vertices per face, float formats:** easy to read and debug, 16 to 24 times the memory (four or six 32-byte vertices against one 8-byte quad).
 - **Six vertices per quad without an index buffer:** one buffer fewer, but every corner is shaded 1.5 times as often.
 - **Meshing on the GPU in compute:** possible later; it moves work off the CPU but makes edits and debugging harder. Revisit only if profiling shows CPU meshing limits streaming.
 
