@@ -57,7 +57,7 @@ Non-goals:
 
 The mesher reads a plain array of 34 by 34 by 34 states: the chunk plus a one-block border taken from its 26 neighbors. Faces need the 6 face neighbors (RFC 0002's `copy_face`); ambient occlusion at the chunk's edges and corners also needs the 12 edge and 8 corner neighbors, which are 392 single-block reads in total. A neighbor that is not loaded counts as air, and the chunk is remeshed when it arrives.
 
-What a block looks like comes from a per-state table built by the block registry:
+What a block looks like comes from a per-state table built by the block registry (RFC 0004). The types live in the world layer (`<vx/world/block_visual.hpp>`): the registry that fills them is world code, and the world cannot include mesh headers (ADR 0003).
 
 ```cpp
 enum class Opacity : std::uint8_t { air, opaque, cutout };   // cutout: leaves, glass
