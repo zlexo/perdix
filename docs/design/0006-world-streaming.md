@@ -74,7 +74,7 @@ The disc reaches 2,048 blocks with fewer chunks than a cylinder loads at 1,024. 
 The map is an index from `ChunkPos` to a record. Slots are 16 bytes: the 12-byte position and a 32-bit record index. Records live in a pool with a free list, at stable indices:
 
 ```cpp
-struct ChunkRecord {                  // 40 bytes, one per loaded chunk
+struct ChunkRecord {                  // 48 bytes, one per loaded chunk
     ChunkPos pos;
     ChunkState state;                 // see the lifecycle
     std::uint8_t planned_neighbors;   // 0 to 26
@@ -84,6 +84,7 @@ struct ChunkRecord {                  // 40 bytes, one per loaded chunk
     std::uint32_t version;            // bumped by every edit, from one world-wide counter
     std::uint32_t queue_index;        // position in its backlog, or none
     std::uint32_t plan;               // index of its RFC 0008 plan, or none
+    std::uint32_t load_id;            // never reused: tells a reloaded chunk's results from the old one's (RFC 0005)
     ChunkStorage* blocks;             // current version, pinned for jobs by RFC 0005; null when uniform
 };
 ```
@@ -149,11 +150,12 @@ Columns, plans, builds and meshes each keep a backlog on the world thread, order
 
 - The 27 chunks around the camera score 0; uniform chunks never queue. Generation tests the chunk's box grown by one chunk against the frustum, so the neighbors a visible chunk needs rank as visible.
 - Doubling means what is just behind the camera arrives with what is in view at twice the distance: turning around shows nearby terrain, while distant terrain behind waits.
+- Streaming reports `catching_up` while any chunk of the drawn region within the near cylinder is neither drawn nor known empty: the holes the flythrough counts within 256 blocks. RFC 0005 runs its workers at user-initiated priority while it is set.
 - Scores are recomputed when the camera crosses a chunk border or turns more than 15 degrees, and the backlogs are rebuilt as heaps in linear time: up to the 17,900 chunks of a region after a teleport, a few hundred while flying.
 
 ### Per-frame budgets
 
-Streaming's bookkeeping runs on the world thread, so it never lands in a frame. The main thread's share is the ordered stream of meshes and unloads: per frame it hands RFC 0007 as many meshes as fit its 1 ms upload budget, the rest wait in RFC 0005's inbox for the next frame, and while too many wait, the world thread holds back new mesh jobs (RFC 0005). On the world thread, each integration is a few lookups and pointer moves, hundreds per millisecond. Streaming integrates for at most 0.5 ms at a time before feeding the workers again, so a burst such as a teleport neither starves the workers nor delays a tick by more than that.
+Streaming's bookkeeping runs on the world thread, so it never lands in a frame. The main thread's share is the ordered stream of meshes and unloads: per frame it hands RFC 0007 as many meshes as fit its 1 ms upload budget, the rest wait, in order, on the main thread for the next frame, and while too many wait, the world thread holds back new mesh jobs (RFC 0005). On the world thread, each integration is a few lookups and pointer moves, hundreds per millisecond. Streaming integrates for at most 0.5 ms at a time before feeding the workers again, so a burst such as a teleport neither starves the workers nor delays a tick by more than that.
 
 ### Memory limits and eviction
 
@@ -225,7 +227,7 @@ public:
     void feed();                                         // top up RFC 0005's queue from the backlogs
     [[nodiscard]] std::span<const ChunkEvent> events() const noexcept;   // since the last call
     bool set_block(BlockPos pos, BlockState state);      // M5; false unless the chunk is ready
-    [[nodiscard]] StreamingStats stats() const noexcept; // per state, memory, effective view distance
+    [[nodiscard]] StreamingStats stats() const noexcept; // per state, memory, effective view distance, catching_up
 };
 
 } // namespace vx
