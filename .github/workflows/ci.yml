@@ -91,9 +91,13 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
       - name: Install clang-tidy ${{ env.CLANG_TIDY_VERSION }}
         run: pipx install "clang-tidy==${CLANG_TIDY_VERSION}"
-      # Configuring writes compile_commands.json and the generated headers.
+      # Configuring writes compile_commands.json and the headers generated
+      # then; building writes those generated at build time, such as the
+      # renderer's compiled shaders, which clang-tidy reads too.
       - name: Configure
         run: cmake --preset linux-clang
+      - name: Build
+        run: cmake --build --preset linux-clang
       - name: Run clang-tidy
         run: |
           clang-tidy --version
