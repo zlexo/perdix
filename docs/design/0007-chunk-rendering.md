@@ -78,7 +78,7 @@ struct ChunkMeshRecord {
 };
 ```
 
-A face group holds at most 16,384 quads (one direction of a 3D checkerboard), so 16-bit counts suffice. An empty mesh has no allocation and no record.
+A face group holds at most 32,768 quads (one direction of a checkerboard of two different cutout blocks, which do not hide each other), so 16-bit counts still suffice. An empty mesh has no allocation and no record.
 
 **Freeing.** A replaced, removed or moved mesh's range goes on the current frame slot's retire list, and back to the allocator when RFC 0001's pacing has waited for that slot again (frame N waits for frame N minus 2). No frame in flight reads a range after it is reused.
 
@@ -99,7 +99,7 @@ The budget is time: 1 ms per frame by default, plus the staging ring's free spac
 
 ### Per-chunk data and the vertex shader
 
-Each command's `vertexOffset` is four times the first quad of its run, so `gl_VertexIndex >> 2` is the quad's index in the whole arena, and RFC 0003's shared index buffer (the pattern 0, 1, 2, 2, 3, 0, offset by 4 per quad; 32-bit, sized for the 98,304-quad worst case, 2.25 MiB) serves every command with `firstIndex` 0. `firstInstance` is the chunk's slot in this frame's array of origins, so `drawIndirectFirstInstance` joins RFC 0001's feature floor.
+Each command's `vertexOffset` is four times the first quad of its run, so `gl_VertexIndex >> 2` is the quad's index in the whole arena, and RFC 0003's shared index buffer (the pattern 0, 1, 2, 2, 3, 0, offset by 4 per quad; 32-bit, sized for the 196,608-quad worst case, because one command can cover all of a chunk's cutout groups: 4.5 MiB) serves every command with `firstIndex` 0. `firstInstance` is the chunk's slot in this frame's array of origins, so `drawIndirectFirstInstance` joins RFC 0001's feature floor.
 
 The origin is computed on the CPU in 64-bit, as RFC 0001 requires, relative to the block the camera is in. That makes it an integer, exact as a float, and the camera's fraction is subtracted per vertex: a corner shared by two chunks gets the same float from both, so neighbors meet without cracks.
 
@@ -189,7 +189,7 @@ public:
 - **sebbbi's OffsetAllocator:** O(1) allocation and an O(1) estimate of the largest free range, but a new dependency its author calls an early prototype, with no lowest-offset placement for compaction. VMA is already a dependency (RFC 0001), maintained, and TLSF too.
 - **A free list of our own:** full control, but Sodium's experience (issue #2683) is that a simple allocator is slow and fragments.
 - **Several arena buffers** (Sodium's current allocator): growth without a repack, at the cost of a base address per chunk or a call per buffer. Open question 2.
-- **16-bit indices:** half the index bytes, but runs longer than 16,384 quads would have to be split. 2.25 MiB of 32-bit indices is simpler.
+- **16-bit indices:** half the index bytes, but runs longer than 16,384 quads would have to be split. 4.5 MiB of 32-bit indices, allocated once, is simpler.
 - **Front-to-back sorting:** unnecessary for opaque geometry on Apple GPUs. It may help GPUs without hidden surface removal, and can be added to the builder without format changes.
 
 ## Performance budget
