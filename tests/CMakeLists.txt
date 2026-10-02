@@ -34,11 +34,15 @@ vx_target_warnings(vx_render_tests)
 doctest_discover_tests(vx_render_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 
 # Tests that talk to a real Vulkan loader and driver. Labeled so presets
-# without one can leave them out.
+# without one can leave them out. Any validation message fails them as well,
+# warnings included (RFC 0001), whatever their own checks say.
+set(VX_VULKAN_DOCTEST_PROPERTIES
+    LABELS vulkan
+    FAIL_REGULAR_EXPRESSION "test cases: +0 [|]|\\[vulkan (warning|error)\\]")
 add_executable(vx_render_vulkan_tests
     main.cpp
     render/context_test.cpp
     render/instance_test.cpp)
 target_link_libraries(vx_render_vulkan_tests PRIVATE vx::render doctest::doctest)
 vx_target_warnings(vx_render_vulkan_tests)
-doctest_discover_tests(vx_render_vulkan_tests PROPERTIES LABELS vulkan ${VX_DOCTEST_PROPERTIES})
+doctest_discover_tests(vx_render_vulkan_tests PROPERTIES ${VX_VULKAN_DOCTEST_PROPERTIES})
