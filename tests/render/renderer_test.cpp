@@ -6,14 +6,17 @@
 #include <vx/render/renderer.hpp>
 
 #include <doctest/doctest.h>
+#include <glm/ext/vector_double3.hpp>
 #include <glm/ext/vector_int3_sized.hpp>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <numbers>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -99,6 +102,90 @@ TEST_CASE("the sky shows around a cube, in the color it was given") {
     CHECK(pixels_off(pixels.value(), image_size.width, 24, 32, {255, 0, 128, 255}) == 0);
     CHECK(renderer.context().instance().validation_counts().errors == 0);
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}
+
+TEST_CASE("a cube shows its front face from in front, and its top from above") {
+    vx::Result<vx::render::Renderer> created = headless_renderer();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    const std::array cubes = {glm::i64vec3(0, 0, 0)};
+
+    REQUIRE(renderer.render({.sky = black, .camera = in_front(), .cubes = cubes}).has_value());
+    const vx::Result<std::vector<std::uint8_t>> front = renderer.capture();
+    REQUIRE(front.has_value());
+
+    vx::render::Camera above;
+    above.position = {0.5, 3.0, 0.5};
+    above.pitch = -std::numbers::pi_v<float> / 2.0F;
+    REQUIRE(renderer.render({.sky = black, .camera = above, .cubes = cubes}).has_value());
+    const vx::Result<std::vector<std::uint8_t>> top = renderer.capture();
+    REQUIRE(top.has_value());
+
+    // Faces get one color each until textures come: +z blue, +y green.
+    CHECK(near(pixel_at(front.value(), image_size.width, 32, 16), {0, 0, 255, 255}));
+    CHECK(near(pixel_at(top.value(), image_size.width, 32, 16), {0, 255, 0, 255}));
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}
+
+TEST_CASE("the nearer of two cubes hides the other, though it is drawn first") {
+    vx::Result<vx::render::Renderer> created = headless_renderer();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+
+    // Half a block from the first cube's front face, which fills the view;
+    // the second cube, drawn after it, stands a block higher and behind, its
+    // underside, magenta, right behind rows 9 to 11 of the first's front.
+    vx::render::Camera close;
+    close.position = {0.5, 0.5, 1.5};
+    const std::array cubes = {glm::i64vec3(0, 0, 0), glm::i64vec3(0, 1, -1)};
+    REQUIRE(renderer.render({.sky = black, .camera = close, .cubes = cubes}).has_value());
+    const vx::Result<std::vector<std::uint8_t>> pixels = renderer.capture();
+    REQUIRE(pixels.has_value());
+
+    CHECK(near(pixel_at(pixels.value(), image_size.width, 32, 10), {0, 0, 255, 255}));
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}
+
+TEST_CASE("10 million blocks out, a cube renders exactly as near the origin") {
+    vx::Result<vx::render::Renderer> created = headless_renderer();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+
+    // RFC 0001's test plan: the same view of the same cube, near the world's
+    // origin and 10 million blocks from it.
+    const auto view = [&renderer](glm::dvec3 offset, glm::i64vec3 cube) {
+        vx::render::Camera camera = in_front();
+        camera.position += offset;
+        const std::array cubes = {cube};
+        REQUIRE(renderer.render({.sky = black, .camera = camera, .cubes = cubes}).has_value());
+        vx::Result<std::vector<std::uint8_t>> pixels = renderer.capture();
+        REQUIRE(pixels.has_value());
+        return std::move(pixels).value();
+    };
+    const std::vector<std::uint8_t> near_origin = view({0.0, 0.0, 0.0}, {0, 0, 0});
+    const std::vector<std::uint8_t> far_out =
+        view({10'000'000.0, 64.0, -10'000'000.0}, {10'000'000, 64, -10'000'000});
+
+    CHECK(near(pixel_at(near_origin, image_size.width, 32, 16), {0, 0, 255, 255}));
+    CHECK(far_out == near_origin);
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+}
+
+TEST_CASE("more cubes than a frame can draw is an error, not a draw") {
+    vx::Result<vx::render::Renderer> created = headless_renderer();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+
+    const std::vector<glm::i64vec3> cubes(vx::render::Renderer::max_cubes + 1);
+    const vx::Result<vx::render::Frame> drawn =
+        created.value().render({.sky = black, .camera = in_front(), .cubes = cubes});
+    REQUIRE_FALSE(drawn.has_value());
+    CHECK(drawn.error().message == "a frame draws at most 256 cubes, not 257");
 }
 
 TEST_CASE("a headless renderer follows a resize") {
