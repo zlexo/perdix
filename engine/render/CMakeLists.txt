@@ -41,6 +41,7 @@ target_compile_definitions(vx_vma PRIVATE VMA_IMPLEMENTATION)
 target_link_libraries(vx_vma PUBLIC vx_volk)
 
 add_library(vx_render STATIC
+    src/buffer.cpp
     src/context.cpp
     src/device.cpp
     src/device_report.cpp
