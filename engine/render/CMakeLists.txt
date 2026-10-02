@@ -27,7 +27,14 @@ FetchContent_Declare(glm
     GIT_TAG 1.0.3
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR sources-only)
-FetchContent_MakeAvailable(vulkan_headers volk vma glm)
+# Dear ImGui, for the overlay (RFC 0001), at its latest release. Only the
+# sources are fetched; the targets below are ours.
+FetchContent_Declare(imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG v1.92.9b
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR sources-only)
+FetchContent_MakeAvailable(vulkan_headers volk vma glm imgui)
 
 # volk loads the Vulkan loader at run time and every entry point from it, so
 # nothing links the loader. Built without our warnings: it is not our code.
@@ -45,6 +52,22 @@ add_library(vx_vma STATIC src/vma.cpp)
 target_include_directories(vx_vma SYSTEM PUBLIC "${vma_SOURCE_DIR}/include")
 target_compile_definitions(vx_vma PRIVATE VMA_IMPLEMENTATION)
 target_link_libraries(vx_vma PUBLIC vx_volk)
+
+# ImGui's core, which the app builds the overlay with and the renderer reads
+# draw lists from, and its Vulkan backend, which calls Vulkan through volk as
+# the renderer does. The SDL3 backend belongs to the app, beside the window.
+# Built without our warnings: it is not our code.
+add_library(vx_imgui STATIC
+    "${imgui_SOURCE_DIR}/imgui.cpp"
+    "${imgui_SOURCE_DIR}/imgui_draw.cpp"
+    "${imgui_SOURCE_DIR}/imgui_tables.cpp"
+    "${imgui_SOURCE_DIR}/imgui_widgets.cpp")
+target_include_directories(vx_imgui SYSTEM PUBLIC "${imgui_SOURCE_DIR}")
+target_compile_definitions(vx_imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
+add_library(vx_imgui_vulkan STATIC "${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp")
+target_include_directories(vx_imgui_vulkan SYSTEM PUBLIC "${imgui_SOURCE_DIR}/backends")
+target_compile_definitions(vx_imgui_vulkan PUBLIC IMGUI_IMPL_VULKAN_USE_VOLK)
+target_link_libraries(vx_imgui_vulkan PUBLIC vx_imgui vx_volk)
 
 # Vulkan's depth range runs from 0 to 1, not from -1 to 1 as OpenGL's does.
 add_library(vx_glm INTERFACE)

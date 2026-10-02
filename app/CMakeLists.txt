@@ -18,6 +18,13 @@ FetchContent_Declare(sdl3
     EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(sdl3)
 
+# ImGui's SDL3 backend feeds the overlay the window's input. ImGui itself is
+# fetched by the render library, which draws the overlay.
+FetchContent_GetProperties(imgui)
+add_library(vx_imgui_sdl3 STATIC "${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp")
+target_include_directories(vx_imgui_sdl3 SYSTEM PUBLIC "${imgui_SOURCE_DIR}/backends")
+target_link_libraries(vx_imgui_sdl3 PUBLIC vx_imgui SDL3::SDL3-static)
+
 add_executable(vx_app
     src/allocation_profiling.cpp
     src/fly_controls.cpp
