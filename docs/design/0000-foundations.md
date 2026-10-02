@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Accepted (2026-10-02) |
 | **Milestone** | M0 Foundations |
 | **Issue** | #3 |
 
@@ -159,7 +159,9 @@ Measured on the reference machine, not asserted in CI:
 
 ## Open questions
 
-1. **Exceptions and RTTI.** Recommendation: off in engine code; errors are values (return codes, `std::optional`, or a small `Result` type, until a later ADR moves the standard to C++23 and `std::expected` can replace it). The skeleton keeps the compiler defaults until this is settled.
+All settled on 2026-10-02: every recommendation below was accepted.
+
+1. **Exceptions and RTTI.** Recommendation: off in engine code; errors are values (return codes, `std::optional`, or a small `Result` type, until a later ADR moves the standard to C++23 and `std::expected` can replace it). Engine targets now build with exceptions and RTTI off; test targets keep them for doctest.
 2. **Naming.** Recommendation: types in `PascalCase`; functions, variables, namespaces and files in `snake_case`; private members with a trailing underscore (`size_`); macros in `VX_SCREAMING_CASE`. The skeleton follows this.
 3. **Namespace `vx`, or the product's name once it has one.** Recommendation: `vx`, so naming the product never touches code.
 4. **doctest or Catch2.** Recommendation: doctest, for compile speed.
