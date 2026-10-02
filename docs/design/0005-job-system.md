@@ -199,12 +199,12 @@ Workers default to the core count minus two, 6 here. The main and world threads 
 ```cpp
 // app: one per worker, indexed by JobContext::worker(), never shared.
 struct alignas(vx::cache_line) WorkerScratch {
-    MeshScratch mesh;   // RFC 0003: padded chunk (77 KiB), masks, quads (768 KiB worst case)
+    MeshScratch mesh;   // RFC 0003: padded chunk (77 KiB), masks, quads (1.5 MiB worst case)
     GenScratch gen;     // RFC 0008: dense blocks (64 KiB), noise; RFC 0002's from_dense table
 };
 ```
 
-Scratch is allocated at startup for the worst case (RFC 0003's checkerboard, 98,304 quads), so it never grows: about 1 MiB per worker. `vx::cache_line` is 128, the line size the reference machine reports; `std::hardware_destructive_interference_size` says 64 under Apple Clang 17, changes with compiler and tuning, and draws a GCC warning in headers. Job slots are 128 bytes, aligned to it. Big buffers live in scratch, not on a job's stack: a `std::thread` gets 512 KiB of stack on macOS.
+Scratch is allocated at startup for the worst case (RFC 0003's checkerboard of two different cutout blocks, 196,608 quads, 1.5 MiB), so it never grows: about 2.7 MiB per worker with RFC 0008's 1 MiB of generation scratch, about 16 MiB for six workers. `vx::cache_line` is 128, the line size the reference machine reports; `std::hardware_destructive_interference_size` says 64 under Apple Clang 17, changes with compiler and tuning, and draws a GCC warning in headers. Job slots are 128 bytes, aligned to it. Big buffers live in scratch, not on a job's stack: a `std::thread` gets 512 KiB of stack on macOS.
 
 ### Profiling and tests
 
@@ -237,7 +237,7 @@ Targets on the reference machine, release build. Scheduler numbers from nanobenc
 | Main thread time spent waiting for other threads | zero |
 | Meshing throughput, all workers against one | at least 4 times |
 | Allocations | none to submit, at most one per job |
-| Memory | 128 KiB of job slots, about 1 MiB of scratch per worker |
+| Memory | 128 KiB of job slots, about 2.7 MiB of scratch per worker |
 
 ## Test plan
 
