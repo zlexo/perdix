@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Accepted (2026-10-02) |
 | **Milestone** | M1 First Cube |
 | **Issue** | #8 |
 
@@ -62,10 +62,10 @@ Non-goals:
 | Vulkan SDK | headers, validation layers, shader compiler | a manual install (RFC 0000 lists them all); ships both KosmicKrisp and MoltenVK on macOS |
 | volk | loads Vulkan entry points | calls go straight to the driver with no loader trampoline, and the code never links the loader statically |
 | Vulkan Memory Allocator | GPU memory | suballocation, memory type selection and budget tracking, done right once |
-| SDL3 or GLFW | window, input, surface | open question 1 |
+| SDL3 | window, input, surface, later audio and gamepads | chosen over GLFW (open question 1) |
 | Dear ImGui | debug overlay | the standard; has a Vulkan backend with dynamic rendering |
 | Tracy | profiler | CPU and GPU zones with nanosecond resolution, live |
-| glm | float math for the camera | open question 4 |
+| glm | float math for the camera | chosen over our own types (open question 4) |
 
 Everything comes through `FetchContent` as in RFC 0000, except the Vulkan SDK.
 
@@ -225,7 +225,7 @@ The camera's position is stored on the CPU in 64-bit (`double` now, integer chun
 - **Fraction:** `camera_fraction`, subtracted from every vertex in the shader.
 
 ```glsl
-// Sketched in GLSL; open question 2 picks the language.
+// Sketched in GLSL for familiarity; the engine writes its shaders in Slang (open question 2).
 vec3 p = origins[gl_InstanceIndex].xyz + vertices[gl_VertexIndex].position;
 gl_Position = view_projection * vec4(p - camera_fraction, 1.0);
 ```
@@ -278,7 +278,7 @@ public:
 } // namespace vx::render
 ```
 
-`CreateResult` follows whatever RFC 0000 settles for errors (open question 1 there).
+`CreateResult` is an error value: RFC 0000 turned exceptions off in engine code.
 
 ## Alternatives considered
 
@@ -321,6 +321,8 @@ On the reference machine, release build, cube scene:
 12. Debug names everywhere, and the "Debugging the renderer" page (driver switching, Xcode capture).
 
 ## Open questions
+
+All settled on 2026-10-02: every recommendation below was accepted.
 
 1. **SDL3 or GLFW** for the window and input. Recommendation: **SDL3**. It will also cover audio and gamepads, so it is one platform layer instead of three libraries later. Cost: a clean build of SDL3 adds about a minute, mostly felt on CI.
 2. **Slang or GLSL** for shaders. Recommendation: **Slang**. Khronos hosts it, the Vulkan SDK ships its compiler, the Khronos Vulkan Tutorial ships its shaders in both, and its modules and generics keep a growing shader codebase organized. GLSL has more voxel-specific examples online.
