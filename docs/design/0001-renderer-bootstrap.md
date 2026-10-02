@@ -125,6 +125,8 @@ Among devices that pass the floor, one without `VK_KHR_portability_subset` beats
 
 `VK_DRIVER_FILES` overrides the choice: the loader then sees only the drivers it names. Pointed at MoltenVK's manifest, it hides KosmicKrisp and step 2 finds MoltenVK, which is how a driver bug is told apart from our own. A "Debugging the renderer" page documents both manifests.
 
+**Device creation.** Release builds leave `robustBufferAccess2` and `pipelineRobustness` off. With either one enabled, KosmicKrisp runs a compute pass in front of every indexed indirect draw and splits the render pass around it (`requires_unroll_robustness` in its `kk_cmd_draw.c`, SDK 1.4.363.0), and RFC 0007 draws every chunk that way.
+
 At startup the engine logs the GPU, driver name and version, API version, present mode and whether the portability fallback was taken, and the overlay shows the same.
 
 ### Swapchain
