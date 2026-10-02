@@ -46,6 +46,7 @@ add_library(vx_render STATIC
     src/device_selection.cpp
     src/feature_floor.cpp
     src/instance.cpp
+    src/renderer.cpp
     src/surface.cpp
     src/swapchain.cpp
     src/swapchain_choice.cpp

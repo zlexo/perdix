@@ -49,4 +49,24 @@ private:
     Error error_;
 };
 
+// Success with no value, or an Error, like std::expected<void, E>: a function
+// can `return {};` or `return Error{"..."};`.
+template <> class [[nodiscard]] Result<void> {
+public:
+    Result() = default;
+    Result(Error error) : error_(std::move(error)), failed_(true) {}
+
+    [[nodiscard]] bool has_value() const noexcept { return !failed_; }
+    explicit operator bool() const noexcept { return has_value(); }
+
+    [[nodiscard]] const Error& error() const& {
+        assert(failed_);
+        return error_;
+    }
+
+private:
+    Error error_;
+    bool failed_ = false;
+};
+
 } // namespace vx

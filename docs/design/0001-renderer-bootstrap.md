@@ -347,3 +347,13 @@ Pull request plan item 3, device selection and the device, landed as three pull 
 - **The startup report has no present mode yet.** It joins with the swapchain in item 4. The app prints the report at startup, with validation in debug builds.
 - **VMA 3.4.0**, its latest release, since the SDK does not ship it. It loads its functions through `vkGetInstanceProcAddr` and `vkGetDeviceProcAddr`. Robustness features stay off in every build, not only release ones: nothing needs them yet.
 - **One device at a time.** volk loads device functions into globals, straight from the driver.
+
+Pull request plan item 4, the window, its surface, the swapchain and a clear color, landed as five pull requests: the window, the surface, choosing the swapchain, creating it, and drawing.
+
+- **SDL builds only its video subsystem.** Each other subsystem turns on with the feature that needs it. On Linux, SDL's video drivers need the X11 and Wayland development packages, which CI installs: manual installs beyond the Vulkan SDK and clang-format, which RFC 0000 did not foresee.
+- **SDL must load the engine's Vulkan loader.** Searching on its own, SDL's first candidate on macOS, an app bundle's MoltenVK, resolves through the SDK's `DYLD_LIBRARY_PATH` to the SDK's MoltenVK; SDL then calls MoltenVK's `vkGetInstanceProcAddr` with the loader's instance, and the app crashes. `vulkan_loader_path` names the loader's file, and the app hands it to SDL as `SDL_HINT_VULKAN_LIBRARY`.
+- **With a window, selection also requires presentation and `VK_KHR_swapchain`.**
+- **A timeline semaphore paces frames from the start**, with one frame in flight; item 5 overlaps two. Present semaphores are per swapchain image, as designed, and live as long as the renderer: a new swapchain with more images only adds some.
+- **With one frame in flight, the reference machine draws about 42 to 45 frames per second under FIFO on its 60 Hz display**, and about 160 with immediate presentation: each frame's wait for the previous one costs about 6 ms, so frames miss vsyncs. Item 5 overlaps frames, and Tracy (item 10) will show where the time goes.
+- **The swapchain is recreated when the framebuffer's size changes**, compared with the size it was made for rather than its extent, so a surface that fixes its own size cannot cause a recreation every frame, and after an out-of-date or suboptimal result. A minimized window reports a framebuffer with no area, and its frames are skipped.
+- **A debug run with validation errors exits with 3**, so a run with `--frames` is a validation check.
