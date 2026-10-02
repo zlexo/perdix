@@ -21,6 +21,8 @@ doctest_discover_tests(vx_core_tests)
 
 add_executable(vx_render_tests
     main.cpp
+    render/device_report_test.cpp
+    render/device_selection_test.cpp
     render/feature_floor_test.cpp)
 target_link_libraries(vx_render_tests PRIVATE vx::render doctest::doctest)
 vx_target_warnings(vx_render_tests)
