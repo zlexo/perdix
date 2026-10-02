@@ -134,7 +134,7 @@ Palettes do not shrink on every `set`. When a state's last block is overwritten,
 
 ### Bulk conversion
 
-Generators write a plain `BlockState[32768]` and compress it once with `from_dense`, which builds the palette with a per-thread reverse lookup table, then picks the smallest width that fits. The mesher calls `to_dense` to get a plain array (and the one-block border it needs from the six neighbors through `copy_face`), so its inner loops never touch the packed format.
+Generators write a plain `BlockState[32768]` and compress it once with `from_dense`, which builds the palette with a per-thread reverse lookup table, then picks the smallest width that fits. The mesher calls `to_dense` to get a plain array (and the one-block border it needs from the six neighbors through `copy_face`), so its inner loops never touch the packed format. A second form of `to_dense` takes a layout (an offset plus row and layer strides) and writes straight into the inside of the mesher's padded 34 by 34 by 34 array, saving a full extra copy per mesh.
 
 ### API sketch
 
@@ -147,6 +147,10 @@ public:
 
     [[nodiscard]] static ChunkStorage from_dense(std::span<const BlockState, chunk_volume> blocks);
     void to_dense(std::span<BlockState, chunk_volume> out) const noexcept;
+
+    // Writes block (x, y, z) to out[offset + x + z * row_stride + y * layer_stride],
+    // so the mesher fills the inside of its padded 34^3 array in one pass.
+    void to_dense(std::span<BlockState> out, DenseLayout layout) const noexcept;
 
     // The 32 by 32 layer of blocks on one face, for a neighbor's mesher.
     void copy_face(Face face, std::span<BlockState, chunk_size * chunk_size> out) const noexcept;
