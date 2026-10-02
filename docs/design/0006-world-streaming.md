@@ -65,7 +65,7 @@ At 1,024 blocks, assuming the surface spans 2 chunks per column (M4 replaces thi
 | **Terrain disc and near cylinder** | **about 9,400** | **about 17,900** |
 | The same at 2,048 blocks | about 28,700 | about 57,500 |
 
-The disc reaches 2,048 blocks with fewer chunks than a cylinder loads at 1,024. Most loaded chunks are uniform: the margins are sky above and rock below, and so is most of the near cylinder. With RFC 0002's estimate for the rest (4 bits per block, 16 KiB), block data is about 100 MiB at 1,024 blocks and 400 MiB at 2,048, against RFC 0002's 320 MiB for the cylinder at 1,024. Because the disc follows the terrain and not the camera, the ground stays loaded at any height. A generator that cannot bound a column tightly returns a wider range: the cost is more chunks, never holes.
+The disc reaches 2,048 blocks with fewer chunks than a cylinder loads at 1,024. Above the band, the margins and the near cylinder are sky. Below it they are rock, uniform only where no cave or ore reaches. At RFC 0002's 4 bits per block (16 KiB) for mixed chunks, block data is about 110 MiB at 1,024 blocks and 420 MiB at 2,048 on the placeholder terrain, which has no caves. RFC 0008 puts caves and ores 256 blocks deep, which makes the margins below the band mixed: about 190 MiB at 1,024 blocks and 650 MiB at 2,048. Plans add 3 to 4 KiB each, and the plans below the band stay as long as their columns are loaded, because those chunks are never built: with them and the bookkeeping, chunk data is about 240 MiB at 1,024 blocks and 800 MiB at 2,048. Because the disc follows the terrain and not the camera, the ground stays loaded at any height. A generator that cannot bound a column tightly returns a wider range, at the cost of more chunks. Ground under an overhang wider than a column never meets the sky, so beyond the near cylinder it is not loaded: seen from the side at a distance, the space under such an overhang can show sky. RFC 0008's `surface_range` can widen the band under overhangs if that shows.
 
 **Hysteresis.** A chunk loads when it enters the region and unloads only when it leaves the region recomputed with every distance 2 chunks larger. The camera's chunk changes by one at each border, so a camera wandering within 64 blocks loads and unloads nothing. The cost is about 12% more loaded columns at 1,024 blocks (432 on top of 3,473). Meshes follow the same rule one chunk further in, so a drawn chunk never loses a neighbor.
 
@@ -153,7 +153,7 @@ Streaming's bookkeeping runs on the world thread, so it never lands in a frame. 
 
 ### Memory limits and eviction
 
-Chunk data (block data, plans and bookkeeping) has a budget, 512 MiB by default; RFC 0007 budgets GPU memory. Over budget, the streamer first unloads chunks kept only by hysteresis, farthest first. If that is not enough, it lowers the effective view distance one chunk at a time and unloads what falls outside, and the overlay says so ("view distance 29 of 32, memory"). When RFC 0007 reports that its mesh arena cannot grow, streaming answers the same way. It raises the distance again one chunk at a time once usage stays under 90% of both budgets for 5 seconds. Chunks inside the region are never evicted, because they would be requested again at once, and edited chunks are never evicted (M8). By the estimate above, 512 MiB holds the 2,048-block maximum.
+Chunk data (block data, plans and bookkeeping) has a budget, 512 MiB by default; RFC 0007 budgets GPU memory. Over budget, the streamer first unloads chunks kept only by hysteresis, farthest first. If that is not enough, it lowers the effective view distance one chunk at a time and unloads what falls outside, and the overlay says so ("view distance 29 of 32, memory"). When RFC 0007 reports that its mesh arena cannot grow, streaming answers the same way. It raises the distance again one chunk at a time once usage stays under 90% of both budgets for 5 seconds. Chunks inside the region are never evicted, because they would be requested again at once, and edited chunks are never evicted (M8). By the estimate above, 512 MiB holds the default 1,024-block view on any terrain, and the 2,048-block maximum only without caves; with RFC 0008's caves and ores it holds about 1,800 blocks, and the effective view distance says so.
 
 ### The placeholder generator
 
@@ -252,7 +252,7 @@ On the reference machine, release build, placeholder terrain, measured by the fl
 | A full 1,024-block region from nothing (`load`) | under 1 s |
 | Generation and meshing throughput in `load` | 20,000 chunks per second each |
 | Holes within 256 blocks during `sprint` | none at p99 |
-| Chunk data at 1,024 blocks | under 128 MiB |
+| Chunk data at 1,024 blocks | under 128 MiB on the placeholder terrain; under 256 MiB on RFC 0008's (about 240 MiB expected) |
 
 ## Test plan
 
@@ -278,9 +278,9 @@ On the reference machine, release build, placeholder terrain, measured by the fl
 
 ## Open questions
 
-1. **Default view distance** (the owner's taste call). Recommendation: **32 chunks (1,024 blocks)**, with a slider from 4 to 64. About 17,900 loaded chunks and 100 MiB of block data by the estimate above; confirmed or lowered with the first flythrough numbers before M3 ends.
+1. **Default view distance** (the owner's taste call). Recommendation: **32 chunks (1,024 blocks)**, with a slider from 4 to 64. About 17,900 loaded chunks and 110 to 240 MiB of chunk data by the estimate above (without and with caves); confirmed or lowered with the first flythrough numbers before M3 ends.
 2. **Vertical policy: a terrain disc plus a near cylinder, or a plain cylinder around the camera.** Recommendation: **the disc**. It keeps the ground at any height and loads about a quarter of the cylinder's chunks at the same distance (17,900 against 65,987). The costs: RFC 0008 must add `surface_range` (its per-column first pass already finds each column's highest surface), and caves more than 256 blocks away are not loaded. It also assumes RFC 0002's open question 2 is settled as unlimited height; with a fixed height, columns load whole and this question goes away.
-3. **Memory budget: a fixed 512 MiB, or a share of physical memory.** Recommendation: **fixed**, with a setting. Benchmark results compare across machines only if the budget is the same, and 512 MiB holds the 2,048-block maximum by the estimate.
+3. **Memory budget: a fixed 512 MiB, or a share of physical memory.** Recommendation: **fixed**, with a setting. Benchmark results compare across machines only if the budget is the same. By the estimate, 512 MiB holds the default view on any terrain; the 2,048-block maximum fits only without caves.
 4. **Our own chunk map, or `ankerl::unordered_dense`.** Recommendation: **our own**. It is small, keeps slots at 16 bytes and is the part worth understanding. unordered_dense (by nanobench's author) is excellent and would save that code; its erase takes a second lookup to move the last entry into the hole, and it adds a dependency for one narrow use.
 
 ## As built
