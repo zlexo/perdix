@@ -1,3 +1,5 @@
+#include "device_fixtures.hpp"
+
 #include <vx/render/feature_floor.hpp>
 
 #include <doctest/doctest.h>
@@ -6,24 +8,7 @@
 #include <string_view>
 #include <vector>
 
-namespace {
-
-vx::render::DeviceFeatures full_floor() {
-    return {
-        .api_version = VK_API_VERSION_1_3,
-        .dynamic_rendering = true,
-        .synchronization2 = true,
-        .timeline_semaphore = true,
-        .buffer_device_address = true,
-        .descriptor_indexing = true,
-        .runtime_descriptor_array = true,
-        .descriptor_binding_partially_bound = true,
-        .multi_draw_indirect = true,
-        .draw_indirect_first_instance = true,
-    };
-}
-
-} // namespace
+using vx::test::full_floor;
 
 TEST_CASE("a device with every floor feature passes with nothing missing") {
     const vx::render::FeatureReport report = vx::render::check_feature_floor(full_floor());
