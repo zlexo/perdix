@@ -98,7 +98,7 @@ TEST_CASE("the overlay draws over the frame, which shows around it") {
     REQUIRE(pixels.has_value());
 
     CHECK(near(pixel_at(pixels.value(), 12, 12), {255, 0, 255, 255}));
-    // Around it, the frame the overlay pass kept: the sky, and the cube's
+    // Around it, the frame the overlay drew over: the sky, and the cube's
     // front face, blue, in the middle.
     CHECK(near(pixel_at(pixels.value(), 60, 2), {0, 255, 0, 255}));
     const Pixel middle = pixel_at(pixels.value(), 32, 16);
