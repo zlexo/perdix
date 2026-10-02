@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -59,7 +60,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Perdix " << vx::version_string() << '\n';
 
     vx::Result<vx::render::Context> context =
-        vx::render::Context::create({.extensions = {}, .validation = validation});
+        vx::render::Context::create({.surface = std::nullopt, .validation = validation});
     if (!context.has_value()) {
         std::cerr << "error: " << context.error().message << '\n';
         return 1;

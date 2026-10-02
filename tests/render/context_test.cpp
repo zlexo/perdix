@@ -13,7 +13,7 @@
 namespace {
 
 vx::Result<vx::render::Context> create_context() {
-    return vx::render::Context::create({.extensions = {}, .validation = true});
+    return vx::render::Context::create({.surface = std::nullopt, .validation = true});
 }
 
 } // namespace

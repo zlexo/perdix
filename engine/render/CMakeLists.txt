@@ -46,6 +46,7 @@ add_library(vx_render STATIC
     src/device_selection.cpp
     src/feature_floor.cpp
     src/instance.cpp
+    src/surface.cpp
     src/vk_result.cpp)
 add_library(vx::render ALIAS vx_render)
 

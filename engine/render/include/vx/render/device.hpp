@@ -12,8 +12,10 @@ namespace vx::render {
 
 // Reads what selection needs from a physical device. Feature structures newer
 // than the device's Vulkan version are left out of the query, as the
-// specification requires, so their features read as missing.
-[[nodiscard]] DeviceInfo describe_device(VkPhysicalDevice physical_device);
+// specification requires, so their features read as missing. With a window's
+// surface, a queue family that can present to it comes first; headless, pass
+// VK_NULL_HANDLE.
+[[nodiscard]] DeviceInfo describe_device(VkPhysicalDevice physical_device, VkSurfaceKHR surface);
 
 // Owns the logical device, its one queue and the VMA allocator. volk loads the
 // device's functions into globals, straight from the driver, so only one
