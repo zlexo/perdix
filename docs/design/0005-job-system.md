@@ -118,7 +118,8 @@ class JobSystem {
 public:
     explicit JobSystem(const JobSystemDesc& desc);   // workers (0: deterministic), slots, QoS
     ~JobSystem();   // asserts nothing is queued or running, then joins the workers
-    // Never blocks or allocates. Returns an empty handle when every slot is taken.
+    // Never waits for a job and never allocates: it takes the queue lock briefly.
+    // Returns an empty handle when every slot is taken.
     template <Job F> [[nodiscard]] JobHandle submit(JobPriority priority, const F& job);
     // True: the job had not started and never will. False: it is running or done.
     bool cancel(JobHandle job) noexcept;
@@ -236,8 +237,8 @@ Targets on the reference machine, release build. Scheduler numbers from nanobenc
 | Idle worker starting an urgent job | under 50 µs at the 99th percentile |
 | World thread: pin a neighborhood and submit a mesh job | under 1 µs |
 | An edit reaching the world thread to its remeshes reaching the main thread, idle workers | under 1 ms |
-| Main thread time spent waiting for other threads | zero |
-| Meshing throughput, all workers against one | at least 4 times |
+| Main thread time spent waiting for other threads | inbox lock hand-offs only, microseconds per frame |
+| Meshing throughput, all workers against one, user-initiated | at least 4 times; also measured at utility, where the probe saw about half of that |
 | Allocations | none to submit, at most one per job |
 | Memory | 128 KiB of job slots, about 2.7 MiB of scratch per worker |
 
@@ -249,7 +250,7 @@ Targets on the reference machine, release build. Scheduler numbers from nanobenc
 - **Pins:** writing a pinned chunk copies it and leaves the pinned version unchanged; a completion unpins the versions its record names even after an edit replaced them; an unloaded chunk is freed only after its last job reports back; a successful cancel unpins at once; shutting down with jobs in flight frees everything, and the Linux AddressSanitizer job finds no leaks.
 - **Inboxes and batches:** per-producer order holds under several producers; a push between a drain and the owner's next wait is not lost; breaking a block on a chunk border delivers both meshes in one message, also when a newer remesh of one of them lands first or the other chunk unloads.
 - **Stress:** 100,000 jobs with random priorities and cancels from several threads each run once or are canceled once.
-- **Determinism property:** seeded scenarios (load, edit, unload, reload), stepped to quiescence between steps with a test-only wait for idle, end with identical chunk and mesh hashes with 0, 1 and 6 workers, which shows that the final state never depends on completion order.
+- **Determinism property:** seeded scenarios (load, edit, unload, reload), stepped to quiescence between steps with a test-only wait for idle, end with identical chunk and mesh hashes with 0, 1 and 6 workers, which checks that, in those scenarios, the final state does not depend on completion order.
 - **ThreadSanitizer:** a `linux-tsan` preset and CI job (Clang, `-fsanitize=thread`, `-O1`) runs every test, in a job of its own because ThreadSanitizer and AddressSanitizer cannot share a build. Control: a planted unsynchronized counter in a test-only target must fail it first. Clang supports ThreadSanitizer on arm64 macOS, but on the reference machine (Apple Clang 17.0.0, macOS 26.6.2) an empty program built with it crashes in `dyld` before `main`, as one built with AddressSanitizer hangs; both are rechecked with each toolchain update.
 - **Sweep:** 1 to 8 workers at utility, at user-initiated, and switching between them, with real jobs: chunks per second, frame time at the median and 99th percentile, tick time. Plus a 10-minute flythrough: the reference machine is a fanless 13-inch MacBook Air, and in a sustained multi-core test Tom's Hardware saw this model fall from the low 10,000s to the 7,000s in Cinebench R23.
 - **By eye:** Tracy shows named threads, job zones and plots; flying, the nearest chunks fill in first; breaking and placing blocks looks instant, with no holes.
