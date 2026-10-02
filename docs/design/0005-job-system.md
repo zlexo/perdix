@@ -66,7 +66,7 @@ Non-goals:
 
 Rendering stays on the main thread. SDL3 and GLFW, the candidates in RFC 0001, both require their event and window calls there, and with the world on its own thread a frame is little CPU work (this RFC's open question 1).
 
-Below `app`, nothing creates a thread: `world` and `mesh` are functions and single-owner types, `core`'s job system creates the workers, and `app` creates the world thread and wires the queues. A dedicated server (ADR 0003) is `core`, `world` and a small `app` of its own. Later RFCs that add I/O, audio or networking threads name their owners.
+Two places create threads: `core`'s job system creates the workers, and `app` creates the world thread and wires the queues. `world` and `mesh` are functions and single-owner types. A dedicated server (ADR 0003) is `core`, `world` and a small `app` of its own. Later RFCs that add I/O, audio or networking threads name their owners.
 
 | State | Written by | Read by |
 |---|---|---|
@@ -102,7 +102,7 @@ enum class JobLevel : std::uint8_t { urgent, normal, background };
 
 struct JobPriority {
     JobLevel level = JobLevel::normal;
-    std::uint32_t key = 0;   // lower runs first within a level; streaming uses squared chunk distance
+    std::uint32_t key = 0;   // lower runs first within a level; streaming uses RFC 0006's squared score
 };
 
 template <class F>   // JobContext::worker() indexes per-worker scratch
@@ -129,7 +129,7 @@ public:
 
 Workers take the most urgent level first, then the lowest key, then the oldest job, so the order is total. `urgent` is remeshing after an edit, the edited chunk first; `normal` is streaming, by distance; `background` is work nobody waits for, like saving (M8). A background job that has waited a second moves up to normal, so background work cannot starve during a long flight; nothing ages into urgent, so edits always run first; the age is read from the job system's clock, which tests control. A worker runs an `urgent` job at user-initiated QoS, whatever its mode (below). A condition variable passes no QoS to the thread it wakes, so when an urgent job wakes a sleeping utility worker, the world thread raises that worker with `pthread_override_qos_class_start_np` (in the macOS SDK's `pthread/qos.h`) until the job starts; then an edit never waits behind other apps' work.
 
-The scheduler has no dependencies: a job is submitted only once it can run. The world thread sees chunks arrive, so it decides when a chunk is ready to mesh (RFC 0006 sets the rule; RFC 0003 reads a missing neighbor as air) and remeshes when a neighbor lands. Chunk pipelines are state machines on the world thread, not job graphs.
+The scheduler has no dependencies: a job is submitted only once it can run. The world thread sees chunks arrive, so it decides when a chunk is ready to mesh (RFC 0006's rule: it and all 26 neighbors are ready) and remeshes it when it or a neighbor changes. Chunk pipelines are state machines on the world thread, not job graphs.
 
 A running job is never interrupted; it lasts microseconds to milliseconds, and the world thread drops results for chunks that are gone. When a chunk unloads, its queued jobs are canceled and their inputs unpinned at once; a running job's inputs are unpinned when it reports back.
 
@@ -155,7 +155,7 @@ An inbox is a lock and two arrays swapped on drain. Messages from one producer a
 
 | From | To | Carries |
 |---|---|---|
-| main | world | actions (break, place) with the view ray, the player's position, meshes uploaded so far, a stop request |
+| main | world | actions (break, place) with the view ray, the player's position, meshes uploaded so far, RFC 0007's arena-full flag, a stop request |
 | workers | world | generated chunks, finished meshes |
 | world | main | meshes, unloads, the targeted block |
 
@@ -171,7 +171,7 @@ A generated chunk is a `ChunkStorage` allocated on the worker. A mesh job copies
 while (!stopping) {                   // set by the main thread's stop request
     wake.wait_until(next_tick);       // returns early when an inbox has messages
     from_main.drain(handle);          // actions become edits (marking chunks dirty); position
-    results.drain(integrate);         // stores chunks; unpins, forwards fresh meshes
+    results.drain(integrate);         // stores chunks, unpins, forwards fresh meshes; RFC 0006 integrates in steps of at most 0.5 ms
     if (clock.now() >= next_tick) { world.tick(); next_tick += tick_period; }
     feed();                           // remesh dirty chunks (urgent), then stream nearest first
 }
