@@ -71,11 +71,16 @@ Result<Context> Context::create(const ContextDesc& desc) {
     }
 
     Selection& chosen = selection.value();
-    return Context(std::move(chosen.instance), chosen.physical_device, std::move(chosen.info));
+    Result<Device> device =
+        Device::create(chosen.instance.handle(), chosen.physical_device, chosen.info);
+    if (!device.has_value()) {
+        return device.error();
+    }
+    return Context(std::move(chosen.instance), std::move(device).value(), std::move(chosen.info));
 }
 
-Context::Context(Instance instance, VkPhysicalDevice physical_device, DeviceInfo device_info)
-    : instance_(std::move(instance)), physical_device_(physical_device),
+Context::Context(Instance instance, Device device, DeviceInfo device_info)
+    : instance_(std::move(instance)), device_(std::move(device)),
       device_info_(std::move(device_info)) {}
 
 } // namespace vx::render

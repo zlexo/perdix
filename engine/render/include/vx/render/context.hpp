@@ -1,10 +1,9 @@
 #pragma once
 
 #include <vx/core/result.hpp>
+#include <vx/render/device.hpp>
 #include <vx/render/device_selection.hpp>
 #include <vx/render/instance.hpp>
-
-#include <volk.h>
 
 #include <span>
 
@@ -17,17 +16,24 @@ struct ContextDesc {
     bool validation = false;
 };
 
-// The instance and the physical device the engine renders with, picked by RFC
-// 0001's device selection: conformant drivers first, and portability drivers
-// such as MoltenVK only when no conformant driver offers a device that passes
-// the floor.
+// The instance and the device the engine renders with, picked by RFC 0001's
+// device selection: conformant drivers first, and portability drivers such as
+// MoltenVK only when no conformant driver offers a device that passes the floor.
 class Context {
 public:
     // Fails naming every device and what it lacks when none qualifies.
     [[nodiscard]] static Result<Context> create(const ContextDesc& desc);
 
+    Context(Context&& other) noexcept = default;
+    // Members are assigned in order, which would destroy the old instance
+    // before the old device.
+    Context& operator=(Context&& other) = delete;
+    Context(const Context&) = delete;
+    Context& operator=(const Context&) = delete;
+    ~Context() = default;
+
     [[nodiscard]] const Instance& instance() const noexcept { return instance_; }
-    [[nodiscard]] VkPhysicalDevice physical_device() const noexcept { return physical_device_; }
+    [[nodiscard]] const Device& device() const noexcept { return device_; }
     [[nodiscard]] const DeviceInfo& device_info() const noexcept { return device_info_; }
     // The instance opts in to portability drivers for the fallback alone.
     [[nodiscard]] bool portability_fallback() const noexcept {
@@ -35,10 +41,10 @@ public:
     }
 
 private:
-    Context(Instance instance, VkPhysicalDevice physical_device, DeviceInfo device_info);
+    Context(Instance instance, Device device, DeviceInfo device_info);
 
-    Instance instance_;
-    VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
+    Instance instance_; // declared first, so it is destroyed last
+    Device device_;
     DeviceInfo device_info_;
 };
 

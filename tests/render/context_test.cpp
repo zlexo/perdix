@@ -26,7 +26,8 @@ TEST_CASE("a context runs on a conformant driver when one passes the floor") {
 
     CHECK_FALSE(context.portability_fallback());
     CHECK_FALSE(context.device_info().portability_subset);
-    CHECK(context.physical_device() != VK_NULL_HANDLE);
+    CHECK(context.device().handle() != VK_NULL_HANDLE);
+    CHECK(context.device().queue() != VK_NULL_HANDLE);
     CHECK(context.instance().validation_counts().errors == 0);
 }
 
