@@ -134,7 +134,7 @@ Palettes do not shrink on every `set`. When a state's last block is overwritten,
 
 ### Bulk conversion
 
-Generators write a plain `BlockState[32768]` and compress it once with `from_dense`, which builds the palette with a per-thread reverse lookup table, then picks the smallest width that fits. The mesher calls `to_dense` to get a plain array (and the one-block border it needs from the six neighbors through `copy_face`), so its inner loops never touch the packed format. A second form of `to_dense` takes a layout (an offset plus row and layer strides) and writes straight into the inside of the mesher's padded 34 by 34 by 34 array, saving a full extra copy per mesh.
+Generators write a plain `BlockState[32768]` and compress it once with `from_dense`, which builds the palette with a per-thread reverse lookup table, then picks the smallest width that fits. The mesher calls `to_dense` to get a plain array, so its inner loops never touch the packed format. A second form of `to_dense` takes a layout (an offset plus row and layer strides) and writes straight into the inside of the mesher's padded 34 by 34 by 34 array, saving a full extra copy per mesh. The one-block border around it comes from all 26 neighbors (RFC 0003): the 6 face neighbors through `copy_face`, and the 12 edge and 8 corner neighbors through `get`, 392 single-block reads in all.
 
 ### API sketch
 
