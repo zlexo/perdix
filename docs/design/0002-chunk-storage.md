@@ -182,7 +182,7 @@ public:
 - **Plain 16-bit arrays:** the simplest and fastest to read, and about ten times the memory. Kept as the working format inside generators and the mesher, where speed matters and only a few chunks are live at once.
 - **Run-length encoding:** smaller for layered terrain, but reading one block means walking runs. Kept in mind for the disk format.
 - **Sparse voxel octrees:** compact for large uniform regions and good for ray tracing, but slower to read and edit, and this is a rasterizer (ADR 0002).
-- **Odd bit widths (3, 5, 6 bits):** up to 25% smaller for some palettes, at the cost of indices that straddle words or wasted bits per word. Power-of-two widths keep the read path branch-free and simple.
+- **Odd bit widths (3, 5, 6 or 7 bits):** up to 37.5% smaller, at the cost of indices that straddle words or wasted bits per word. Palettes of 17 to 32 states save the most: they need 5 bits but get 8, so 20,480 bytes of block data instead of 32,768, or 21,848 (33% smaller) when no index straddles a word, as in Minecraft. Power-of-two widths keep the read path branch-free and simple.
 - **16 by 16 by 16 chunks:** finer edits and streaming, but eight times as many chunks, headers, map entries and draw ranges for the same view distance. Open question 1.
 - **Fixed-height columns like Minecraft:** simpler to generate for, but the world gets a ceiling and a floor, and streaming and level of detail only work in two dimensions. Open question 2.
 
