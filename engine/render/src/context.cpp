@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -13,6 +14,7 @@ namespace {
 // A device chosen on an instance, before its logical device exists.
 struct Selection {
     Instance instance;
+    Surface surface;
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     DeviceInfo info;
 };
@@ -32,17 +34,29 @@ std::vector<VkPhysicalDevice> physical_devices(VkInstance instance) {
 
 // RFC 0001's selection on one instance, which lists portability drivers or not.
 Result<Selection> select(const ContextDesc& desc, bool portability) {
+    const std::span<const char* const> extensions = desc.surface.has_value()
+                                                        ? desc.surface->instance_extensions
+                                                        : std::span<const char* const>{};
     Result<Instance> instance = Instance::create(
-        {.extensions = desc.extensions, .validation = desc.validation, .portability = portability});
+        {.extensions = extensions, .validation = desc.validation, .portability = portability});
     if (!instance.has_value()) {
         return instance.error();
+    }
+
+    Surface surface;
+    if (desc.surface.has_value()) {
+        const Result<VkSurfaceKHR> made = desc.surface->create(instance.value().handle());
+        if (!made.has_value()) {
+            return made.error();
+        }
+        surface = Surface(instance.value().handle(), made.value());
     }
 
     const std::vector<VkPhysicalDevice> devices = physical_devices(instance.value().handle());
     std::vector<DeviceInfo> infos;
     infos.reserve(devices.size());
     for (VkPhysicalDevice device : devices) {
-        infos.push_back(describe_device(device));
+        infos.push_back(describe_device(device, surface.handle()));
     }
     const Result<std::size_t> chosen = choose_device(infos);
     if (!chosen.has_value()) {
@@ -50,6 +64,7 @@ Result<Selection> select(const ContextDesc& desc, bool portability) {
     }
     return Selection{
         .instance = std::move(instance).value(),
+        .surface = std::move(surface),
         .physical_device = devices[chosen.value()],
         .info = std::move(infos[chosen.value()]),
     };
@@ -76,11 +91,12 @@ Result<Context> Context::create(const ContextDesc& desc) {
     if (!device.has_value()) {
         return device.error();
     }
-    return Context(std::move(chosen.instance), std::move(device).value(), std::move(chosen.info));
+    return Context(std::move(chosen.instance), std::move(chosen.surface), std::move(device).value(),
+                   std::move(chosen.info));
 }
 
-Context::Context(Instance instance, Device device, DeviceInfo device_info)
-    : instance_(std::move(instance)), device_(std::move(device)),
+Context::Context(Instance instance, Surface surface, Device device, DeviceInfo device_info)
+    : instance_(std::move(instance)), surface_(std::move(surface)), device_(std::move(device)),
       device_info_(std::move(device_info)) {}
 
 } // namespace vx::render

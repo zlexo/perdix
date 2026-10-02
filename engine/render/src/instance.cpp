@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-#ifdef __APPLE__
+#ifndef _WIN32
 #include <dlfcn.h>
 #endif
 
@@ -17,11 +17,17 @@ namespace vx::render {
 namespace {
 
 constexpr const char* validation_layer = "VK_LAYER_KHRONOS_validation";
+constexpr const char* no_loader_message =
+    "no Vulkan loader found: install the Vulkan SDK (RFC 0001) or a Vulkan driver, and on macOS "
+    "source the SDK's setup-env.sh";
 
 // volk finds the loader by name. On macOS the SDK's loader is findable by name
 // only through DYLD_LIBRARY_PATH, which the system strips from programs started
 // through protected binaries, so the SDK path seen at configure time is tried next.
 bool load_vulkan() {
+    if (volkGetInstanceVersion() != 0) {
+        return true; // loaded already
+    }
     if (volkInitialize() == VK_SUCCESS) {
         return true;
     }
@@ -94,10 +100,25 @@ VkDebugUtilsMessengerCreateInfoEXT messenger_info(ValidationCounts* counts,
 
 } // namespace
 
+Result<std::string> vulkan_loader_path() {
+    if (!load_vulkan()) {
+        return Error{no_loader_message};
+    }
+#ifdef _WIN32
+    return std::string(); // the system's lookup finds vulkan-1.dll
+#else
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<const void*>(vkGetInstanceProcAddr), &info) == 0 ||
+        info.dli_fname == nullptr) {
+        return Error{"the Vulkan loader is loaded, but not from a file the system can name"};
+    }
+    return std::string(info.dli_fname);
+#endif
+}
+
 Result<Instance> Instance::create(const InstanceDesc& desc) {
     if (!load_vulkan()) {
-        return Error{"no Vulkan loader found: install the Vulkan SDK (RFC 0001) or a Vulkan "
-                     "driver, and on macOS source the SDK's setup-env.sh"};
+        return Error{no_loader_message};
     }
 
     std::uint32_t loader_version = VK_API_VERSION_1_0;

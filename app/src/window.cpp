@@ -1,18 +1,25 @@
 #include "window.hpp"
 
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
 
+#include <span>
 #include <string>
 #include <utility>
 
 namespace vx::app {
 
-Result<Window> Window::create(const char* title, int width, int height) {
+Result<Window> Window::create(const char* title, int width, int height,
+                              const std::string& vulkan_loader) {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         return Error{std::string("SDL could not start its video subsystem: ") + SDL_GetError()};
     }
-    SDL_Window* window = SDL_CreateWindow(title, width, height,
-                                          SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    if (!vulkan_loader.empty()) {
+        SDL_SetHint(SDL_HINT_VULKAN_LIBRARY, vulkan_loader.c_str());
+    }
+    SDL_Window* window =
+        SDL_CreateWindow(title, width, height,
+                         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (window == nullptr) {
         Error error{std::string("SDL could not create the window: ") + SDL_GetError()};
         SDL_Quit();
@@ -47,6 +54,23 @@ bool Window::handle_events() {
         }
     }
     return true;
+}
+
+render::SurfaceSource Window::surface_source() const {
+    Uint32 count = 0;
+    const char* const* extensions = SDL_Vulkan_GetInstanceExtensions(&count);
+    SDL_Window* window = window_;
+    return {
+        .instance_extensions = std::span(extensions, count),
+        .create = [window](VkInstance instance) -> Result<VkSurfaceKHR> {
+            VkSurfaceKHR surface = VK_NULL_HANDLE;
+            if (!SDL_Vulkan_CreateSurface(window, instance, nullptr, &surface)) {
+                return Error{std::string("SDL could not create a Vulkan surface: ") +
+                             SDL_GetError()};
+            }
+            return surface;
+        },
+    };
 }
 
 void Window::destroy() noexcept {

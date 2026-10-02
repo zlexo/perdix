@@ -39,6 +39,7 @@ TEST_CASE("a software driver without optional features reports both") {
         .optional = {.sampler_anisotropy = false, .fill_mode_non_solid = false},
         .portability_subset = false,
         .queue_family = 0U,
+        .presents = true,
     };
 
     const std::string report = vx::render::format_device_report(lavapipe, false);

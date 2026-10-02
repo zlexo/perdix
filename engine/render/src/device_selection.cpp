@@ -42,6 +42,8 @@ Result<std::size_t> choose_device(std::span<const DeviceInfo> devices) {
         std::vector<std::string_view> missing = check_feature_floor(device.features).missing;
         if (!device.queue_family.has_value()) {
             missing.emplace_back("a queue with graphics and compute");
+        } else if (!device.presents) {
+            missing.emplace_back("presentation to the window");
         }
         if (!missing.empty()) {
             rejected += "\n  " + device.name + " (" + device.driver_name + ") lacks ";

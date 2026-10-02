@@ -38,6 +38,7 @@ inline render::DeviceInfo m3_on_kosmickrisp() {
         .optional = {.sampler_anisotropy = true, .fill_mode_non_solid = false},
         .portability_subset = false,
         .queue_family = 0U,
+        .presents = true,
     };
 }
 
@@ -51,6 +52,7 @@ inline render::DeviceInfo m3_on_moltenvk() {
         .optional = {.sampler_anisotropy = true, .fill_mode_non_solid = true},
         .portability_subset = true,
         .queue_family = 0U,
+        .presents = true,
     };
 }
 

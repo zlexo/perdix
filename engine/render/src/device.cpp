@@ -31,23 +31,43 @@ bool lists_extension(VkPhysicalDevice physical_device, std::string_view name) {
     });
 }
 
-std::optional<std::uint32_t> graphics_and_compute_family(VkPhysicalDevice physical_device) {
+struct QueueChoice {
+    std::optional<std::uint32_t> family;
+    bool presents = true;
+};
+
+// The first queue family with graphics and compute that can present to the
+// surface. Without a surface, the first with graphics and compute; when none
+// can present, that one, marked as not presenting.
+QueueChoice choose_queue_family(VkPhysicalDevice physical_device, VkSurfaceKHR surface) {
     std::uint32_t count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &count, nullptr);
     std::vector<VkQueueFamilyProperties> families(count);
     vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &count, families.data());
     const VkQueueFlags wanted = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+    std::optional<std::uint32_t> first;
     for (std::uint32_t i = 0; i < count; ++i) {
-        if ((families[i].queueFlags & wanted) == wanted) {
-            return i;
+        if ((families[i].queueFlags & wanted) != wanted) {
+            continue;
+        }
+        if (surface == VK_NULL_HANDLE) {
+            return {.family = i, .presents = true};
+        }
+        VkBool32 supported = VK_FALSE;
+        vkGetPhysicalDeviceSurfaceSupportKHR(physical_device, i, surface, &supported);
+        if (supported == VK_TRUE) {
+            return {.family = i, .presents = true};
+        }
+        if (!first.has_value()) {
+            first = i;
         }
     }
-    return std::nullopt;
+    return {.family = first, .presents = surface == VK_NULL_HANDLE};
 }
 
 } // namespace
 
-DeviceInfo describe_device(VkPhysicalDevice physical_device) {
+DeviceInfo describe_device(VkPhysicalDevice physical_device, VkSurfaceKHR surface) {
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical_device, &properties);
     const bool vulkan12 = properties.apiVersion >= VK_API_VERSION_1_2;
@@ -100,7 +120,9 @@ DeviceInfo describe_device(VkPhysicalDevice physical_device) {
     info.optional.fill_mode_non_solid = features.features.fillModeNonSolid == VK_TRUE;
 
     info.portability_subset = lists_extension(physical_device, portability_subset_extension);
-    info.queue_family = graphics_and_compute_family(physical_device);
+    const QueueChoice queue = choose_queue_family(physical_device, surface);
+    info.queue_family = queue.family;
+    info.presents = queue.presents;
     return info;
 }
 

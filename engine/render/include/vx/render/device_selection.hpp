@@ -31,15 +31,18 @@ struct DeviceInfo {
     OptionalFeatures optional;
     // Lists VK_KHR_portability_subset: a portability driver, such as MoltenVK.
     bool portability_subset = false;
-    // The first queue family with graphics and compute. The engine uses one queue.
+    // The first queue family with graphics and compute, preferring one that can
+    // present to the window. The engine uses one queue.
     std::optional<std::uint32_t> queue_family;
+    // Whether that family can present to the window; true when there is none.
+    bool presents = true;
 };
 
 // Picks the device to run on, among those that pass the feature floor and have
-// a queue family with graphics and compute. A device without
-// VK_KHR_portability_subset beats one that lists it, then a discrete GPU beats
-// an integrated one; ties keep the loader's order. Fails naming every device
-// and what it lacks.
+// a queue family with graphics and compute that can present to the window, when
+// there is one. A device without VK_KHR_portability_subset beats one that lists
+// it, then a discrete GPU beats an integrated one; ties keep the loader's order.
+// Fails naming every device and what it lacks.
 [[nodiscard]] Result<std::size_t> choose_device(std::span<const DeviceInfo> devices);
 
 } // namespace vx::render

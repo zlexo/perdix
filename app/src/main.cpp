@@ -3,6 +3,7 @@
 #include <vx/core/version.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/device_report.hpp>
+#include <vx/render/instance.hpp>
 
 #include <charconv>
 #include <chrono>
@@ -58,20 +59,29 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Perdix " << vx::version_string() << '\n';
 
-    vx::Result<vx::render::Context> context =
-        vx::render::Context::create({.extensions = {}, .validation = validation});
+    // SDL loads a Vulkan library for the window's surface, and it must be the
+    // engine's loader: a driver's library does not understand the loader's
+    // instances (see Window::create).
+    const vx::Result<std::string> loader = vx::render::vulkan_loader_path();
+    if (!loader.has_value()) {
+        std::cerr << "error: " << loader.error().message << '\n';
+        return 1;
+    }
+    vx::Result<vx::app::Window> window =
+        vx::app::Window::create("Perdix", 1280, 720, loader.value());
+    if (!window.has_value()) {
+        std::cerr << "error: " << window.error().message << '\n';
+        return 1;
+    }
+
+    vx::Result<vx::render::Context> context = vx::render::Context::create(
+        {.surface = window.value().surface_source(), .validation = validation});
     if (!context.has_value()) {
         std::cerr << "error: " << context.error().message << '\n';
         return 1;
     }
     std::cout << vx::render::format_device_report(context.value().device_info(),
                                                   context.value().portability_fallback());
-
-    vx::Result<vx::app::Window> window = vx::app::Window::create("Perdix", 1280, 720);
-    if (!window.has_value()) {
-        std::cerr << "error: " << window.error().message << '\n';
-        return 1;
-    }
     const std::uint64_t frames = options.value().frames;
     for (std::uint64_t frame = 0; frames == 0 || frame < frames; ++frame) {
         if (!window.value().handle_events()) {
@@ -79,6 +89,15 @@ int main(int argc, char* argv[]) {
         }
         // Until presenting paces the frames (RFC 0001 plan item 4), wait out one at 60 Hz.
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+
+    // With validation on, a run that broke Vulkan's rules fails, so a smoke run
+    // with --frames catches it. Messages from shutting down still print.
+    const std::uint32_t errors = context.value().instance().validation_counts().errors;
+    if (errors > 0) {
+        std::cerr << "error: Vulkan validation counted " << errors
+                  << (errors == 1 ? " error\n" : " errors\n");
+        return 3;
     }
     return 0;
 }
