@@ -872,6 +872,13 @@ Result<void> Renderer::recreate_target() {
     return add_rendered_semaphores();
 }
 
+void Renderer::set_present_mode(PresentMode mode) noexcept {
+    if (mode != present_mode_) {
+        present_mode_ = mode;
+        swapchain_stale_ = swapchain_.has_value(); // replaced on the next frame
+    }
+}
+
 Result<Frame> Renderer::render(const FrameInputs& inputs) {
     ZoneScopedN("Render");
     if (inputs.cubes.size() > max_cubes) {

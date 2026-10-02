@@ -102,6 +102,14 @@ public:
     // The framebuffer has this size now; the target follows on the next frame.
     void resize(Extent framebuffer) noexcept { framebuffer_ = framebuffer; }
 
+    // Presents in `mode` from the next frame, on a new swapchain. Immediate
+    // falls back to FIFO where the surface does not offer it (RFC 0001), so
+    // the swapchain's choice says what presentation got. Headless, there is
+    // no swapchain, and the mode is only kept.
+    void set_present_mode(PresentMode mode) noexcept;
+    // The mode asked for, at creation or since.
+    [[nodiscard]] PresentMode present_mode() const noexcept { return present_mode_; }
+
     // How many cubes one frame can draw.
     static constexpr std::size_t max_cubes = 256;
 

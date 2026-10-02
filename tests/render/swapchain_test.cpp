@@ -19,6 +19,7 @@
 #include <glm/ext/vector_int3_sized.hpp>
 #include <volk.h>
 
+#include <algorithm>
 #include <array>
 #include <optional>
 #include <string>
@@ -113,6 +114,50 @@ TEST_CASE("a window's frames acquire, draw and present, on a surface with no dis
     const vx::render::SwapchainChoice& choice = renderer.swapchain()->choice();
     MESSAGE(vx::render::format_swapchain_report(choice));
     CHECK(choice.present_mode == VK_PRESENT_MODE_FIFO_KHR);
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}
+
+TEST_CASE("a present mode switch takes a new swapchain, on the next frame") {
+    if (const std::optional<std::string> reason = surface_refuses_swapchain()) {
+        MESSAGE("skipped: ", *reason);
+        return;
+    }
+    vx::Result<vx::render::Renderer> created = windowed_renderer();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    draw_frames(renderer, 2);
+    const VkSwapchainKHR fifo = renderer.swapchain()->handle();
+
+    renderer.set_present_mode(vx::render::PresentMode::immediate);
+    CHECK(renderer.present_mode() == vx::render::PresentMode::immediate);
+    CHECK(renderer.swapchain()->handle() == fifo); // until the next frame
+    draw_frames(renderer, 2);
+    CHECK(renderer.swapchain()->handle() != fifo);
+    // Immediate where the surface offers it; otherwise FIFO, which every
+    // surface does.
+    const vx::render::SurfaceSupport support = vx::render::query_surface_support(
+        renderer.context().device().physical_device(), renderer.context().surface());
+    const bool offers_immediate =
+        std::ranges::find(support.present_modes, VK_PRESENT_MODE_IMMEDIATE_KHR) !=
+        support.present_modes.end();
+    MESSAGE("the surface ", std::string(offers_immediate ? "offers" : "does not offer"),
+            " immediate");
+    CHECK(renderer.swapchain()->choice().present_mode ==
+          (offers_immediate ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR));
+
+    const VkSwapchainKHR immediate = renderer.swapchain()->handle();
+    renderer.set_present_mode(vx::render::PresentMode::fifo);
+    draw_frames(renderer, 2);
+    CHECK(renderer.swapchain()->handle() != immediate);
+    CHECK(renderer.swapchain()->choice().present_mode == VK_PRESENT_MODE_FIFO_KHR);
+
+    // Asking for the mode it has already replaces nothing.
+    const VkSwapchainKHR settled = renderer.swapchain()->handle();
+    renderer.set_present_mode(vx::render::PresentMode::fifo);
+    draw_frames(renderer, 1);
+    CHECK(renderer.swapchain()->handle() == settled);
     CHECK(renderer.context().instance().validation_counts().errors == 0);
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }
