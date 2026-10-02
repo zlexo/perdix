@@ -29,5 +29,5 @@ Each layer is its own CMake library and exposes only its own headers, so includi
 - World and meshing code is unit tested on CI without a GPU.
 - A CI check rejects Vulkan and window-library includes under `engine/world` and `engine/mesh` (#28), because include paths cannot.
 - A dedicated server later is `core` plus `world`, with no rendering code to strip out.
-- The renderer needs a handoff from the world: mesh results are produced off the render thread and queued for upload. Later RFCs define it.
+- The renderer needs a handoff from the world: mesh results are produced on worker threads, off the thread that renders, and queued for upload. Later RFCs define it.
 - A little indirection where a tangled design would call straight across. Worth it.
