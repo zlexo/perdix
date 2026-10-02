@@ -5,6 +5,7 @@
 #include <vulkan/vulkan_core.h>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace vx::render {
@@ -55,5 +56,9 @@ struct SwapchainChoice {
 // an sRGB format.
 [[nodiscard]] Result<SwapchainChoice> choose_swapchain(const SurfaceSupport& support,
                                                        Extent framebuffer, PresentMode wanted);
+
+// The startup report's line about the swapchain: its images, size, format and
+// present mode, ending in a newline.
+[[nodiscard]] std::string format_swapchain_report(const SwapchainChoice& choice);
 
 } // namespace vx::render

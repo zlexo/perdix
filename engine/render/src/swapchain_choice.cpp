@@ -18,6 +18,34 @@ bool is_srgb(VkFormat format) {
     }
 }
 
+const char* format_name(VkFormat format) {
+    switch (format) {
+    case VK_FORMAT_R8G8B8_SRGB:
+        return "R8G8B8_SRGB";
+    case VK_FORMAT_B8G8R8_SRGB:
+        return "B8G8R8_SRGB";
+    case VK_FORMAT_R8G8B8A8_SRGB:
+        return "R8G8B8A8_SRGB";
+    case VK_FORMAT_B8G8R8A8_SRGB:
+        return "B8G8R8A8_SRGB";
+    case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
+        return "A8B8G8R8_SRGB_PACK32";
+    default:
+        return "another format";
+    }
+}
+
+const char* present_mode_name(VkPresentModeKHR mode) {
+    switch (mode) {
+    case VK_PRESENT_MODE_FIFO_KHR:
+        return "FIFO";
+    case VK_PRESENT_MODE_IMMEDIATE_KHR:
+        return "immediate";
+    default:
+        return "another present mode";
+    }
+}
+
 // A currentExtent of this width means the swapchain's size decides the
 // surface's, rather than the other way round.
 constexpr std::uint32_t swapchain_decides = 0xFFFFFFFF;
@@ -80,6 +108,12 @@ Result<SwapchainChoice> choose_swapchain(const SurfaceSupport& support, Extent f
         }
     }
     return choice;
+}
+
+std::string format_swapchain_report(const SwapchainChoice& choice) {
+    return "Swapchain: " + std::to_string(choice.image_count) + " images of " +
+           std::to_string(choice.extent.width) + "x" + std::to_string(choice.extent.height) + ", " +
+           format_name(choice.format.format) + ", " + present_mode_name(choice.present_mode) + "\n";
 }
 
 } // namespace vx::render

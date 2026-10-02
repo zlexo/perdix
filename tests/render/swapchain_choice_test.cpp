@@ -132,3 +132,18 @@ TEST_CASE("the image keeps the surface's current transform") {
 
     CHECK(choose(support).transform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR);
 }
+
+TEST_CASE("the report gives the images, size, format and present mode") {
+    vx::render::SwapchainChoice choice;
+    choice.format = srgb(VK_FORMAT_B8G8R8A8_SRGB);
+    choice.present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    choice.image_count = 3;
+    choice.extent = {.width = 2560, .height = 1600};
+
+    CHECK(vx::render::format_swapchain_report(choice) ==
+          "Swapchain: 3 images of 2560x1600, B8G8R8A8_SRGB, FIFO\n");
+
+    choice.present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    CHECK(vx::render::format_swapchain_report(choice) ==
+          "Swapchain: 3 images of 2560x1600, B8G8R8A8_SRGB, immediate\n");
+}
