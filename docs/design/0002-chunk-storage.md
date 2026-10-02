@@ -159,6 +159,7 @@ class ChunkStorage {
 public:
     ChunkStorage() noexcept;   // uniform air, no allocation
     [[nodiscard]] static ChunkStorage uniform(BlockState state) noexcept;   // any one state, no allocation
+    [[nodiscard]] ChunkStorage clone() const;   // move-only, so copies are explicit (copy on write, RFC 0005)
 
     [[nodiscard]] static ChunkStorage from_dense(std::span<const BlockState, chunk_volume> blocks);
     void to_dense(std::span<BlockState, chunk_volume> out) const noexcept;
@@ -213,7 +214,7 @@ The prototype column comes from a throwaway implementation of this design measur
 
 - **Coordinates:** block -1 is chunk -1, local 31; block -32 is chunk -1, local 0; block -33 is chunk -2, local 31; round trips at the edges of the 32-bit range.
 - **Index order:** neighbors along x are 1 apart, along z 32 apart, along y 1,024 apart.
-- **Storage:** a default chunk is uniform air with zero block data, and `uniform` gives the same for any state; one `set` makes it 1-bit; growth through every width up to direct mode; `compact` after overwrites shrinks the width again.
+- **Storage:** a default chunk is uniform air with zero block data, and `uniform` gives the same for any state; `clone` gives an equal copy that later writes to either leave the other unchanged; one `set` makes it 1-bit; growth through every width up to direct mode; `compact` after overwrites shrinks the width again.
 - **Round trips:** random chunks (seeded, so failures reproduce) survive `from_dense` then `to_dense` unchanged at every width, and `get` agrees with a plain array after thousands of random `set` calls.
 - **Memory:** `memory_bytes` matches the table above at every width.
 - **Layering control:** `engine/world` is the second layer, so its pull request proves that including a header from a layer it does not link fails to compile (RFC 0000's test plan).
@@ -224,7 +225,7 @@ The prototype column comes from a throwaway implementation of this design measur
 2. `engine/world` layer: `BlockState`, coordinates, `local_index`, with tests and the layering control.
 3. The bit-packed array (power-of-two widths), with tests.
 4. Benchmark harness: nanobench in `bench/`, run in release, numbers printed for the pull request. First benchmarks: the packed array.
-5. `ChunkStorage`: modes, `uniform`, `get`, `set`, growth, direct mode, `compact`, with tests.
+5. `ChunkStorage`: modes, `uniform`, `clone`, `get`, `set`, growth, direct mode, `compact`, with tests.
 6. Bulk conversion (`from_dense`, `to_dense`, `copy_face`) with tests and benchmarks.
 7. Size-class pools for block data and memory accounting.
 
