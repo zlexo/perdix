@@ -76,6 +76,7 @@ engine/
 app/                    the executable: window, input, main loop
 tests/                  one doctest executable per layer
 bench/                  nanobench benchmarks, added by RFC 0002
+assets/                 data files (blocks, textures, terrain), added by RFC 0004 and RFC 0008
 docs/                   vision, roadmap, ADRs, RFCs
 ```
 
