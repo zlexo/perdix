@@ -33,7 +33,7 @@ Non-goals:
 - GPU memory, uploads (including the transfer queue RFC 0001 deferred to M3), multi-draw and culling: RFC 0007.
 - Terrain shapes and the generation passes: RFC 0008. Until then, a placeholder generator.
 - Saving to disk (M8) and level of detail (M9). The lifecycle keeps a place for saving.
-- How fast an edit must appear: M5's remeshing on edit.
+- How fast an edit must appear: RFC 0005 (an edit's remeshes back on the main thread within 1 ms).
 
 ## Prior art
 
