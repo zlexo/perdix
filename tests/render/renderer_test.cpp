@@ -119,6 +119,27 @@ TEST_CASE("a headless renderer draws the triangle with each vertex's color at it
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }
 
+TEST_CASE("where the triangles overlap, the nearer shows, though it is drawn first") {
+    vx::Result<vx::render::Renderer> created = headless_renderer();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+
+    REQUIRE(renderer.render({.r = 0.0F, .g = 0.0F, .b = 0.0F, .a = 1.0F}).has_value());
+    const vx::Result<std::vector<std::uint8_t>> pixels = renderer.capture();
+    REQUIRE(pixels.has_value());
+
+    // The gray triangle is drawn second, at depth 0.25; the colored one first,
+    // at 0.75, nearer under reversed-Z. Linear gray 0.5 encodes to sRGB 188.
+    const std::uint32_t width = image_size.width;
+    const Pixel gray_only = pixel_at(pixels.value(), width, 14, 10);
+    const Pixel both = pixel_at(pixels.value(), width, 32, 16);
+    CHECK(near(gray_only, {188, 188, 188, 255}));
+    CHECK_FALSE(near(both, {188, 188, 188, 255}));
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}
+
 TEST_CASE("a headless renderer follows a resize") {
     vx::Result<vx::render::Renderer> created = headless_renderer();
     INFO((created.has_value() ? std::string() : created.error().message));

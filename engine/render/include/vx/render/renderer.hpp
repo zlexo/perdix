@@ -41,9 +41,9 @@ enum class Frame : std::uint8_t {
 };
 
 // Draws frames into a window's swapchain, or headless into an offscreen image
-// (RFC 0001). For now each frame clears its target to one color and draws a
-// triangle over it, with two frames in flight: the CPU records frame N + 1
-// while the GPU draws frame N.
+// (RFC 0001). For now each frame clears its target to one color and draws two
+// triangles with reversed-Z depth, with two frames in flight: the CPU records
+// frame N + 1 while the GPU draws frame N.
 class Renderer {
 public:
     [[nodiscard]] static Result<Renderer> create(const RendererDesc& desc);
@@ -58,7 +58,7 @@ public:
     // The framebuffer has this size now; the target follows on the next frame.
     void resize(Extent framebuffer) noexcept { framebuffer_ = framebuffer; }
 
-    // Clears the target to `clear`, draws the triangle, and presents the
+    // Clears the target to `clear`, draws the triangles, and presents the
     // target when it is a window's.
     [[nodiscard]] Result<Frame> render(Color clear);
 
@@ -73,8 +73,9 @@ public:
 
 private:
     Renderer(Context context, std::optional<Swapchain> swapchain,
-             std::optional<AttachmentImage> offscreen, GraphicsPipeline triangle_pipeline,
-             Buffer triangle_buffer, Extent framebuffer, PresentMode present_mode);
+             std::optional<AttachmentImage> offscreen, AttachmentImage depth,
+             GraphicsPipeline triangle_pipeline, Buffer triangle_buffer, Extent framebuffer,
+             PresentMode present_mode);
     [[nodiscard]] Result<void> create_frame_objects();
     [[nodiscard]] Result<void> upload_triangle();
     [[nodiscard]] Result<void> add_rendered_semaphores();
@@ -84,7 +85,8 @@ private:
     Context context_;                    // declared first, so it is destroyed last
     std::optional<Swapchain> swapchain_; // exactly one of these two
     std::optional<AttachmentImage> offscreen_;
-    // RFC 0001's first pipeline: a triangle, its vertices pulled from a buffer.
+    AttachmentImage depth_; // beside either target, the size of its images
+    // RFC 0001's first pipeline: triangles, their vertices pulled from a buffer.
     GraphicsPipeline triangle_pipeline_;
     Buffer triangle_buffer_;
     Extent framebuffer_;
