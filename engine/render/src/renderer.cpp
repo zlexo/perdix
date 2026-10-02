@@ -14,7 +14,7 @@ namespace {
 
 constexpr std::uint64_t forever = std::numeric_limits<std::uint64_t>::max();
 
-// RGBA byte order, so the pixels of a frame read in order.
+// RGBA byte order, so a captured frame reads without swizzling.
 constexpr VkFormat offscreen_format = VK_FORMAT_R8G8B8A8_SRGB;
 
 enum class Target : std::uint8_t { swapchain, offscreen };
@@ -69,7 +69,7 @@ void begin_commands(VkCommandBuffer commands) {
 
 // One frame's commands: the image becomes a color attachment, is cleared, and,
 // for a swapchain, becomes presentable. An offscreen image stays a color
-// attachment, ready for the next frame.
+// attachment, ready for the next frame or for capture.
 void record_clear(VkCommandBuffer commands, Target target, VkImage image, VkImageView view,
                   VkExtent2D extent, Color clear) {
     begin_commands(commands);
@@ -418,6 +418,116 @@ Result<Frame> Renderer::render(Color clear) {
         return Error{"vkQueuePresentKHR failed: " + vk_result_name(presented)};
     }
     return Frame::drawn;
+}
+
+Result<std::vector<std::uint8_t>> Renderer::capture() {
+    assert(offscreen_.has_value() && "capture reads back headless frames");
+    if (frame_ == 0) {
+        return Error{"there is no frame to capture yet"};
+    }
+    const OffscreenImage& image = *offscreen_;
+    VkDevice device = context_.device().handle();
+    VmaAllocator allocator = context_.device().allocator();
+    VkQueue queue = context_.device().queue();
+    vkDeviceWaitIdle(device); // every frame is done, and every slot is free
+
+    const VkExtent2D extent = image.extent();
+    const VkDeviceSize size = VkDeviceSize{extent.width} * extent.height * 4;
+    const VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .size = size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = nullptr,
+    };
+    VmaAllocationCreateInfo allocation_info{};
+    allocation_info.flags =
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    allocation_info.usage = VMA_MEMORY_USAGE_AUTO;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    VmaAllocationInfo mapped{};
+    if (const VkResult result = vmaCreateBuffer(allocator, &buffer_info, &allocation_info, &buffer,
+                                                &allocation, &mapped);
+        result != VK_SUCCESS) {
+        return Error{"vmaCreateBuffer failed for a capture: " + vk_result_name(result)};
+    }
+
+    VkCommandBuffer commands = slots_[0].command_buffer;
+    vkResetCommandPool(device, slots_[0].command_pool, 0);
+    begin_commands(commands);
+    transition(commands, image.image(), VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+               VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    const VkBufferImageCopy2 region = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+        .pNext = nullptr,
+        .bufferOffset = 0,
+        .bufferRowLength = 0, // tightly packed
+        .bufferImageHeight = 0,
+        .imageSubresource =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel = 0,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        .imageOffset = {.x = 0, .y = 0, .z = 0},
+        .imageExtent = {.width = extent.width, .height = extent.height, .depth = 1},
+    };
+    const VkCopyImageToBufferInfo2 copy = {
+        .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2,
+        .pNext = nullptr,
+        .srcImage = image.image(),
+        .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .dstBuffer = buffer,
+        .regionCount = 1,
+        .pRegions = &region,
+    };
+    vkCmdCopyImageToBuffer2(commands, &copy);
+    // The host reads the buffer once the queue is idle; the copy must be visible to it.
+    const VkBufferMemoryBarrier2 to_host = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .pNext = nullptr,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+        .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = buffer,
+        .offset = 0,
+        .size = VK_WHOLE_SIZE,
+    };
+    const VkDependencyInfo dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .pNext = nullptr,
+        .dependencyFlags = 0,
+        .memoryBarrierCount = 0,
+        .pMemoryBarriers = nullptr,
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &to_host,
+        .imageMemoryBarrierCount = 0,
+        .pImageMemoryBarriers = nullptr,
+    };
+    vkCmdPipelineBarrier2(commands, &dependency);
+    vkEndCommandBuffer(commands);
+
+    if (const Result<void> submitted = submit(queue, commands, {}, {}); !submitted.has_value()) {
+        vmaDestroyBuffer(allocator, buffer, allocation);
+        return submitted.error();
+    }
+    vkQueueWaitIdle(queue);
+    vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
+
+    const auto* bytes = static_cast<const std::uint8_t*>(mapped.pMappedData);
+    std::vector<std::uint8_t> pixels(bytes, bytes + size);
+    vmaDestroyBuffer(allocator, buffer, allocation);
+    return pixels;
 }
 
 void Renderer::destroy() noexcept {
