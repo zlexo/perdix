@@ -137,7 +137,7 @@ Five power-of-two sizes means the block data comes from five size classes. Each 
 
 A new state that does not fit the palette first looks for a dead entry: one pass counts how often each palette entry is used (a few microseconds, and only on this rare path), and an entry with no blocks left is reused. Only when every entry is live does the width double and the chunk repack once (1 to 2 to 4 to 8 bits, then direct). Without that check, overwritten states that still hold palette slots would force growth that compaction could have avoided.
 
-Palettes do not shrink on every `set`. When a state's last block is overwritten, its palette entry stays until the chunk is next compacted, which happens when it is meshed or saved: both already read every block, so counting usage costs nothing extra there.
+Palettes do not shrink on every `set`. When a state's last block is overwritten, its palette entry stays until the chunk is next compacted. Compaction is a write, so it cannot ride along with meshing or saving, which read pinned versions on workers (RFC 0005): the world thread runs it as a pass of its own, on versions no job has pinned. It is not free, since it counts how often each palette entry is used (a few microseconds) and repacks when the width can shrink, so the pass visits only chunks edited since their last compaction.
 
 ### Bulk conversion
 
