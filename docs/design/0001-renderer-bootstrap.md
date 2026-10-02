@@ -78,7 +78,7 @@ We call the Vulkan C API directly, behind thin move-only C++ types (`Buffer`, `I
 ```cpp
 struct SurfaceSource {
     std::span<const char* const> instance_extensions;   // from the window library
-    std::function<VkSurfaceKHR(VkInstance)> create;     // called once the instance exists
+    std::function<VkSurfaceKHR(VkInstance)> create;     // called after each instance is created
 };
 ```
 
@@ -87,7 +87,7 @@ struct SurfaceSource {
 ### Instance
 
 - API version 1.3.
-- Extensions: the surface extensions from `SurfaceSource`; `VK_EXT_debug_utils` in debug builds; `VK_KHR_portability_enumeration` when present, so MoltenVK's device is listed.
+- Extensions: the surface extensions from `SurfaceSource`; `VK_EXT_debug_utils` in debug builds. `VK_KHR_portability_enumeration` only for the portability fallback under device selection, and then always with the `VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR` flag: the extension alone lists no portability driver.
 - Validation in debug builds: `VK_LAYER_KHRONOS_validation` with synchronization validation on. Messages go to the engine log with their message ID.
 
 ### Device selection
@@ -103,11 +103,19 @@ struct FeatureReport {
 [[nodiscard]] FeatureReport check_feature_floor(const DeviceFeatures& features);
 ```
 
-The floor: Vulkan 1.3; `dynamicRendering`, `synchronization2`, `timelineSemaphore`, `bufferDeviceAddress`, `descriptorIndexing` with `runtimeDescriptorArray`, `descriptorBindingPartiallyBound` and `shaderSampledImageArrayNonUniformIndexing`; `multiDrawIndirect`. `samplerAnisotropy` is not part of the floor: it is enabled when the device offers it, for RFC 0004's texture filtering. Among devices that pass, a discrete GPU beats an integrated one. If none passes, startup fails with the device names and their missing features.
+The floor: Vulkan 1.3; `dynamicRendering`, `synchronization2`, `timelineSemaphore`, `bufferDeviceAddress`, `descriptorIndexing` with `runtimeDescriptorArray`, `descriptorBindingPartiallyBound` and `shaderSampledImageArrayNonUniformIndexing`; `multiDrawIndirect`. `samplerAnisotropy` is not part of the floor: it is enabled when the device offers it, for RFC 0004's texture filtering.
 
-On macOS both KosmicKrisp and MoltenVK can expose the same GPU. The engine does not choose between drivers; the Vulkan loader does, through `VK_DRIVER_FILES`. Switching drivers to tell a driver bug from our own is an environment variable, documented in a "Debugging the renderer" page.
+Among devices that pass, one without `VK_KHR_portability_subset` beats one that lists it, and then a discrete GPU beats an integrated one. If none passes, startup fails with the device names and their missing features.
 
-At startup the engine logs the GPU, driver name and version, API version and present mode, and the overlay shows the same.
+**Drivers on macOS.** The SDK installs two drivers for the same GPU: KosmicKrisp, which is conformant, and MoltenVK, a portability driver. The loader shows portability drivers only to an instance that opts in with the extension and flag above, and then lists MoltenVK first (LunarG's macOS guide for SDK 1.4.363.0). An engine that always opted in and kept the first device that passes would quietly run on MoltenVK. So:
+
+1. The instance does not opt in, and selection sees conformant drivers only.
+2. If no device passes the floor, or the instance fails with `VK_ERROR_INCOMPATIBLE_DRIVER` because no conformant driver is installed, the instance is created again, opted in. That is the path on Macs only MoltenVK supports: Intel Macs, and macOS before 26.
+3. If the chosen device lists `VK_KHR_portability_subset`, device creation enables it, as the specification requires (VUID-VkDeviceCreateInfo-pProperties-04451).
+
+`VK_DRIVER_FILES` overrides the choice: the loader then sees only the drivers it names. Pointed at MoltenVK's manifest, it hides KosmicKrisp and step 2 finds MoltenVK, which is how a driver bug is told apart from our own. A "Debugging the renderer" page documents both manifests.
+
+At startup the engine logs the GPU, driver name and version, API version, present mode and whether the portability fallback was taken, and the overlay shows the same.
 
 ### Swapchain
 
@@ -247,15 +255,15 @@ On the reference machine, release build, cube scene:
 
 ## Test plan
 
-- **Unit tests** (no GPU): `check_feature_floor` names every missing feature; the reversed infinite projection maps the near plane to depth 1 and points far away toward 0; camera-relative conversion keeps a position near the camera within float precision at 10 million blocks from the origin.
+- **Unit tests** (no GPU): `check_feature_floor` names every missing feature; for one GPU reported by both drivers, ranking picks the device without `VK_KHR_portability_subset`; the reversed infinite projection maps the near plane to depth 1 and points far away toward 0; camera-relative conversion keeps a position near the camera within float precision at 10 million blocks from the origin.
 - **CI:** the lavapipe job renders offscreen with synchronization validation on and fails on any message. Control: a pull-request-local change that drops one barrier must turn the job red before the job is trusted.
-- **By hand on the reference machine:** run on KosmicKrisp and on MoltenVK; resize, minimize and restore; switch present modes; fly to 10 million blocks and confirm the cube does not jitter; capture one frame in Xcode.
+- **By hand on the reference machine:** a plain run picks KosmicKrisp, and `VK_DRIVER_FILES` set to MoltenVK's manifest runs on MoltenVK through the fallback; resize, minimize and restore; switch present modes; fly to 10 million blocks and confirm the cube does not jitter; capture one frame in Xcode.
 
 ## Pull request plan
 
 1. This RFC.
 2. `engine/render` skeleton: Vulkan SDK detection in CMake, volk and VMA, instance and debug messenger; `check_feature_floor` with its tests.
-3. Device selection, logical device and queue; the startup device report.
+3. Device selection with the portability fallback, logical device and queue; the startup device report.
 4. Window in `app`, `SurfaceSource`, swapchain, clear to a color; resize and minimize.
 5. Frames in flight: timeline semaphore pacing, per-image present semaphores; synchronization validation clean.
 6. Offscreen render target and the lavapipe CI job, with its control. Early, so every later pull request runs on it.
