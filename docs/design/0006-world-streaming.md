@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Accepted (2026-10-02) |
 | **Milestone** | M3 Infinite |
 | **Issue** | #22 |
 
@@ -285,6 +285,8 @@ On the reference machine, release build, placeholder terrain, measured by the fl
 This plan interleaves with RFC 0005's: item 2 here, RFC 0005's item 7 (versions and pins), items 3 to 5 here, RFC 0005's item 8 (the world thread and its loop: forwarding, batches, backpressure and catch-up), then items 6 to 9 here.
 
 ## Open questions
+
+All settled on 2026-10-02: every recommendation below was accepted.
 
 1. **Default view distance** (the owner's taste call). Recommendation: **32 chunks (1,024 blocks)**, with a slider from 4 to 64. About 17,900 loaded chunks and 110 to 240 MiB of chunk data by the estimate above (without and with caves); confirmed or lowered with the first flythrough numbers before M3 ends.
 2. **Vertical policy: a terrain disc plus a near cylinder, or a plain cylinder around the camera.** Recommendation: **the disc**. It keeps the ground at any height and loads about a quarter of the cylinder's chunks at the same distance (17,900 against 65,987). The costs: RFC 0008 must add `surface_range` (its per-column first pass already finds each column's highest surface), and caves more than 256 blocks away are not loaded. It also assumes RFC 0002's open question 2 is settled as unlimited height; with a fixed height, columns load whole and this question goes away.
