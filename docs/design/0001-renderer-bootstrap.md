@@ -107,7 +107,7 @@ The floor, which `check_feature_floor` checks item by item:
 
 - Vulkan 1.3.
 - `dynamicRendering`, `synchronization2`, `timelineSemaphore` and `bufferDeviceAddress`.
-- `descriptorIndexing` with `runtimeDescriptorArray`, `descriptorBindingPartiallyBound` and `shaderSampledImageArrayNonUniformIndexing`, for the bindless texture array.
+- `descriptorIndexing` with `runtimeDescriptorArray` and `descriptorBindingPartiallyBound`, for the bindless texture array. Every index into it is the same across a draw (block textures vary through the array image's layers instead), so `shaderSampledImageArrayNonUniformIndexing` stays out until a shader needs it.
 - `multiDrawIndirect` and `drawIndirectFirstInstance`, for RFC 0007's chunk passes: one indirect command per run of faces, whose `firstInstance` selects the chunk's origin.
 
 Optional features are enabled when the device offers them, and logged at startup when it does not:
