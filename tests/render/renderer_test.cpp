@@ -229,6 +229,30 @@ TEST_CASE("more cubes than a frame can draw is an error, not a draw") {
     CHECK(drawn.error().message == "a frame draws at most 256 cubes, not 257");
 }
 
+TEST_CASE("a frame's GPU time arrives when its slot comes round again") {
+    vx::Result<vx::render::Renderer> created = headless_renderer();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    const std::array cubes = {glm::i64vec3(0, 0, 0)};
+    const vx::render::FrameInputs inputs = {.sky = black, .camera = in_front(), .cubes = cubes};
+
+    // Frames 1 and 2 take the two slots: nothing to read yet.
+    for (int frame = 1; frame <= 2; ++frame) {
+        REQUIRE(renderer.render(inputs).has_value());
+        CHECK_FALSE(renderer.frame_times().gpu.has_value());
+    }
+    // Frame 3 waits for frame 1 to be done with its slot, then reads its time.
+    REQUIRE(renderer.render(inputs).has_value());
+    REQUIRE(renderer.frame_times().gpu.has_value());
+    MESSAGE("frame 1 on the GPU: ", renderer.frame_times().gpu->count(), " ns; frame 3 waited ",
+            renderer.frame_times().waited.count(), " ns");
+    CHECK(renderer.frame_times().gpu->count() > 0);
+    // Submitting is one of the waits, and every frame submits.
+    CHECK(renderer.frame_times().waited.count() > 0);
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+}
+
 TEST_CASE("a headless renderer follows a resize") {
     vx::Result<vx::render::Renderer> created = headless_renderer();
     INFO((created.has_value() ? std::string() : created.error().message));

@@ -20,6 +20,7 @@
 
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -359,17 +360,22 @@ void record_passes(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_
     }
 }
 
-// Records a frame: its passes, after handing Tracy the GPU zones of earlier
-// frames whose timestamps have landed. Collecting resets their queries for
-// reuse, which must happen outside any rendering.
-void record_frame(VkCommandBuffer commands, tracy::VkCtx* gpu_profiler, const FrameTarget& target,
-                  const FrameDraw& draw) {
+// Records a frame: hands Tracy the GPU zones of earlier frames whose
+// timestamps have landed, then records the frame's passes, timed in the frame
+// slot's queries. The timer starts after Tracy's collect, so it times what
+// Tracy's Frame zone does and none of Tracy's own work. Collecting and the
+// timer's start reset queries for reuse, which must happen outside any
+// rendering.
+void record_frame(VkCommandBuffer commands, GpuTimer& timer, std::uint32_t slot,
+                  tracy::VkCtx* gpu_profiler, const FrameTarget& target, const FrameDraw& draw) {
     ZoneScopedN("Record");
     begin_commands(commands);
     if (gpu_profiler != nullptr) {
         TracyVkCollect(gpu_profiler, commands);
     }
+    timer.begin(commands, slot);
     record_passes(commands, gpu_profiler, target, draw);
+    timer.end(commands, slot);
     vkEndCommandBuffer(commands);
 }
 
@@ -433,6 +439,23 @@ tracy::VkCtx* make_gpu_profiler(const Device& device) {
 #endif
 }
 
+// Adds the time from its making to its end to a frame's wait: for the calls
+// that wait for the GPU or the display.
+class WaitTimer {
+public:
+    explicit WaitTimer(std::chrono::nanoseconds& waited) noexcept
+        : waited_(&waited), start_(std::chrono::steady_clock::now()) {}
+    WaitTimer(const WaitTimer&) = delete;
+    WaitTimer& operator=(const WaitTimer&) = delete;
+    WaitTimer(WaitTimer&&) = delete;
+    WaitTimer& operator=(WaitTimer&&) = delete;
+    ~WaitTimer() { *waited_ += std::chrono::steady_clock::now() - start_; }
+
+private:
+    std::chrono::nanoseconds* waited_;
+    std::chrono::steady_clock::time_point start_;
+};
+
 Result<VkSemaphore> make_semaphore(VkDevice device, const void* type) {
     const VkSemaphoreCreateInfo info = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -487,10 +510,22 @@ Result<void> submit(VkQueue queue, VkCommandBuffer commands,
     return {};
 }
 
+// Submits a frame's commands. It counts as a wait: MoltenVK waits there for
+// the drawable the frame presents.
+Result<void> submit_frame(VkQueue queue, VkCommandBuffer commands,
+                          std::span<const VkSemaphoreSubmitInfo> waits,
+                          std::span<const VkSemaphoreSubmitInfo> signals,
+                          std::chrono::nanoseconds& waited) {
+    const WaitTimer timer(waited);
+    return submit(queue, commands, waits, signals);
+}
+
 // Blocks until the timeline reaches `value`: the GPU is done with the frames
 // that last used a slot.
-Result<void> wait_for_slot(VkDevice device, VkSemaphore frames_done, std::uint64_t value) {
+Result<void> wait_for_slot(VkDevice device, VkSemaphore frames_done, std::uint64_t value,
+                           std::chrono::nanoseconds& waited) {
     ZoneScopedN("Wait for frame slot");
+    const WaitTimer timer(waited);
     const VkSemaphoreWaitInfo wait = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
         .pNext = nullptr,
@@ -508,15 +543,17 @@ Result<void> wait_for_slot(VkDevice device, VkSemaphore frames_done, std::uint64
 // The swapchain's next image, its index in `index`; `acquired` signals once
 // the presentation engine has let go of it.
 VkResult acquire_image(VkDevice device, VkSwapchainKHR swapchain, VkSemaphore acquired,
-                       std::uint32_t& index) {
+                       std::uint32_t& index, std::chrono::nanoseconds& waited) {
     ZoneScopedN("Acquire");
+    const WaitTimer timer(waited);
     return vkAcquireNextImageKHR(device, swapchain, forever, acquired, VK_NULL_HANDLE, &index);
 }
 
 // Queues image `index` for presentation once `rendered` signals.
 VkResult present_image(VkQueue queue, VkSwapchainKHR swapchain, std::uint32_t index,
-                       VkSemaphore rendered) {
+                       VkSemaphore rendered, std::chrono::nanoseconds& waited) {
     ZoneScopedN("Present");
+    const WaitTimer timer(waited);
     const VkPresentInfoKHR present = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .pNext = nullptr,
@@ -634,6 +671,7 @@ Renderer::Renderer(Renderer&& other) noexcept
       slots_(std::exchange(other.slots_, {})), origins_(std::move(other.origins_)),
       image_rendered_(std::exchange(other.image_rendered_, {})),
       frames_done_(std::exchange(other.frames_done_, VK_NULL_HANDLE)), frame_(other.frame_),
+      gpu_timer_(std::move(other.gpu_timer_)), times_(other.times_),
       gpu_profiler_(std::exchange(other.gpu_profiler_, nullptr)),
       overlay_(std::exchange(other.overlay_, nullptr)) {}
 
@@ -697,6 +735,12 @@ Result<void> Renderer::create_frame_objects() {
         }
         origins_.push_back(std::move(origins).value());
     }
+
+    Result<GpuTimer> timer = GpuTimer::create(context_.device(), frames_in_flight);
+    if (!timer.has_value()) {
+        return timer.error();
+    }
+    gpu_timer_ = std::move(timer).value();
     return add_rendered_semaphores();
 }
 
@@ -853,14 +897,18 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
     VkDevice device = context_.device().handle();
     VkQueue queue = context_.device().queue();
     const std::uint64_t frame = frame_ + 1;
-    const FrameSlot& slot = slots_[frame % frames_in_flight];
+    const auto slot_index = static_cast<std::uint32_t>(frame % frames_in_flight);
+    const FrameSlot& slot = slots_[slot_index];
+    std::chrono::nanoseconds waited{0};
     // The slot is free once the last frame that used it is done. The timeline
     // starts at 0, so the first frames do not wait.
     const std::uint64_t slot_free = frame > frames_in_flight ? frame - frames_in_flight : 0;
-    if (const Result<void> waited = wait_for_slot(device, frames_done_, slot_free);
-        !waited.has_value()) {
-        return waited.error();
+    if (const Result<void> ready = wait_for_slot(device, frames_done_, slot_free, waited);
+        !ready.has_value()) {
+        return ready.error();
     }
+    // That frame's timestamps are in, then, and the slot can be timed again.
+    times_.gpu = gpu_timer_.read(slot_index);
     const VkSemaphoreSubmitInfo frame_done =
         semaphore_submit(frames_done_, frame, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
@@ -882,7 +930,7 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
 
     if (offscreen_.has_value()) {
         vkResetCommandPool(device, slot.command_pool, 0);
-        record_frame(slot.command_buffer, gpu_profiler_,
+        record_frame(slot.command_buffer, gpu_timer_, slot_index, gpu_profiler_,
                      {.kind = Target::offscreen,
                       .image = offscreen_->image(),
                       .view = offscreen_->view(),
@@ -898,18 +946,20 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
                       .cubes = cubes,
                       .overlay = inputs.overlay});
         if (const Result<void> submitted =
-                submit(queue, slot.command_buffer, {}, std::span(&frame_done, 1));
+                submit_frame(queue, slot.command_buffer, {}, std::span(&frame_done, 1), waited);
             !submitted.has_value()) {
             return submitted.error();
         }
         frame_ = frame;
+        times_.waited = waited;
         return Frame::drawn;
     }
 
     assert(swapchain_.has_value());
     const Swapchain& swapchain = *swapchain_;
     std::uint32_t index = 0;
-    const VkResult acquired = acquire_image(device, swapchain.handle(), slot.image_acquired, index);
+    const VkResult acquired =
+        acquire_image(device, swapchain.handle(), slot.image_acquired, index, waited);
     if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
         swapchain_stale_ = true;
         return Frame::skipped;
@@ -921,7 +971,7 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
 
     vkResetCommandPool(device, slot.command_pool, 0);
     record_frame(
-        slot.command_buffer, gpu_profiler_,
+        slot.command_buffer, gpu_timer_, slot_index, gpu_profiler_,
         {.kind = Target::swapchain,
          .image = swapchain.images()[index],
          .view = swapchain.views()[index],
@@ -943,19 +993,20 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
         frame_done,
     };
     if (const Result<void> submitted =
-            submit(queue, slot.command_buffer, std::span(&wait, 1), signals);
+            submit_frame(queue, slot.command_buffer, std::span(&wait, 1), signals, waited);
         !submitted.has_value()) {
         return submitted.error();
     }
     frame_ = frame;
 
     const VkResult presented =
-        present_image(queue, swapchain.handle(), index, image_rendered_[index]);
+        present_image(queue, swapchain.handle(), index, image_rendered_[index], waited);
     if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
         swapchain_stale_ = true;
     } else if (presented != VK_SUCCESS) {
         return Error{"vkQueuePresentKHR failed: " + vk_result_name(presented)};
     }
+    times_.waited = waited;
     return Frame::drawn;
 }
 

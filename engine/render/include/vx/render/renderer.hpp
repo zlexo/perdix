@@ -4,6 +4,7 @@
 #include <vx/render/buffer.hpp>
 #include <vx/render/camera.hpp>
 #include <vx/render/context.hpp>
+#include <vx/render/gpu_timer.hpp>
 #include <vx/render/image.hpp>
 #include <vx/render/pipeline.hpp>
 #include <vx/render/swapchain.hpp>
@@ -14,6 +15,7 @@
 #include <volk.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -65,6 +67,23 @@ enum class Frame : std::uint8_t {
     skipped, // the framebuffer has no area, as when the window is minimized
 };
 
+// What only the renderer can measure of the last frame it drew, for RFC
+// 0001's frame time graphs.
+struct FrameTimes {
+    // How long render() waited in the calls that wait for the GPU or the
+    // display: for the frame slot, acquire, submit and present. Submit is
+    // one, since MoltenVK waits there for its drawable. The rest of a
+    // frame's time on the CPU is work.
+    std::chrono::nanoseconds waited{0};
+    // How long the GPU took for the newest frame whose slot has come round
+    // again, frames_in_flight frames before this one: from the first of its
+    // commands to the last, after the frame before it. Empty for the first
+    // frames, when the queue writes no timestamps, and for the odd frame
+    // whose timestamps come in late: on KosmicKrisp, about one frame in 200
+    // drawn to a swapchain.
+    std::optional<std::chrono::nanoseconds> gpu;
+};
+
 // Draws frames into a window's swapchain, or headless into an offscreen image
 // (RFC 0001). For now each frame clears its target to the sky and draws cubes
 // camera-relative, with reversed-Z depth and two frames in flight: the CPU
@@ -92,6 +111,9 @@ public:
 
     // Headless only: the last frame's pixels, 8-bit RGBA, row after row.
     [[nodiscard]] Result<std::vector<std::uint8_t>> capture();
+
+    // The last frame drawn's times.
+    [[nodiscard]] const FrameTimes& frame_times() const noexcept { return times_; }
 
     [[nodiscard]] const Context& context() const noexcept { return context_; }
     // Null when headless.
@@ -150,6 +172,9 @@ private:
     // A timeline semaphore: frame N signals N.
     VkSemaphore frames_done_ = VK_NULL_HANDLE;
     std::uint64_t frame_ = 0;
+    // Each frame slot's GPU time, read when the slot comes round again.
+    GpuTimer gpu_timer_;
+    FrameTimes times_;
     // Tracy's timing of the queue, for RFC 0001's GPU zones: null without
     // VX_PROFILE, or when the queue writes no timestamps.
     tracy::VkCtx* gpu_profiler_ = nullptr;
