@@ -127,7 +127,7 @@ public:
 } // namespace vx
 ```
 
-Workers take the most urgent level first, then the lowest key, then the oldest job, so the order is total. `urgent` is remeshing after an edit, the edited chunk first; `normal` is streaming, by distance; `background` is work nobody waits for, like saving (M8). A job that has waited a second moves up one level, so background work cannot starve during a long flight; the age is read from the job system's clock, which tests control. A worker runs an `urgent` job at user-initiated QoS, whatever its mode (below), so an edit never waits behind other apps' work.
+Workers take the most urgent level first, then the lowest key, then the oldest job, so the order is total. `urgent` is remeshing after an edit, the edited chunk first; `normal` is streaming, by distance; `background` is work nobody waits for, like saving (M8). A background job that has waited a second moves up to normal, so background work cannot starve during a long flight; nothing ages into urgent, so edits always run first; the age is read from the job system's clock, which tests control. A worker runs an `urgent` job at user-initiated QoS, whatever its mode (below), so an edit never waits behind other apps' work.
 
 The scheduler has no dependencies: a job is submitted only once it can run. The world thread sees chunks arrive, so it decides when a chunk is ready to mesh (RFC 0006 sets the rule; RFC 0003 reads a missing neighbor as air) and remeshes when a neighbor lands. Chunk pipelines are state machines on the world thread, not job graphs.
 
@@ -243,7 +243,7 @@ Targets on the reference machine, release build. Scheduler numbers from nanobenc
 
 ## Test plan
 
-- **Order:** in deterministic mode, levels first, then keys, then submission order; on a manual clock, a job that waits a second moves up a level.
+- **Order:** in deterministic mode, levels first, then keys, then submission order; on a manual clock, a background job that waits a second moves up to normal, and a normal job never becomes urgent.
 - **Cancellation:** canceling a queued job returns true and it never runs; a running or finished job returns false; an empty handle, or a stale one on a reused slot, returns false and touches nothing.
 - **Limits:** a full slot table returns an empty handle; a capture over 64 bytes or not trivially copyable fails to compile (checked like RFC 0000's layering control).
 - **Pins:** writing a pinned chunk copies it and leaves the pinned version unchanged; a completion unpins the versions its record names even after an edit replaced them; an unloaded chunk is freed only after its last job reports back; a successful cancel unpins at once; shutting down with jobs in flight frees everything, and the Linux AddressSanitizer job finds no leaks.
