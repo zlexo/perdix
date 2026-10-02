@@ -40,3 +40,13 @@ TEST_CASE("a Result can carry a move-only value out") {
     REQUIRE(owned != nullptr);
     CHECK(*owned == 42);
 }
+
+TEST_CASE("a Result without a value is success until made from an error") {
+    const vx::Result<void> success = {};
+    CHECK(success.has_value());
+
+    const vx::Result<void> failure = vx::Error{"the window is gone"};
+    REQUIRE_FALSE(failure.has_value());
+    CHECK_FALSE(static_cast<bool>(failure));
+    CHECK(failure.error().message == "the window is gone");
+}
