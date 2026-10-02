@@ -95,7 +95,7 @@ Finished meshes arrive in the order RFC 0005 delivers them and are handled on th
 3. **Unified memory:** `memcpy` into the mapped arena. Writes to coherent memory made before a submission are visible to it, so no barrier is needed. A 32 KiB mesh copies in about 0.7 µs on an idle reference machine.
 4. **Discrete GPUs:** write into the frame slot's staging ring and record a copy region, executed before the chunk passes behind one barrier. Copies share the graphics queue: KosmicKrisp has no other, and a transfer queue would only pay off on discrete hardware we cannot measure.
 
-The budget is time: 1 ms per frame by default, plus the staging ring's free space. The first write to a page costs several times more than later ones (about seven times in the probe), so bytes would be the wrong unit while the arena is fresh. Meshes that do not fit wait in RFC 0005's queue for the next frame; a loading screen raises the budget. RFC 0001's `upload` helper gains a destination offset.
+The budget is time: 1 ms per frame by default, plus the staging ring's free space. The first write to a page costs several times more than later ones (about seven times in the probe), so bytes would be the wrong unit while the arena is fresh. Meshes that do not fit wait, in order, on the main thread for the next frame; a loading screen raises the budget. An edit's batch (RFC 0005) goes ahead of waiting streaming meshes and is uploaded whole in the frame it arrives, outside the budget: at most 8 meshes, microseconds on unified memory. Every write goes through RFC 0001's `upload` helper, which takes the destination offset.
 
 ### Per-chunk data and the vertex shader
 
@@ -160,7 +160,7 @@ namespace vx::render {
 struct ChunkMeshUpdate {
     ChunkPos pos;
     std::uint32_t generation;   // increases with every remesh of the chunk
-    ChunkMesh mesh;             // RFC 0003, opaque and cutout ranges per face (RFC 0004)
+    ChunkMesh mesh;             // RFC 0003's ranges, in a buffer from RFC 0005's MeshResultPool
 };
 
 // Owned by Renderer (RFC 0001); render thread only.
@@ -169,6 +169,8 @@ public:
     // Copies the quads; the mesh memory is free again on return. False when
     // this frame's budget is spent: offer the update again next frame.
     bool upload(const ChunkMeshUpdate& update);
+    // RFC 0005's edit batch: all of it, this frame, outside the budget.
+    void upload_batch(std::span<const ChunkMeshUpdate> batch);
     void remove(ChunkPos pos);
     [[nodiscard]] const ChunkRenderStats& stats() const noexcept;
 
@@ -237,7 +239,7 @@ Targets on the reference machine, release build:
 1. This RFC.
 2. Draw overhead benchmark: indexed indirect draws, empty and real, and instanced clusters, on KosmicKrisp and MoltenVK. Settles open question 1.
 3. `ChunkArena`: VMA virtual block, retire lists keyed by frame, statistics.
-4. Uploads: direct and staged paths, the time budget, generations; `upload` with a destination offset.
+4. Uploads: direct and staged paths through RFC 0001's `upload`, the time budget, generations, and `upload_batch` for edits.
 5. Draw list builder: frustum, face masks, runs, origins, commands; tests and nanobench.
 6. Chunk pipeline and passes, building on RFC 0003's single-chunk draw; the lavapipe image test and its control.
 7. Cutout pass.
