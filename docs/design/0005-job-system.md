@@ -14,12 +14,12 @@ The engine's threads, what each one owns, and the job system that spreads chunk 
 
 | | Estimate |
 |---|---|
-| Chunks loaded at a 1,024-block view distance (RFC 0002) | about 51,000 |
-| New chunks in range per 32 blocks flown (a strip 64 chunks wide, 16 tall) | about 1,000 |
-| Meshing one typical chunk (RFC 0003 target) | under 150 µs |
-| Loading the whole view on one core, at 1 ms per chunk for generation and meshing | about 51 s |
+| Chunks loaded at a 1,024-block view distance (RFC 0006) | about 17,900, of which about 9,400 are drawn and meshed |
+| New chunks per 32 blocks flown (RFC 0006's region) | about 550 loaded, 385 drawn |
+| Meshing one typical chunk (RFC 0003) | under 150 µs; 49 µs in a prototype |
+| Loading the whole view on one core (RFC 0008's 400 µs per mixed chunk, RFC 0003's 150 µs per mesh) | about 4 to 6 s |
 
-The 1 ms is a placeholder until RFC 0008 budgets generation. Neither the main thread (16.7 ms per frame at 60 Hz) nor the world thread (50 ms per tick) can absorb this, so it runs on the other cores, nearest first.
+Neither the main thread (16.7 ms per frame at 60 Hz) nor the world thread (50 ms per tick) can absorb this, so it runs on the other cores, nearest first.
 
 Parallel work needs rules. Generation, meshing, and later lighting and saving read chunks; generation results, edits and simulation write them. RFC 0002 made `ChunkStorage` a value type without locks and left "who may touch a chunk from which thread" to this RFC. A race there is a crash or a corrupted chunk an hour into a session, so the rules must make races impossible by construction, with a sanitizer to check.
 
@@ -137,7 +137,7 @@ Only shutdown and tests wait for jobs, and no engine lock is held while a job ru
 
 ### Feeding: a short queue
 
-The scheduler holds only work that can start soon. The backlog of wanted chunks stays on the world thread, ordered by RFC 0006, and each pass of the world loop tops every level up to a limit, 256 jobs by default; three full levels plus the running jobs fit in the 1,024 slots. When the player moves, at most a few tens of milliseconds of stale work sit ahead of the new nearest chunks; an unloading chunk is usually still in the backlog, so canceling is rare; and pins and pending results scale with the queue, not the backlog. If `submit` ever returns an empty handle, the world thread releases the pins it took and leaves the chunk in its backlog. The queue must outlast the world thread's longest busy stretch, or workers run dry: 256 mesh jobs keep six workers busy for about 6 ms, so ticks stay short (below), and the sweep tunes the limit.
+The scheduler holds only work that can start soon. The backlog of wanted chunks stays on the world thread, ordered by RFC 0006, and each pass of the world loop tops every level up to a limit, 256 jobs by default; three full levels plus the running jobs fit in the 1,024 slots. When the player moves, at most a few tens of milliseconds of stale work sit ahead of the new nearest chunks; an unloading chunk is usually still in the backlog, so canceling is rare; and pins and pending results scale with the queue, not the backlog. If `submit` ever returns an empty handle, the world thread releases the pins it took and leaves the chunk in its backlog. The queue must outlast the world thread's longest busy stretch, or workers run dry: 256 mesh jobs keep six workers busy for about 2.4 ms at the prototype's 49 µs per mesh plus copies (6 ms at RFC 0003's 150 µs budget), so ticks stay short (below), and the sweep tunes the limit.
 
 ### Handing results back
 
