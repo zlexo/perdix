@@ -141,6 +141,13 @@ Generators write a plain `BlockState[32768]` and compress it once with `from_den
 ```cpp
 namespace vx {
 
+// Where to_dense puts block (x, y, z): out[offset + x + z * row_stride + y * layer_stride].
+struct DenseLayout {
+    std::size_t offset;
+    std::size_t row_stride;
+    std::size_t layer_stride;
+};
+
 class ChunkStorage {
 public:
     ChunkStorage() noexcept;   // uniform air, no allocation
