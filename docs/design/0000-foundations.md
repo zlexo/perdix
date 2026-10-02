@@ -43,16 +43,16 @@ Non-goals:
 
 ### Toolchain and presets
 
-`CMakePresets.json` defines every supported configuration. Presets pin the compiler explicitly.
+`CMakePresets.json` defines every supported configuration. Presets pin the compiler explicitly, Apple Clang by path and the Linux compilers by version, so ADR 0001's rule holds on every host: the compiler is never whatever happens to be first on `PATH`.
 
 | Preset | Host | Compiler | Build type |
 |---|---|---|---|
 | `mac-debug` | macOS | Apple Clang (`/usr/bin/clang++`) | Debug |
 | `mac-release` | macOS | Apple Clang | Release |
-| `linux-gcc` | Linux | `g++` | Debug |
-| `linux-clang` | Linux | `clang++` | Debug |
+| `linux-gcc` | Linux | GCC 13 (`g++-13`) | Debug |
+| `linux-clang` | Linux | Clang 18 (`clang++-18`) | Debug |
 
-All presets use Ninja and build into `build/<preset>`. CMake 3.28 or newer. A Windows (MSVC) preset arrives with the Windows CI job.
+GCC 13 and Clang 18 are Ubuntu 24.04's default versions, and GitHub's `ubuntu-24.04` runner has both. All presets use Ninja and build into `build/<preset>`. CMake 3.28 or newer. A Windows (MSVC) preset arrives with the Windows CI job.
 
 ### Dependencies
 
