@@ -1,0 +1,39 @@
+# Static analysis for engine and app code. CI runs a pinned clang-tidy
+# (see .github/workflows/ci.yml) over every source file in engine/ and app/;
+# any finding fails the job. #pragma once stays: all four compilers we
+# build with support it, and it cannot collide the way guard names can.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  clang-analyzer-*,
+  concurrency-*,
+  misc-*,
+  -misc-include-cleaner,
+  -misc-non-private-member-variables-in-classes,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  performance-*,
+  portability-*,
+  -portability-avoid-pragma-once,
+  readability-*,
+  -readability-identifier-length,
+  -readability-magic-numbers
+WarningsAsErrors: '*'
+HeaderFilterRegex: '.*/(engine|app)/.*'
+# RFC 0000's naming: PascalCase types, snake_case for everything else,
+# a trailing underscore on private members, VX_ macros.
+CheckOptions:
+  - { key: readability-identifier-naming.ClassCase,               value: CamelCase }
+  - { key: readability-identifier-naming.StructCase,              value: CamelCase }
+  - { key: readability-identifier-naming.EnumCase,                value: CamelCase }
+  - { key: readability-identifier-naming.TypeAliasCase,           value: CamelCase }
+  - { key: readability-identifier-naming.FunctionCase,            value: lower_case }
+  - { key: readability-identifier-naming.VariableCase,            value: lower_case }
+  - { key: readability-identifier-naming.ParameterCase,           value: lower_case }
+  - { key: readability-identifier-naming.MemberCase,              value: lower_case }
+  - { key: readability-identifier-naming.PrivateMemberSuffix,     value: _ }
+  - { key: readability-identifier-naming.NamespaceCase,           value: lower_case }
+  - { key: readability-identifier-naming.EnumConstantCase,        value: lower_case }
+  - { key: readability-identifier-naming.MacroDefinitionCase,     value: UPPER_CASE }
+  - { key: readability-identifier-naming.MacroDefinitionPrefix,   value: VX_ }

@@ -5,7 +5,11 @@
 namespace vx {
 
 Version version() noexcept {
-    return {config::version_major, config::version_minor, config::version_patch};
+    return {
+        .major = config::version_major,
+        .minor = config::version_minor,
+        .patch = config::version_patch,
+    };
 }
 
 std::string_view version_string() noexcept {
