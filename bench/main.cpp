@@ -1,0 +1,36 @@
+#include <nanobench.h>
+
+#include <cstddef>
+#include <iostream>
+#include <span>
+#include <string_view>
+
+#ifdef __APPLE__
+#include <pthread/qos.h>
+#endif
+
+int main(int argc, char* argv[]) {
+    const std::span<char* const> args(argv, static_cast<std::size_t>(argc));
+    // --quick runs each benchmark once, so CI can check they still run
+    // without timing them: shared runners are too noisy for numbers.
+    bool quick = false;
+    for (const std::string_view arg : args.subspan(1)) {
+        if (arg != "--quick") {
+            std::cerr << "unknown option \"" << arg << "\": try --quick\n";
+            return 2;
+        }
+        quick = true;
+    }
+#ifdef __APPLE__
+    // On a performance core: an efficiency core times everything slower.
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
+
+    ankerl::nanobench::Bench bench;
+    bench.title("Perdix").relative(false).warmup(quick ? 0 : 100);
+    if (quick) {
+        bench.epochs(1).epochIterations(1);
+    }
+    static_cast<void>(bench); // the benchmarks come next
+    return 0;
+}
