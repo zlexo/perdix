@@ -94,7 +94,6 @@ Result<GraphicsPipeline> GraphicsPipeline::create(const Device& device,
         .scissorCount = 1,
         .pScissors = nullptr, // dynamic
     };
-    // No culling yet: the cube brings faces worth culling.
     const VkPipelineRasterizationStateCreateInfo rasterization = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .pNext = nullptr,
@@ -102,7 +101,7 @@ Result<GraphicsPipeline> GraphicsPipeline::create(const Device& device,
         .depthClampEnable = VK_FALSE,
         .rasterizerDiscardEnable = VK_FALSE,
         .polygonMode = VK_POLYGON_MODE_FILL,
-        .cullMode = VK_CULL_MODE_NONE,
+        .cullMode = desc.cull_mode,
         .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
         .depthBiasEnable = VK_FALSE,
         .depthBiasConstantFactor = 0.0F,
