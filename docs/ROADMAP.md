@@ -5,7 +5,7 @@ Milestones in order. Each ends with something you can see, a tagged release and 
 | # | Milestone | You will see | Designs |
 |---|---|---|---|
 | 0 | Foundations | the project builds and tests on CI | project foundations |
-| 1 | First Cube | a textured cube you can fly around | renderer bootstrap, camera, profiling and debug UI |
+| 1 | First Cube | a textured cube you can fly around | renderer bootstrap (camera, profiling and debug UI included) |
 | 2 | First Chunk | one chunk of blocks | block registry, chunk storage, chunk meshing |
 | 3 | Infinite | the world streams in as you fly | streaming, job system, GPU memory, culling, benchmark |
 | 4 | Terrain | mountains, caves, biomes, trees | noise, biomes, carving, features |
