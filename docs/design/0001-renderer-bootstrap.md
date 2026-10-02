@@ -103,7 +103,12 @@ struct FeatureReport {
 [[nodiscard]] FeatureReport check_feature_floor(const DeviceFeatures& features);
 ```
 
-The floor: Vulkan 1.3; `dynamicRendering`, `synchronization2`, `timelineSemaphore`, `bufferDeviceAddress`, `descriptorIndexing` with `runtimeDescriptorArray`, `descriptorBindingPartiallyBound` and `shaderSampledImageArrayNonUniformIndexing`; `multiDrawIndirect`.
+The floor, which `check_feature_floor` checks item by item:
+
+- Vulkan 1.3.
+- `dynamicRendering`, `synchronization2`, `timelineSemaphore` and `bufferDeviceAddress`.
+- `descriptorIndexing` with `runtimeDescriptorArray`, `descriptorBindingPartiallyBound` and `shaderSampledImageArrayNonUniformIndexing`, for the bindless texture array.
+- `multiDrawIndirect` and `drawIndirectFirstInstance`, for RFC 0007's chunk passes: one indirect command per run of faces, whose `firstInstance` selects the chunk's origin.
 
 Optional features are enabled when the device offers them, and logged at startup when it does not:
 
