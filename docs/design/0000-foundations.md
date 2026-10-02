@@ -23,7 +23,7 @@ Goals:
 - One command each to configure, build and test, the same on macOS, Linux and Windows: `cmake --preset <p>`, `cmake --build --preset <p>`, `ctest --preset <p>`.
 - Dependencies pinned to exact versions and fetched by the build itself. Beyond the toolchain (a compiler, CMake and Ninja), the only manual installs are the Vulkan SDK (RFC 0001) and the pinned `clang-format` (see Formatting).
 - Warnings are errors in our code, and never applied to third-party code.
-- The layer boundaries of [ADR 0003](../adr/0003-world-has-no-gpu-code.md) are enforced by the compiler.
+- The layer boundaries of [ADR 0003](../adr/0003-world-has-no-gpu-code.md) are enforced by the compiler, and its ban on GPU and window headers in `world` and `mesh` by a CI check.
 - CI runs on every push and pull request, and formatting is checked by a pinned `clang-format`.
 - Every check is shown to fail on a known-bad input before it is trusted.
 
@@ -80,7 +80,7 @@ assets/                 data files (blocks, textures, terrain), added by RFC 000
 docs/                   vision, roadmap, ADRs, RFCs
 ```
 
-Each layer is a static library, `vx_<layer>`, with an alias `vx::<layer>`. A layer's include directory is `engine/<layer>/include`, so its headers are included as `<vx/<layer>/name.hpp>` and are only visible to targets that link it. Including a header from a layer you do not depend on fails to compile, which is how ADR 0003 is enforced.
+Each layer is a static library, `vx_<layer>`, with an alias `vx::<layer>`. A layer's include directory is `engine/<layer>/include`, so its headers are included as `<vx/<layer>/name.hpp>` and are only visible to targets that link it. Including a header from a layer you do not depend on fails to compile, which is how ADR 0003's boundaries between layers are enforced. Include paths cannot hide system headers such as Vulkan's, so a CI check keeps GPU and window includes out of `engine/world` and `engine/mesh` (#28).
 
 ### Namespace
 
