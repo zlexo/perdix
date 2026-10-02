@@ -74,8 +74,8 @@
       "name": "linux-lavapipe",
       "displayName": "Linux, Clang 22, Debug, for lavapipe",
       "inherits": "linux",
-      "description": "The lavapipe job's build. The job runs Ubuntu 26.04, for its validation layers, and Clang 22 is that image's newest.",
-      "cacheVariables": { "CMAKE_C_COMPILER": "clang-22", "CMAKE_CXX_COMPILER": "clang++-22", "CMAKE_BUILD_TYPE": "Debug" }
+      "description": "The lavapipe job's build. The job runs Ubuntu 26.04, for its validation layers, and Clang 22 is that image's newest. The profiler is compiled in, so Tracy's code builds on Linux and its Vulkan calls run under validation.",
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang-22", "CMAKE_CXX_COMPILER": "clang++-22", "CMAKE_BUILD_TYPE": "Debug", "VX_PROFILE": "ON" }
     },
     {
       "name": "linux-asan",
