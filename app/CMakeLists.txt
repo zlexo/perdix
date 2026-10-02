@@ -19,6 +19,7 @@ FetchContent_Declare(sdl3
 FetchContent_MakeAvailable(sdl3)
 
 add_executable(vx_app
+    src/allocation_profiling.cpp
     src/fly_controls.cpp
     src/main.cpp
     src/window.cpp)
