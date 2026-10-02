@@ -60,12 +60,16 @@ The mesher reads a plain array of 34 by 34 by 34 states: the chunk plus a one-bl
 What a block looks like comes from a per-state table built by the block registry (RFC 0004). The types live in the world layer (`<vx/world/block_visual.hpp>`): the registry that fills them is world code, and the world cannot include mesh headers (ADR 0003).
 
 ```cpp
+namespace vx {
+
 enum class Opacity : std::uint8_t { air, opaque, cutout };   // cutout: leaves, glass
 
 struct BlockVisual {
     Opacity opacity;
     std::array<std::uint16_t, 6> texture;   // texture layer per face
 };
+
+} // namespace vx
 ```
 
 ### Face culling with column bitmasks
@@ -108,6 +112,8 @@ Merging can be switched off at runtime in the debug overlay, to measure what it 
 ### The quad
 
 ```cpp
+namespace vx {
+
 // One visible rectangle of faces. The vertex shader rebuilds its four
 // corners; the chunk's camera-relative origin comes from per-draw data.
 struct Quad {
@@ -115,6 +121,8 @@ struct Quad {
     std::uint32_t material;   // texture layer:16 | AO 4 corners x 2 bits | spare:8
 };
 static_assert(sizeof(Quad) == 8);
+
+} // namespace vx
 ```
 
 Four 32-byte vertices with float position, normal and texture coordinates would be 128 bytes for the same face; the packed quad is 16 times smaller, and size is what limits how many chunks fit on the GPU.
@@ -149,6 +157,8 @@ A tie keeps the split through corners 0 and 2, where Lysenko's code takes the ot
 ### Output
 
 ```cpp
+namespace vx {
+
 enum class Pass : std::uint8_t { opaque, cutout };
 
 struct ChunkMesh {
@@ -159,6 +169,8 @@ struct ChunkMesh {
 // Pure: reads the padded chunk and the visual table, writes into reusable
 // scratch owned by the calling worker. No allocation once the scratch is warm.
 ChunkMesh mesh_chunk(const PaddedChunk& blocks, std::span<const BlockVisual> visuals, MeshScratch& scratch);
+
+} // namespace vx
 ```
 
 Cutout faces (leaves, glass) get ranges of their own because they need an alpha test. Apple's GPUs handle fragments that may be discarded less efficiently in hidden surface removal, and Apple asks for them to be drawn after all opaque geometry; separate ranges let RFC 0007 do exactly that.
