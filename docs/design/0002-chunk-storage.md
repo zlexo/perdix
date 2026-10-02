@@ -12,15 +12,19 @@ How blocks are stored: block state ids, world and chunk coordinates, the order o
 
 ## Motivation
 
-View distance is a memory problem before it is a rendering problem. A rough count, for a view distance of 1,024 blocks with 32-block chunks and 512 blocks of height loaded:
+View distance is a memory problem before it is a rendering problem. A rough count, for a view distance of 1,024 blocks with 32-block chunks, if a plain cylinder 512 blocks tall were loaded around the camera:
 
 | | Estimate |
 |---|---|
 | Loaded chunks | about 3,200 columns of 16 chunks: **about 51,000 chunks** |
 | Stored as plain 16-bit arrays (64 KiB each) | **about 3.1 GiB** |
-| Palette-compressed, if 60% of chunks are a single block (air above the ground, stone deep below) and the rest average 4 bits per block | **about 320 MiB** |
+| Palette-compressed, best case: 60% of chunks are a single block (air above the ground, stone deep below) and the rest average 4 bits per block | **about 320 MiB** |
 
-The first number does not fit next to everything else on the reference machine; the second does. The assumptions are rough and get replaced by measurements from generated terrain in M4, but the order of magnitude decides the design.
+The first number does not fit next to everything else on the reference machine; the second does. The cylinder is only a yardstick, though: which chunks are loaded is RFC 0006's decision. Its region holds the chunks where terrain meets the sky out to the view distance, plus everything within 256 blocks of the camera: about 17,400 chunks at 1,024 blocks, against 64,771 for a cylinder 17 chunks tall counted the same way. If the surface spans 2 chunks per column (M4 measures it), their block data is about 100 MiB. As plain arrays those chunks would still take about 1.1 GiB, more than twice RFC 0006's 512 MiB budget for chunk data.
+
+Both compressed figures are best cases: they count the rock below the surface as single-block chunks, but caves and ores (RFC 0008) make most chunks there mixed, and how many depends on how deep they go (RFC 0008's open question 2). Even if no chunk were a single block, compression would still cut the plain arrays to a quarter (about 800 MiB for the cylinder), so the order of magnitude decides the design either way. M4 replaces all of these numbers with measurements from generated terrain.
+
+A single-block chunk costs no block data, but a solid one is not free to mesh: it still has faces wherever it touches air in a neighbor.
 
 ## Goals and non-goals
 
@@ -183,7 +187,7 @@ public:
 
 ## Alternatives considered
 
-- **Plain 16-bit arrays:** the simplest and fastest to read, and about ten times the memory. Kept as the working format inside generators and the mesher, where speed matters and only a few chunks are live at once.
+- **Plain 16-bit arrays:** the simplest and fastest to read, and four to ten times the memory, depending on how many chunks are a single block. Kept as the working format inside generators and the mesher, where speed matters and only a few chunks are live at once.
 - **Run-length encoding:** smaller for layered terrain, but reading one block means walking runs. Kept in mind for the disk format.
 - **Sparse voxel octrees:** compact for large uniform regions and good for ray tracing, but slower to read and edit, and this is a rasterizer (ADR 0002).
 - **Odd bit widths (3, 5, 6 or 7 bits):** up to 37.5% smaller, at the cost of indices that straddle words or wasted bits per word. Palettes of 17 to 32 states save the most: they need 5 bits but get 8, so 20,480 bytes of block data instead of 32,768, or 21,848 (33% smaller) when no index straddles a word, as in Minecraft. Power-of-two widths keep the read path branch-free and simple.
