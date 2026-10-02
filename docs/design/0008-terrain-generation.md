@@ -12,7 +12,7 @@ How a world seed and a chunk position become blocks: climate fields, a 3D densit
 
 ## Motivation
 
-- **Speed.** At RFC 0002's example view (1,024 blocks around the camera, 512 tall), flying at 64 blocks per second brings about 2,000 new chunks into view every second. Each one is generated before it can be meshed.
+- **Speed.** In RFC 0006's region for a 1,024-block view, flying at 64 blocks per second loads about 1,100 new chunks a second, about 670 of them mixed once caves and ores reach 256 blocks down. Each one is generated before it can be meshed.
 - **No fixed height.** Minecraft generates whole 16 by 16 columns from the bottom of the world to the top. Here a column has no bottom or top, so the surface can be in any chunk, in several, or twice in one column under an overhang.
 - **Determinism.** Chunks are generated on many threads in whatever order the camera asks for them. Randomness that depends on order, thread count, standard library or compiler makes worlds differ between runs and machines, and makes tests flaky. It is cheapest to rule out before the first line of generator code.
 - **Taste.** What good terrain looks like is the owner's call. Numbers that live in code cost a rebuild per idea; numbers on sliders let hundreds of ideas be tried in an evening.
@@ -262,7 +262,7 @@ Targets on the reference machine, release build, one thread, measured with nanob
 | Scratch per worker | 1 MiB |
 | Taste loop: 9 by 9 columns around the camera regenerated, all workers | 100 ms |
 
-What that buys: at RFC 0002's example view, flying at 64 blocks per second brings about 2,000 chunks into view each second. If 40% are mixed, as RFC 0002 assumes, generating them costs about a third of one performance core, which leaves room for meshing (RFC 0003) and for flying several times faster. Caves and ores make most chunks in the underground band mixed, so the real share depends on how deep they go (open question 2); the benchmark flythrough (RFC 0006) measures it and the real throughput.
+What that buys: in RFC 0006's region for a 1,024-block view, flying at 64 blocks per second loads about 1,100 new chunks a second, about 670 of them mixed with caves and ores 256 blocks deep. Generating those costs about a quarter of one performance core (670 times 400 µs), which leaves room for meshing (RFC 0003) and for flying several times faster. The real share of mixed chunks depends on how deep caves go (open question 2); the benchmark flythrough (RFC 0006) measures it and the real throughput.
 
 ## Test plan
 
@@ -295,7 +295,7 @@ What that buys: at RFC 0002's example view, flying at 64 blocks per second bring
 ## Open questions
 
 1. **Noise: our own OpenSimplex2, or FastNoise2.** Recommendation: **our own**. FastNoise2 in strict mode is deterministic and five times faster than FastNoiseLite, but its `float` positions make noise measurably rougher millions of blocks out, while RFC 0001 tests at ten million blocks and RFC 0002 promises the whole 32-bit range. FastNoiseLite keeps precision at a fifth of the speed. Our own costs two pull requests and must reach 25 ns per sample; if the 4-wide port cannot, FastNoise2 in strict mode is the fallback, and terrain quality falls off past about a million blocks.
-2. **How tall and how deep (taste).** Minecraft 1.18 builds from y -64 up to 319 with the sea at 63: about 256 blocks above the sea and 128 below. Recommendation: a default preset with peaks up to about 256 blocks above the sea and caves and ores down to 256 below, then solid stone forever, so the interesting band fits RFC 0002's 512-block loaded height. Deeper caves mean more mixed chunks underground, each costing memory and generation time; taller or deeper is a slider away, and the price panel shows the cost.
+2. **How tall and how deep (taste).** Minecraft 1.18 builds from y -64 up to 319 with the sea at 63: about 256 blocks above the sea and 128 below. Recommendation: a default preset with peaks up to about 256 blocks above the sea and caves and ores down to 256 below, then solid stone forever, so below a camera at sea level the caves end where RFC 0006's near cylinder does (8 chunks, 256 blocks down). Deeper caves mean more mixed chunks underground, each costing memory and generation time; taller or deeper is a slider away, and the price panel shows the cost.
 3. **The first biomes (taste).** Recommendation: eight, as data: ocean floor, beach, plains, forest, taiga, desert, snowy plains and stony peaks. They need 15 blocks from RFC 0004's `core` pack: stone, deep stone, dirt, grass, sand, sandstone, gravel, snow, coal, iron and gold ore, and logs and leaves for oak and spruce.
 4. **Oceans before M7 (taste).** Recommendation: **dry basins** until M7 brings water and its rendering. Sea level and underwater surfaces (sand, gravel) exist from M4, so coasts read correctly the day water arrives. Filling the sea now with a placeholder block shows coastlines earlier, at the price of a block RFC 0003 cannot draw well yet, and of water walls where caves meet the sea, since aquifers are M7's.
 
