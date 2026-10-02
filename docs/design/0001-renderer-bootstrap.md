@@ -331,4 +331,9 @@ All settled on 2026-10-02: every recommendation below was accepted.
 
 ## As built
 
-Not built yet.
+Pull request plan item 2, the render skeleton:
+
+- **The headers come from Vulkan-Headers, not the SDK.** Vulkan-Headers and volk are fetched at the SDK's version (1.4.363), so building needs no SDK. The SDK supplies only what runs: the loader, the drivers, the validation layers, and later the shader compiler. "Vulkan SDK detection in CMake" is left with one job: on macOS, the SDK seen at configure time becomes a fallback path for the loader, because the system strips `DYLD_LIBRARY_PATH` from programs started through protected binaries such as `/bin/sh` and `/usr/bin/env`.
+- **VMA moved to item 3**, the first code that creates an allocator.
+- **Validation messages go to standard error** with their message ID, and each instance counts them. The engine log does not exist yet.
+- **Tests that need a driver carry the CTest label `vulkan`.** The Linux presets leave them out until item 6's lavapipe job gives CI a driver.
