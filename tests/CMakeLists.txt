@@ -13,6 +13,7 @@ include("${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake")
 # its own, so ctest can run, filter and report each case.
 add_executable(vx_core_tests
     main.cpp
+    core/result_test.cpp
     core/version_test.cpp)
 target_link_libraries(vx_core_tests PRIVATE vx::core doctest::doctest)
 vx_target_warnings(vx_core_tests)
