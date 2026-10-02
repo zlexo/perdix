@@ -164,17 +164,22 @@ The destination offset lets RFC 0007 write each chunk mesh into its range of one
 
 ### Geometry: vertex pulling
 
-The pipeline has no vertex input state. The vertex shader reads its data from a storage buffer through a buffer device address passed in push constants:
+The pipeline has no vertex input state. The vertex shader reads its data from storage buffers through buffer device addresses passed in push constants, laid out for the camera-relative scheme below:
 
 ```cpp
-struct DrawPush {                  // 128 bytes is the guaranteed minimum
-    glm::mat4 view_projection;     // 64 bytes
-    VkDeviceAddress vertices;      // 8 bytes
-    std::uint32_t texture;         // index into the bindless texture array
+struct DrawPush {                  // 96 of the 128 bytes Vulkan 1.3 guarantees
+    glm::mat4 view_projection;     // offset 0: rotation and projection only
+    VkDeviceAddress vertices;      // offset 64: the cube's vertices; RFC 0007's quads
+    VkDeviceAddress origins;       // offset 72: one float4 per instance
+    glm::vec3 camera_fraction;     // offset 80: the camera's position within its block
+    std::uint32_t texture;         // offset 92: index into the bindless texture array
 };
+static_assert(sizeof(DrawPush) == 96 && offsetof(DrawPush, texture) == 92);
 ```
 
-The cube is 36 vertices in a buffer. Chunks will replace them with packed quads (RFC 0003), but the path (a buffer address, a push constant, a vertex shader that decodes) stays the same.
+The shader's push constant block has the same offsets: 80 meets a `vec3`'s 16-byte alignment, and `texture` takes the 4 bytes after it. RFC 0007's `ChunkPush` is this layout without `texture`.
+
+The cube is 36 vertices in a buffer, drawn as one instance whose origin is `origins[0]`. Chunks will replace the vertices with packed quads (RFC 0003) and draw many instances (RFC 0007), but the path (buffer addresses, a push constant, a vertex shader that decodes) stays the same.
 
 ### Textures: one bindless array
 
@@ -201,7 +206,19 @@ glm::mat4 perspective_reversed_infinite(float fov_y, float aspect, float z_near)
 
 ### Camera-relative rendering
 
-The camera's position is stored on the CPU in 64-bit (`double` now, integer chunk coordinates later). The view matrix the GPU sees has rotation only. Every object's position is converted to "relative to the camera" on the CPU, in 64-bit, before it becomes a 32-bit float. Floats on the GPU therefore stay small near the viewer, where precision is visible, however far from the origin the camera flies.
+The camera's position is stored on the CPU in 64-bit (`double` now, integer chunk coordinates later). Each frame splits it into the block the camera is in, as integers, and the camera's fraction within that block, from 0 to 1 on each axis. The GPU never sees a world position, and RFC 0007 draws chunks the same way:
+
+- **View-projection:** rotation and projection only.
+- **Origins:** each object's origin relative to the camera's block, computed on the CPU in 64-bit integers. A whole number of blocks is exact as a float up to 2^24 (16,777,216) blocks from the camera, far beyond any view distance. Each frame slot owns a host-visible buffer of origins, one `float4` per instance, rewritten every frame.
+- **Fraction:** `camera_fraction`, subtracted from every vertex in the shader.
+
+```glsl
+// Sketched in GLSL; open question 2 picks the language.
+vec3 p = origins[gl_InstanceIndex].xyz + vertices[gl_VertexIndex].position;
+gl_Position = view_projection * vec4(p - camera_fraction, 1.0);
+```
+
+An origin plus a block corner is a whole number, exact as a float, so a corner shared by two chunks gets the same float from both, and neighbors meet without cracks. The first rounding comes when the fraction is subtracted, on values that are small near the viewer, where precision is visible, however far from the world origin the camera flies.
 
 Controls: WASD to move, Space and Shift for up and down, Ctrl to go faster, raw mouse motion to look, Escape to release the mouse. Default vertical field of view: 70 degrees.
 
@@ -231,7 +248,7 @@ struct RendererDesc {
 };
 
 struct FrameInputs {
-    CameraView camera;                      // rotation, camera-relative origin, projection
+    CameraView camera;                      // rotation, projection, the camera's block and fraction
     const ImDrawData* overlay = nullptr;
 };
 
@@ -272,7 +289,7 @@ On the reference machine, release build, cube scene:
 
 ## Test plan
 
-- **Unit tests** (no GPU): `check_feature_floor` names every missing feature; for one GPU reported by both drivers, ranking picks the device without `VK_KHR_portability_subset`; the reversed infinite projection maps the near plane to depth 1 and points far away toward 0; camera-relative conversion keeps a position near the camera within float precision at 10 million blocks from the origin.
+- **Unit tests** (no GPU): `check_feature_floor` names every missing feature; for one GPU reported by both drivers, ranking picks the device without `VK_KHR_portability_subset`; the reversed infinite projection maps the near plane to depth 1 and points far away toward 0; camera-relative conversion keeps a position near the camera within float precision at 10 million blocks from the origin, and two neighboring chunks give their shared corner the same float.
 - **CI:** the lavapipe job renders offscreen with synchronization validation on and fails on any message. Control: a pull-request-local change that drops one barrier must turn the job red before the job is trusted.
 - **By hand on the reference machine:** a plain run picks KosmicKrisp, and `VK_DRIVER_FILES` set to MoltenVK's manifest runs on MoltenVK through the fallback; resize, minimize and restore; switch present modes; fly to 10 million blocks and confirm the cube does not jitter; capture one frame in Xcode.
 
