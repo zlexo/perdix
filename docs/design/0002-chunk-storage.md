@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Accepted (2026-10-02) |
 | **Milestone** | M2 First Chunk |
 | **Issue** | #14 |
 
@@ -239,6 +239,8 @@ The prototype column comes from a throwaway implementation of this design measur
 7. Size-class pools for block data, with a lock per class, and memory accounting.
 
 ## Open questions
+
+All settled on 2026-10-02: every recommendation below was accepted.
 
 1. **Chunk size: 32 or 16 blocks on a side.** Recommendation: **32**. Eight times fewer chunks to track, mesh and draw for the same view distance, and a 32-block row still fits a 64-bit mask with its border for fast meshing (RFC 0003). The cost: editing one block remeshes a bigger chunk.
 2. **World height: unlimited, or fixed like Minecraft.** Recommendation: **unlimited**, with cubic chunks. Mountains and caves can go as high and deep as generation wants, and streaming and level of detail work in all three directions. This is a game-design call as much as a technical one.
