@@ -15,6 +15,12 @@ permissions:
 env:
   CLANG_FORMAT_VERSION: "22.1.8"
   CLANG_TIDY_VERSION: "22.1.8"
+  # The X11 and Wayland development packages SDL3 needs to build its video
+  # drivers on Linux: https://wiki.libsdl.org/SDL3/README-linux
+  SDL_LINUX_PACKAGES: >-
+    libx11-dev libxext-dev libxcursor-dev libxi-dev libxfixes-dev
+    libxrandr-dev libxrender-dev libxss-dev libxtst-dev libwayland-dev
+    libegl-dev libxkbcommon-dev wayland-protocols libdecor-0-dev
 
 jobs:
   linux:
@@ -26,8 +32,8 @@ jobs:
         compiler: [gcc, clang]
     steps:
       - uses: actions/checkout@v7
-      - name: Install Ninja
-        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+      - name: Install Ninja and SDL's dependencies
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build $SDL_LINUX_PACKAGES
       - name: Configure
         run: cmake --preset linux-${{ matrix.compiler }}
       - name: Build
@@ -40,8 +46,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - name: Install Ninja
-        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+      - name: Install Ninja and SDL's dependencies
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build $SDL_LINUX_PACKAGES
       # Recent Ubuntu kernels randomize memory mappings more than older
       # AddressSanitizer runtimes expect, which can make them crash or hang.
       - name: Lower ASLR entropy for AddressSanitizer
@@ -87,8 +93,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - name: Install Ninja
-        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+      - name: Install Ninja and SDL's dependencies
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build $SDL_LINUX_PACKAGES
       - name: Install clang-tidy ${{ env.CLANG_TIDY_VERSION }}
         run: pipx install "clang-tidy==${CLANG_TIDY_VERSION}"
       # Configuring writes compile_commands.json and the headers generated
