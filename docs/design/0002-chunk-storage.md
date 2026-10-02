@@ -141,7 +141,9 @@ Palettes do not shrink on every `set`. When a state's last block is overwritten,
 
 ### Bulk conversion
 
-Generators write a plain `BlockState[32768]` and compress it once with `from_dense`, which builds the palette with a per-thread reverse lookup table, then picks the smallest width that fits. A generator that already knows a chunk holds one state, such as all air above the terrain or all stone below the caves, skips the array and calls `uniform` (RFC 0008). The mesher calls `to_dense` to get a plain array, so its inner loops never touch the packed format. A second form of `to_dense` takes a layout (an offset plus row and layer strides) and writes straight into the inside of the mesher's padded 34 by 34 by 34 array, saving a full extra copy per mesh. The one-block border around it comes from all 26 neighbors (RFC 0003): the 6 face neighbors through `copy_face`, and the 12 edge and 8 corner neighbors through `get`, 392 single-block reads in all.
+Generators write a plain `BlockState[32768]` and compress it once with `from_dense`, which builds the palette with a reverse lookup table from state to palette index, then picks the smallest width that fits. The table and the unpacked indices (160 KiB in the prototype) live in a `PaletteScratch` that the caller passes in, like RFC 0003's `MeshScratch`, so `from_dense` keeps no hidden per-thread state; RFC 0005 keeps one in each worker's scratch. A generator that already knows a chunk holds one state, such as all air above the terrain or all stone below the caves, skips the array and calls `uniform` (RFC 0008).
+
+The mesher calls `to_dense` to get a plain array, so its inner loops never touch the packed format. A second form of `to_dense` takes a layout (an offset plus row and layer strides) and writes straight into the inside of the mesher's padded 34 by 34 by 34 array, saving a full extra copy per mesh. The one-block border around it comes from all 26 neighbors (RFC 0003): the 6 face neighbors through `copy_face`, and the 12 edge and 8 corner neighbors through `get`, 392 single-block reads in all.
 
 ### API sketch
 
@@ -155,13 +157,18 @@ struct DenseLayout {
     std::size_t layer_stride;
 };
 
+// from_dense's working memory: a reverse lookup table from state to palette index,
+// and the unpacked indices. Owned by the caller and never shared.
+struct PaletteScratch;
+
 class ChunkStorage {
 public:
     ChunkStorage() noexcept;   // uniform air, no allocation
     [[nodiscard]] static ChunkStorage uniform(BlockState state) noexcept;   // any one state, no allocation
     [[nodiscard]] ChunkStorage clone() const;   // move-only, so copies are explicit (copy on write, RFC 0005)
 
-    [[nodiscard]] static ChunkStorage from_dense(std::span<const BlockState, chunk_volume> blocks);
+    [[nodiscard]] static ChunkStorage from_dense(std::span<const BlockState, chunk_volume> blocks,
+                                                 PaletteScratch& scratch);
     void to_dense(std::span<BlockState, chunk_volume> out) const noexcept;
 
     // Writes block (x, y, z) to out[offset + x + z * row_stride + y * layer_stride],
@@ -215,7 +222,7 @@ The prototype column comes from a throwaway implementation of this design measur
 - **Coordinates:** block -1 is chunk -1, local 31; block -32 is chunk -1, local 0; block -33 is chunk -2, local 31; round trips at the edges of the 32-bit range.
 - **Index order:** neighbors along x are 1 apart, along z 32 apart, along y 1,024 apart.
 - **Storage:** a default chunk is uniform air with zero block data, and `uniform` gives the same for any state; `clone` gives an equal copy that later writes to either leave the other unchanged; one `set` makes it 1-bit; growth through every width up to direct mode; `compact` after overwrites shrinks the width again.
-- **Round trips:** random chunks (seeded, so failures reproduce) survive `from_dense` then `to_dense` unchanged at every width, and `get` agrees with a plain array after thousands of random `set` calls.
+- **Round trips:** random chunks (seeded, so failures reproduce) survive `from_dense` then `to_dense` unchanged at every width, all through one reused `PaletteScratch`, and `get` agrees with a plain array after thousands of random `set` calls.
 - **Memory:** `memory_bytes` matches the table above at every width.
 - **Pools:** several threads allocate and free block data of every size class at once, under ThreadSanitizer (RFC 0005's `linux-tsan` job).
 - **Layering control:** `engine/world` is the second layer, so its pull request proves that including a header from a layer it does not link fails to compile (RFC 0000's test plan).
