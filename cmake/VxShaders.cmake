@@ -28,3 +28,46 @@ FetchContent_Declare(slang
     SOURCE_SUBDIR sources-only)
 FetchContent_MakeAvailable(slang)
 find_program(VX_SLANGC slangc PATHS "${slang_SOURCE_DIR}/bin" NO_DEFAULT_PATH NO_CACHE REQUIRED)
+
+set(VX_EMBED_SPIRV "${CMAKE_CURRENT_LIST_DIR}/VxEmbedSpirv.cmake")
+
+# vx_add_shaders(<target> <source.slang>...)
+#
+# Compiles each source into one SPIR-V module that holds all of its entry
+# points under their own names, with warnings as errors, and embeds the module
+# in a generated header: shader `triangle.slang` becomes the
+# std::array<std::uint32_t, N> `vx::shaders::triangle` in
+# <vx/shaders/triangle.hpp>. A shader rebuilds when its source or anything it
+# imports changes.
+function(vx_add_shaders target)
+    set(include_dir "${CMAKE_CURRENT_BINARY_DIR}/shaders/include")
+    foreach(source IN LISTS ARGN)
+        cmake_path(GET source STEM name)
+        if(NOT name MATCHES "^[a-z][a-z0-9_]*$")
+            message(FATAL_ERROR "Shader ${source}: its name becomes a C++ identifier, "
+                "so it takes lowercase letters, digits and underscores.")
+        endif()
+        cmake_path(ABSOLUTE_PATH source BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE source_path)
+        set(spirv "${CMAKE_CURRENT_BINARY_DIR}/shaders/${name}.spv")
+        set(header "${include_dir}/vx/shaders/${name}.hpp")
+
+        add_custom_command(
+            OUTPUT "${spirv}"
+            COMMAND "${VX_SLANGC}" "${source_path}" -target spirv -fvk-use-entrypoint-name
+                -warnings-as-errors all -depfile "${spirv}.d" -o "${spirv}"
+            DEPENDS "${source_path}"
+            DEPFILE "${spirv}.d"
+            COMMENT "Compiling shader ${name}"
+            VERBATIM)
+        add_custom_command(
+            OUTPUT "${header}"
+            COMMAND "${CMAKE_COMMAND}" "-DSPIRV=${spirv}" "-DHEADER=${header}" "-DNAME=${name}"
+                -P "${VX_EMBED_SPIRV}"
+            DEPENDS "${spirv}" "${VX_EMBED_SPIRV}"
+            COMMENT "Embedding shader ${name}"
+            VERBATIM)
+        target_sources(${target} PRIVATE "${header}")
+    endforeach()
+    target_include_directories(${target} PUBLIC "${include_dir}")
+endfunction()
