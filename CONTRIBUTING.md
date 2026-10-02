@@ -37,7 +37,7 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/):
 | `ci` | workflows |
 | `chore` | everything else |
 
-Scopes follow the source layout (`core`, `world`, `mesh`, `render`, `app`), plus `rfc` and `adr` for design documents and `github` for templates and repository settings.
+Scopes follow the source layout (`core`, `world`, `mesh`, `render`, `app`), plus `rfc` and `adr` for design documents and `github` for templates and repository settings. A commit to an RFC or an ADR puts its number after the scope (`docs(adr): 0003 keep the world layer free of GPU code`). The commit that adds a new RFC is the one exception to the imperative: its summary is the RFC's title, as in `docs(rfc): 0002 chunk storage`.
 
 - **Small and frequent.** One coherent step per commit. A change, its tests and its documentation are usually separate commits.
 - **Every commit builds and passes the tests,** so history stays bisectable.
@@ -45,7 +45,7 @@ Scopes follow the source layout (`core`, `world`, `mesh`, `render`, `app`), plus
 
 ## Pull requests
 
-- Branch from `main` as `<type>/<topic>`, for example `feat/chunk-palette`.
+- Branch from `main` as `<type>/<topic>`, for example `feat/chunk-palette`. An RFC's branch is `rfc/NNNN-short-title`, for example `rfc/0002-chunk-storage`.
 - Keep the diff reviewable in one sitting, roughly 400 changed lines at most.
 - Fill in the template: what, why, how it was tested, and before and after numbers for anything on a hot path. Visual changes include a screenshot or a short clip.
 - CI must be green: build, tests, formatting and, once rendering exists, zero Vulkan validation errors.
