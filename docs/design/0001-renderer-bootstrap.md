@@ -103,9 +103,14 @@ struct FeatureReport {
 [[nodiscard]] FeatureReport check_feature_floor(const DeviceFeatures& features);
 ```
 
-The floor: Vulkan 1.3; `dynamicRendering`, `synchronization2`, `timelineSemaphore`, `bufferDeviceAddress`, `descriptorIndexing` with `runtimeDescriptorArray`, `descriptorBindingPartiallyBound` and `shaderSampledImageArrayNonUniformIndexing`; `multiDrawIndirect`. `samplerAnisotropy` is not part of the floor: it is enabled when the device offers it, for RFC 0004's texture filtering.
+The floor: Vulkan 1.3; `dynamicRendering`, `synchronization2`, `timelineSemaphore`, `bufferDeviceAddress`, `descriptorIndexing` with `runtimeDescriptorArray`, `descriptorBindingPartiallyBound` and `shaderSampledImageArrayNonUniformIndexing`; `multiDrawIndirect`.
 
-Among devices that pass, one without `VK_KHR_portability_subset` beats one that lists it, and then a discrete GPU beats an integrated one. If none passes, startup fails with the device names and their missing features.
+Optional features are enabled when the device offers them, and logged at startup when it does not:
+
+- `samplerAnisotropy`, for RFC 0004's block texture filtering. Without it, filtering stays trilinear.
+- `fillModeNonSolid`, for RFC 0003's wireframe toggle. Without it, the overlay hides the toggle. KosmicKrisp does not offer it (SDK 1.4.363.0) and MoltenVK does, so on the reference machine the wireframe needs MoltenVK.
+
+Among devices that pass the floor, one without `VK_KHR_portability_subset` beats one that lists it, and then a discrete GPU beats an integrated one. If none passes, startup fails with the device names and their missing features.
 
 **Drivers on macOS.** The SDK installs two drivers for the same GPU: KosmicKrisp, which is conformant, and MoltenVK, a portability driver. The loader shows portability drivers only to an instance that opts in with the extension and flag above, and then lists MoltenVK first (LunarG's macOS guide for SDK 1.4.363.0). An engine that always opted in and kept the first device that passes would quietly run on MoltenVK. So:
 
