@@ -90,7 +90,7 @@ A mesh job pins its chunk and the 26 neighbors: 27 increments, and no copy unles
 
 Pins need no atomics. Ordering comes from the queues: the world thread's writes precede the submit (a lock release), the worker's reads follow the take (the matching acquire), and the unpin follows draining the completion (another pair).
 
-RFC 0002 changes, all in `world`: `ChunkStorage` gains `clone()`, being move-only; its `const` methods must not write hidden state, since several jobs read one pinned version at once; `compact()` is a write, so the world thread runs it on unpinned versions as a pass of its own, not for free during meshing; each block-data size class takes a lock, because generation jobs allocate on workers what the world thread frees; and `from_dense` takes its reverse lookup table from the caller's scratch.
+RFC 0002 provides what pins need: `clone()` for copy on write, `const` methods that write no hidden state, compaction as a world-thread pass on unpinned versions, a lock per block-data size class (workers allocate what the world thread frees), and `from_dense` scratch from the caller. Its pull request plan builds them.
 
 ### Jobs
 
@@ -262,10 +262,9 @@ Targets on the reference machine, release build. Scheduler numbers from nanobenc
 4. `core`: worker threads, wake-ups and shutdown; the stress test.
 5. `core`: `WakeEvent`, `Inbox` and the `MeshResultPool`, with tests.
 6. Tracy: thread names, job zones, tick frames, plots, the lockable scheduler lock.
-7. `world`: RFC 0002's changes (`clone`, `const` methods without hidden writes, locked size classes, the `from_dense` table from scratch, compaction on the world thread).
-8. `world`: chunk versions and pins on RFC 0006's chunk map, with tests.
-9. `app`: the world thread and its loop with an injectable clock (actions and the targeted block, results, forwarding and edit batches, feeding, backpressure, the catch-up mode); generation and mesh jobs wired; the determinism property test.
-10. The sweep and the 10-minute run on the reference machine; defaults set from them, with the numbers in the pull request.
+7. `world`: chunk versions and pins (chunks, plans, parameter snapshots) on RFC 0006's chunk map, with tests, after RFC 0002's plan items 5 to 7.
+8. `app`: the world thread and its loop with an injectable clock (actions and the targeted block, results, forwarding and edit batches, feeding, backpressure, the catch-up mode); the determinism property test. RFC 0006's plan states how its items interleave with items 7 and 8.
+9. The sweep and the 10-minute run on the reference machine; defaults set from them, with the numbers in the pull request.
 
 ## Open questions
 
