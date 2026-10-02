@@ -8,11 +8,11 @@
 
 ## Summary
 
-How thousands of chunk meshes live on the GPU and get drawn every frame: one buffer, suballocated, that holds every mesh; uploads within a per-frame budget; per-chunk positions relative to the camera; frustum and face-direction culling on the CPU; and one multi-draw indirect call per pass, with one command per run of visible face groups. At the north star's 1,024-block view distance that is up to about 20,000 meshes and 10,000 draws per frame, so this RFC budgets what each mesh and each draw costs.
+How thousands of chunk meshes live on the GPU and get drawn every frame: one buffer, suballocated, that holds every mesh; uploads within a per-frame budget; per-chunk positions relative to the camera; frustum and face-direction culling on the CPU; and one multi-draw indirect call per pass, with one command per run of visible face groups. At the north star's 1,024-block view distance that is up to about 9,400 meshes and, with the cutout pass, up to about 8,600 draws per frame, so this RFC budgets what each mesh and each draw costs.
 
 ## Motivation
 
-RFC 0002 counts about 51,000 loaded chunks at a 1,024-block view distance and assumes 60% of them hold a single block. A uniform air chunk has no mesh, and a uniform solid one only has faces where a neighbor exposes it, so at most about 20,400 chunks carry a real mesh. A meshing spike on the reference machine (a prototype of RFC 0003 with its merge key) put a typical terrain chunk at 819 quads (6.4 KiB) and a rough one at 1,849 quads (14.4 KiB). That is about 130 to 290 MiB of quads, on a machine where Metal recommends a GPU working set of 5,461 MiB (queried). Memory is a budget to keep, not the limit.
+RFC 0006 loads about 17,900 chunks at a 1,024-block view distance and draws about 9,400 of them; only drawn chunks are meshed, so at most about 9,400 carry a mesh. A meshing spike on the reference machine (a prototype of RFC 0003 with its merge key) put a typical terrain chunk at 819 quads (6.4 KiB) and a rough one at 1,849 quads (14.4 KiB). That is about 60 to 130 MiB of quads, on a machine where Metal recommends a GPU working set of 5,461 MiB (queried). Memory is a budget to keep, not the limit.
 
 The draw count is the limit. Both Apple drivers run a multi-draw indirect call as one Metal draw per command, encoded on the CPU: MoltenVK 1.4.2 (`MVKCmdDrawIndexedIndirect::encode`) and KosmicKrisp (`kk_draw`) both loop over the commands. A Metal-only probe on the reference machine measured about 100 ns of CPU encoding and about 100 ns of GPU time per indexed indirect draw, whether the draw covers a quad or nothing. 10,000 draws cost about a millisecond on each side before the Vulkan drivers add their own work, and at the spike's mesh sizes an average draw covers only a few hundred quads. Multi-draw indirect saves a Vulkan call per draw, not the Metal cost per draw, so commands have to be few, and none may be empty.
 
@@ -194,20 +194,21 @@ public:
 
 ## Performance budget
 
-What the north star asks of this layer, from RFC 0002's chunk counts and the meshing spike's sizes (replaced by measurements from generated terrain in M4):
+What the north star asks of this layer, from RFC 0006's drawn region and the meshing spike's sizes (replaced by measurements from generated terrain in M4):
 
 | View distance | 1,024 blocks | 512 blocks |
 |---|---|---|
-| Chunks with a mesh, at most | 20,400 | 5,100 |
-| Mesh memory, typical terrain (6.4 KiB per mesh) | 130 MiB | 32 MiB |
-| Mesh memory, rough terrain (14.4 KiB per mesh) | 290 MiB | 72 MiB |
-| Arena capacity: rough terrain plus 25% | 360 MiB | 90 MiB |
-| Visible meshed chunks (26% of columns, a 94-degree horizontal view) | 5,300 | 1,300 |
-| Opaque draws, 1.75 per chunk | 9,300 | 2,300 |
-| Draw overhead, Metal alone (about 100 ns each on CPU and GPU) | 0.9 ms each | 0.2 ms each |
-| Quads drawn, half of each mesh after face-direction culling | 2.2 to 4.9 million | 0.5 to 1.2 million |
+| Chunks with a mesh, at most (RFC 0006's drawn region) | 9,400 | 4,500 |
+| Mesh memory, typical terrain (6.4 KiB per mesh) | 59 MiB | 28 MiB |
+| Mesh memory, rough terrain (14.4 KiB per mesh) | 132 MiB | 64 MiB |
+| Arena capacity: rough terrain plus 25% | 165 MiB | 80 MiB |
+| Visible meshed chunks (26% of columns, a 94-degree horizontal view) | 2,500 | 1,200 |
+| Opaque draws, 1.75 per chunk | 4,300 | 2,100 |
+| Cutout draws in forests, at most one per opaque draw | up to 4,300 | up to 2,100 |
+| Draw overhead, Metal alone (about 100 ns each on CPU and GPU), both passes | 0.43 to 0.86 ms each | 0.21 to 0.42 ms each |
+| Quads drawn, half of each mesh after face-direction culling | 1.0 to 2.3 million | 0.5 to 1.1 million |
 
-The 94 degrees follow from RFC 0001's 70-degree vertical field of view on the reference display (2560 by 1664). RFC 0003's 32 KiB per chunk would make the 1,024-block arena 800 MiB; a repack covers that case. Draws and quads both grow with the square of the view distance, and level of detail (M9) cuts both at the far end; this RFC keeps the cost per chunk and per draw small.
+The 94 degrees follow from RFC 0001's 70-degree vertical field of view on the reference display (2560 by 1664); the flythrough's 2560 by 1440 (RFC 0006) gives 102 degrees and about 28.5% of columns, slightly more draws. RFC 0003's 32 KiB per chunk would make the 1,024-block arena about 370 MiB; a repack covers that case. Draws and quads both grow with the square of the view distance, and level of detail (M9) cuts both at the far end; this RFC keeps the cost per chunk and per draw small.
 
 Targets on the reference machine, release build:
 
@@ -216,7 +217,7 @@ Targets on the reference machine, release build:
 | Build the draw lists for 20,000 meshes | under 0.5 ms | nanobench, synthetic records |
 | Record both passes at 10,000 draws, per driver | under 2 ms CPU | Tracy, the benchmark of PR 2 |
 | Uploads | 1 ms per frame (the default budget) | Tracy |
-| Arena | capacity under 1.25 times resident bytes | overlay, the M3 benchmark flight |
+| Arena | no repack during the M3 benchmark flight at the capacity above | overlay, the M3 benchmark flight |
 | Fragmentation | no allocation fails during a 30-minute flight | allocation trace replay |
 
 ## Test plan
@@ -246,7 +247,7 @@ Targets on the reference machine, release build:
 ## Open questions
 
 1. **Draw granularity on the Apple drivers.** Multi-draw indirect with merged runs, or one instanced draw over 64-quad clusters? Recommendation: **runs**, the standard path; switch only if the benchmark of PR 2 shows recording 10,000 draws takes over 2 ms on KosmicKrisp. Only the builder and the vertex shader would change.
-2. **One arena buffer or several.** Recommendation: **one**, sized for rough terrain (360 MiB at 1,024 blocks) so a repack is rare. Several buffers would avoid the repack's pause and its peak memory, at the cost of a base address per chunk or a draw call per buffer. Revisit if repacks show up in play.
+2. **One arena buffer or several.** Recommendation: **one**, sized for rough terrain (165 MiB at 1,024 blocks) so a repack is rare. Several buffers would avoid the repack's pause and its peak memory, at the cost of a base address per chunk or a draw call per buffer. Revisit if repacks show up in play.
 
 ## As built
 
