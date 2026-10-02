@@ -23,6 +23,14 @@ constexpr std::uint64_t forever = std::numeric_limits<std::uint64_t>::max();
 // RGBA byte order, so a captured frame reads without swizzling.
 constexpr VkFormat offscreen_format = VK_FORMAT_R8G8B8A8_SRGB;
 
+// Headless rendering's color target, a copy source for capture().
+Result<AttachmentImage> make_offscreen_target(const Device& device, VkExtent2D extent) {
+    return AttachmentImage::create(device, extent, offscreen_format,
+                                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                   VK_IMAGE_ASPECT_COLOR_BIT);
+}
+
 enum class Target : std::uint8_t { swapchain, offscreen };
 
 // The triangle's vertices as triangle.slang reads them: positions in clip
@@ -244,7 +252,7 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     }
 
     std::optional<Swapchain> swapchain;
-    std::optional<OffscreenImage> offscreen;
+    std::optional<AttachmentImage> offscreen;
     if (desc.surface.has_value()) {
         Result<Swapchain> made =
             Swapchain::create(context.value().device(), context.value().surface(), desc.framebuffer,
@@ -254,8 +262,8 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
         }
         swapchain = std::move(made).value();
     } else {
-        Result<OffscreenImage> made = OffscreenImage::create(
-            context.value().device(), vk_extent(desc.framebuffer), offscreen_format);
+        Result<AttachmentImage> made =
+            make_offscreen_target(context.value().device(), vk_extent(desc.framebuffer));
         if (!made.has_value()) {
             return made.error();
         }
@@ -290,7 +298,7 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
 }
 
 Renderer::Renderer(Context context, std::optional<Swapchain> swapchain,
-                   std::optional<OffscreenImage> offscreen, GraphicsPipeline triangle_pipeline,
+                   std::optional<AttachmentImage> offscreen, GraphicsPipeline triangle_pipeline,
                    Buffer triangle_buffer, Extent framebuffer, PresentMode present_mode)
     : context_(std::move(context)), swapchain_(std::move(swapchain)),
       offscreen_(std::move(offscreen)), triangle_pipeline_(std::move(triangle_pipeline)),
@@ -424,8 +432,8 @@ Result<void> Renderer::recreate_target() {
             triangle_pipeline_ = std::move(rebuilt).value();
         }
     } else {
-        Result<OffscreenImage> replacement =
-            OffscreenImage::create(context_.device(), vk_extent(framebuffer_), offscreen_format);
+        Result<AttachmentImage> replacement =
+            make_offscreen_target(context_.device(), vk_extent(framebuffer_));
         if (!replacement.has_value()) {
             return replacement.error();
         }
@@ -539,7 +547,7 @@ Result<std::vector<std::uint8_t>> Renderer::capture() {
     if (frame_ == 0) {
         return Error{"there is no frame to capture yet"};
     }
-    const OffscreenImage& image = *offscreen_;
+    const AttachmentImage& image = *offscreen_;
     VkDevice device = context_.device().handle();
     VmaAllocator allocator = context_.device().allocator();
     VkQueue queue = context_.device().queue();
