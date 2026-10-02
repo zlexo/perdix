@@ -45,7 +45,8 @@ add_library(vx_render STATIC
     src/device_report.cpp
     src/device_selection.cpp
     src/feature_floor.cpp
-    src/instance.cpp)
+    src/instance.cpp
+    src/vk_result.cpp)
 add_library(vx::render ALIAS vx_render)
 
 target_include_directories(vx_render PUBLIC include)

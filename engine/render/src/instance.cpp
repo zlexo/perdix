@@ -1,5 +1,7 @@
 #include <vx/render/instance.hpp>
 
+#include "vk_result.hpp"
+
 #include <algorithm>
 #include <cstdio>
 #include <string>
@@ -15,23 +17,6 @@ namespace vx::render {
 namespace {
 
 constexpr const char* validation_layer = "VK_LAYER_KHRONOS_validation";
-
-std::string vk_result_name(VkResult result) {
-    switch (result) {
-    case VK_ERROR_OUT_OF_HOST_MEMORY:
-        return "VK_ERROR_OUT_OF_HOST_MEMORY";
-    case VK_ERROR_INITIALIZATION_FAILED:
-        return "VK_ERROR_INITIALIZATION_FAILED";
-    case VK_ERROR_LAYER_NOT_PRESENT:
-        return "VK_ERROR_LAYER_NOT_PRESENT";
-    case VK_ERROR_EXTENSION_NOT_PRESENT:
-        return "VK_ERROR_EXTENSION_NOT_PRESENT";
-    case VK_ERROR_INCOMPATIBLE_DRIVER:
-        return "VK_ERROR_INCOMPATIBLE_DRIVER";
-    default:
-        return "VkResult " + std::to_string(static_cast<int>(result));
-    }
-}
 
 // volk finds the loader by name. On macOS the SDK's loader is findable by name
 // only through DYLD_LIBRARY_PATH, which the system strips from programs started
