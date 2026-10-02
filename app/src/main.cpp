@@ -1,6 +1,7 @@
 #include "window.hpp"
 
 #include <vx/core/version.hpp>
+#include <vx/render/camera.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/device_report.hpp>
 #include <vx/render/instance.hpp>
@@ -8,6 +9,9 @@
 #include <vx/render/swapchain.hpp>
 #include <vx/render/swapchain_choice.hpp>
 
+#include <glm/ext/vector_int3_sized.hpp>
+
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -95,13 +99,20 @@ int main(int argc, char* argv[]) {
 
     // A daytime sky blue, #78A7FF in sRGB.
     constexpr vx::render::Color sky = {.r = 0.188F, .g = 0.386F, .b = 1.0F, .a = 1.0F};
+    // One cube, seen from a little above and in front of it, until the fly
+    // camera comes.
+    const std::array cubes = {glm::i64vec3(0, 0, 0)};
+    vx::render::Camera camera;
+    camera.position = {0.5, 1.6, 3.0};
+    camera.pitch = -0.4F;
     const std::uint64_t frames = options.value().frames;
     for (std::uint64_t frame = 0; frames == 0 || frame < frames; ++frame) {
         if (!window.value().handle_events()) {
             break;
         }
         renderer.value().resize(window.value().framebuffer_size());
-        const vx::Result<vx::render::Frame> rendered = renderer.value().render(sky);
+        const vx::Result<vx::render::Frame> rendered =
+            renderer.value().render({.sky = sky, .camera = camera, .cubes = cubes});
         if (!rendered.has_value()) {
             std::cerr << "error: " << rendered.error().message << '\n';
             return 1;
