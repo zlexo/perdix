@@ -42,6 +42,7 @@ Scopes follow the source layout (`core`, `world`, `mesh`, `render`, `app`), plus
 - **Small and frequent.** One coherent step per commit. A change, its tests and its documentation are usually separate commits.
 - **Every commit builds and passes the tests,** so history stays bisectable.
 - **Say why.** The summary says what changed; the body says why, and what it costs.
+- **Subjects are at most 72 characters,** type and scope included, like the body's lines.
 
 ## Pull requests
 
