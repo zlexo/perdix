@@ -3,3 +3,4 @@ add_executable(vx_app
 target_link_libraries(vx_app PRIVATE vx::core)
 set_target_properties(vx_app PROPERTIES OUTPUT_NAME voxel-engine)
 vx_target_warnings(vx_app)
+vx_target_engine_options(vx_app)

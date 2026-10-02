@@ -15,6 +15,7 @@ option(VX_BUILD_TESTS "Build the unit tests" ${PROJECT_IS_TOP_LEVEL})
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(VxWarnings)
+include(VxEngineOptions)
 
 add_subdirectory(engine/core)
 add_subdirectory(app)

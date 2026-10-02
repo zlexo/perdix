@@ -12,3 +12,4 @@ target_include_directories(vx_core
     PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_features(vx_core PUBLIC cxx_std_20)
 vx_target_warnings(vx_core)
+vx_target_engine_options(vx_core)
