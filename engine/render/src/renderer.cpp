@@ -163,9 +163,7 @@ Renderer::Renderer(Renderer&& other) noexcept
     : context_(std::move(other.context_)), swapchain_(std::move(other.swapchain_)),
       framebuffer_(other.framebuffer_), swapchain_framebuffer_(other.swapchain_framebuffer_),
       present_mode_(other.present_mode_), swapchain_stale_(other.swapchain_stale_),
-      command_pool_(std::exchange(other.command_pool_, VK_NULL_HANDLE)),
-      command_buffer_(std::exchange(other.command_buffer_, VK_NULL_HANDLE)),
-      image_acquired_(std::exchange(other.image_acquired_, VK_NULL_HANDLE)),
+      slots_(std::exchange(other.slots_, {})),
       image_rendered_(std::exchange(other.image_rendered_, {})),
       frames_done_(std::exchange(other.frames_done_, VK_NULL_HANDLE)), frame_(other.frame_) {}
 
@@ -176,33 +174,36 @@ Renderer::~Renderer() {
 Result<void> Renderer::create_frame_objects() {
     VkDevice device = context_.device().handle();
 
-    const VkCommandPoolCreateInfo pool_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
-        .queueFamilyIndex = context_.device().queue_family(),
-    };
-    if (const VkResult result = vkCreateCommandPool(device, &pool_info, nullptr, &command_pool_);
-        result != VK_SUCCESS) {
-        return Error{"vkCreateCommandPool failed: " + vk_result_name(result)};
+    for (FrameSlot& slot : slots_) {
+        const VkCommandPoolCreateInfo pool_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+            .queueFamilyIndex = context_.device().queue_family(),
+        };
+        if (const VkResult result =
+                vkCreateCommandPool(device, &pool_info, nullptr, &slot.command_pool);
+            result != VK_SUCCESS) {
+            return Error{"vkCreateCommandPool failed: " + vk_result_name(result)};
+        }
+        const VkCommandBufferAllocateInfo buffer_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .commandPool = slot.command_pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+        if (const VkResult result =
+                vkAllocateCommandBuffers(device, &buffer_info, &slot.command_buffer);
+            result != VK_SUCCESS) {
+            return Error{"vkAllocateCommandBuffers failed: " + vk_result_name(result)};
+        }
+        Result<VkSemaphore> acquired = make_semaphore(device, nullptr);
+        if (!acquired.has_value()) {
+            return acquired.error();
+        }
+        slot.image_acquired = acquired.value();
     }
-    const VkCommandBufferAllocateInfo buffer_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .pNext = nullptr,
-        .commandPool = command_pool_,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
-    };
-    if (const VkResult result = vkAllocateCommandBuffers(device, &buffer_info, &command_buffer_);
-        result != VK_SUCCESS) {
-        return Error{"vkAllocateCommandBuffers failed: " + vk_result_name(result)};
-    }
-
-    Result<VkSemaphore> acquired = make_semaphore(device, nullptr);
-    if (!acquired.has_value()) {
-        return acquired.error();
-    }
-    image_acquired_ = acquired.value();
 
     const VkSemaphoreTypeCreateInfo timeline = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -260,24 +261,27 @@ Result<Frame> Renderer::render(Color clear) {
     }
 
     VkDevice device = context_.device().handle();
-    // One frame in flight: frame N waits for frame N - 1 before reusing its
-    // command buffer and its acquire semaphore.
-    const VkSemaphoreWaitInfo previous_frame = {
+    const std::uint64_t frame = frame_ + 1;
+    const FrameSlot& slot = slots_[frame % frames_in_flight];
+    // The slot is free once the last frame that used it is done. The timeline
+    // starts at 0, so the first frames do not wait.
+    const std::uint64_t slot_free = frame > frames_in_flight ? frame - frames_in_flight : 0;
+    const VkSemaphoreWaitInfo slot_wait = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
         .pNext = nullptr,
         .flags = 0,
         .semaphoreCount = 1,
         .pSemaphores = &frames_done_,
-        .pValues = &frame_,
+        .pValues = &slot_free,
     };
-    if (const VkResult result = vkWaitSemaphores(device, &previous_frame, forever);
+    if (const VkResult result = vkWaitSemaphores(device, &slot_wait, forever);
         result != VK_SUCCESS) {
         return Error{"vkWaitSemaphores failed: " + vk_result_name(result)};
     }
 
     std::uint32_t index = 0;
     const VkResult acquired = vkAcquireNextImageKHR(device, swapchain_.handle(), forever,
-                                                    image_acquired_, VK_NULL_HANDLE, &index);
+                                                    slot.image_acquired, VK_NULL_HANDLE, &index);
     if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
         swapchain_stale_ = true;
         return Frame::skipped;
@@ -287,21 +291,20 @@ Result<Frame> Renderer::render(Color clear) {
     }
     swapchain_stale_ = acquired == VK_SUBOPTIMAL_KHR; // draw this frame, replace after it
 
-    vkResetCommandPool(device, command_pool_, 0);
-    record_clear(command_buffer_, swapchain_.images()[index], swapchain_.views()[index],
+    vkResetCommandPool(device, slot.command_pool, 0);
+    record_clear(slot.command_buffer, swapchain_.images()[index], swapchain_.views()[index],
                  swapchain_.choice().extent, clear);
 
-    ++frame_;
     const VkSemaphoreSubmitInfo wait =
-        semaphore_submit(image_acquired_, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
+        semaphore_submit(slot.image_acquired, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
     const std::array<VkSemaphoreSubmitInfo, 2> signals = {
         semaphore_submit(image_rendered_[index], 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT),
-        semaphore_submit(frames_done_, frame_, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT),
+        semaphore_submit(frames_done_, frame, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT),
     };
     const VkCommandBufferSubmitInfo commands = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
         .pNext = nullptr,
-        .commandBuffer = command_buffer_,
+        .commandBuffer = slot.command_buffer,
         .deviceMask = 0,
     };
     const VkSubmitInfo2 submit = {
@@ -320,6 +323,7 @@ Result<Frame> Renderer::render(Color clear) {
         result != VK_SUCCESS) {
         return Error{"vkQueueSubmit2 failed: " + vk_result_name(result)};
     }
+    frame_ = frame;
 
     VkSwapchainKHR swapchain = swapchain_.handle();
     const VkPresentInfoKHR present = {
@@ -352,8 +356,10 @@ void Renderer::destroy() noexcept {
     }
     image_rendered_.clear();
     vkDestroySemaphore(device, frames_done_, nullptr);
-    vkDestroySemaphore(device, image_acquired_, nullptr);
-    vkDestroyCommandPool(device, command_pool_, nullptr); // frees its command buffer
+    for (const FrameSlot& slot : slots_) {
+        vkDestroySemaphore(device, slot.image_acquired, nullptr);
+        vkDestroyCommandPool(device, slot.command_pool, nullptr); // frees its command buffer
+    }
 }
 
 } // namespace vx::render
