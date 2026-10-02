@@ -140,8 +140,11 @@ Ambient occlusion needs the quad split along the diagonal whose corners are more
 ### Output
 
 ```cpp
+enum class Pass : std::uint8_t { opaque, cutout };
+
 struct ChunkMesh {
-    std::array<std::span<const Quad>, 6> by_face;   // +x, -x, +y, -y, +z, -z
+    // ranges[pass][face], faces in the order +x, -x, +y, -y, +z, -z.
+    std::array<std::array<std::span<const Quad>, 6>, 2> ranges;
 };
 
 // Pure: reads the padded chunk and the visual table, writes into reusable
@@ -149,7 +152,9 @@ struct ChunkMesh {
 ChunkMesh mesh_chunk(const PaddedChunk& blocks, std::span<const BlockVisual> visuals, MeshScratch& scratch);
 ```
 
-Grouping by face direction lets the renderer skip the groups that face away from the camera: for a chunk entirely above the camera, its upward faces cannot be seen. That roughly halves the quads drawn, at no cost here beyond keeping six ranges.
+Cutout faces (leaves, glass) get ranges of their own because they need an alpha test. Apple's GPUs handle fragments that may be discarded less efficiently in hidden surface removal, and Apple asks for them to be drawn after all opaque geometry; separate ranges let RFC 0007 do exactly that.
+
+Grouping by face direction lets the renderer skip the ranges that face away from the camera: for a chunk entirely above the camera, its upward faces cannot be seen. That roughly halves the quads drawn, at no cost here beyond keeping six ranges.
 
 ### Edits
 
@@ -200,7 +205,7 @@ The prototype column comes from a throwaway implementation of culling, occlusion
 ## Open questions
 
 1. **How ambient occlusion looks.** Recommendation: on by default, four levels as in Minecraft's smooth lighting, with its strength on a slider in the overlay so the final value is chosen by eye.
-2. **Faces between leaves (and other cutout blocks of one kind).** Recommendation: **cull them** by default, like Minecraft's "fast" leaves. Fewer quads and less overdraw, which serves the north star. "Fancy" leaves, with the inner faces drawn, can be a setting later.
+2. **Faces between leaves (and other cutout blocks of one kind).** Recommendation: **cull them** by default, like Minecraft's "fast" leaves. Fewer quads and less overdraw, which serves the north star. "Fancy" leaves, with the inner faces drawn, can be a setting later. Culling them needs to know which cutouts are "of one kind", which the visual table does not say yet: if this is the answer, `BlockVisual` gains a cull group that the registry (RFC 0004) fills, and two cutouts with the same nonzero group hide each other's shared faces.
 
 ## As built
 
