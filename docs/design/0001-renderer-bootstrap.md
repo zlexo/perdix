@@ -103,7 +103,7 @@ struct FeatureReport {
 [[nodiscard]] FeatureReport check_feature_floor(const DeviceFeatures& features);
 ```
 
-The floor: Vulkan 1.3; `dynamicRendering`, `synchronization2`, `timelineSemaphore`, `bufferDeviceAddress`, `descriptorIndexing` with `runtimeDescriptorArray`, `descriptorBindingPartiallyBound` and `shaderSampledImageArrayNonUniformIndexing`; `multiDrawIndirect`. Among devices that pass, a discrete GPU beats an integrated one. If none passes, startup fails with the device names and their missing features.
+The floor: Vulkan 1.3; `dynamicRendering`, `synchronization2`, `timelineSemaphore`, `bufferDeviceAddress`, `descriptorIndexing` with `runtimeDescriptorArray`, `descriptorBindingPartiallyBound` and `shaderSampledImageArrayNonUniformIndexing`; `multiDrawIndirect`. `samplerAnisotropy` is not part of the floor: it is enabled when the device offers it, for RFC 0004's texture filtering. Among devices that pass, a discrete GPU beats an integrated one. If none passes, startup fails with the device names and their missing features.
 
 On macOS both KosmicKrisp and MoltenVK can expose the same GPU. The engine does not choose between drivers; the Vulkan loader does, through `VK_DRIVER_FILES`. Switching drivers to tell a driver bug from our own is an environment variable, documented in a "Debugging the renderer" page.
 
@@ -153,7 +153,9 @@ The cube is 36 vertices in a buffer. Chunks will replace them with packed quads 
 
 ### Textures: one bindless array
 
-One global descriptor set holds an array of sampled images (descriptor indexing, partially bound) and a sampler: nearest filtering when magnified for the pixel-art look, with mipmaps when minified. Shaders index the array with a texture number. The cube uses one generated 16 by 16 checker texture; real block textures arrive with the block registry.
+One global descriptor set holds an array of separate sampled images (descriptor indexing, partially bound) for textures in general, and a second binding for block textures: one 2D array image with a layer per block texture (RFC 0004). A quad's texture number selects a layer of that image. A layer is a third texture coordinate rather than a descriptor index, so it varies freely within a draw without non-uniform indexing.
+
+How block textures are filtered and mipmapped is RFC 0004's. The cube samples one generated 16 by 16 checker texture with nearest filtering.
 
 ### Depth: reversed-Z with an infinite far plane
 
