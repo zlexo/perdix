@@ -37,6 +37,17 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
+      "name": "mac-ubsan",
+      "displayName": "macOS, Apple Clang, UndefinedBehaviorSanitizer",
+      "inherits": "mac",
+      "description": "UBSan only: AddressSanitizer hangs at startup on macOS 26 with Apple Clang 17, even for an empty program. Linux CI runs both.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -O1",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=undefined"
+      }
+    },
+    {
       "name": "linux-gcc",
       "displayName": "Linux, GCC 13, Debug",
       "inherits": "linux",
@@ -47,13 +58,26 @@
       "displayName": "Linux, Clang 18, Debug",
       "inherits": "linux",
       "cacheVariables": { "CMAKE_CXX_COMPILER": "clang++-18", "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "linux-asan",
+      "displayName": "Linux, Clang 18, AddressSanitizer + UndefinedBehaviorSanitizer",
+      "inherits": "linux",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++-18",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -O1",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
     }
   ],
   "buildPresets": [
     { "name": "mac-debug", "configurePreset": "mac-debug" },
     { "name": "mac-release", "configurePreset": "mac-release" },
+    { "name": "mac-ubsan", "configurePreset": "mac-ubsan" },
     { "name": "linux-gcc", "configurePreset": "linux-gcc" },
-    { "name": "linux-clang", "configurePreset": "linux-clang" }
+    { "name": "linux-clang", "configurePreset": "linux-clang" },
+    { "name": "linux-asan", "configurePreset": "linux-asan" }
   ],
   "testPresets": [
     {
@@ -64,7 +88,22 @@
     },
     { "name": "mac-debug", "inherits": "base", "configurePreset": "mac-debug" },
     { "name": "mac-release", "inherits": "base", "configurePreset": "mac-release" },
+    {
+      "name": "mac-ubsan",
+      "inherits": "base",
+      "configurePreset": "mac-ubsan",
+      "environment": { "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1" }
+    },
     { "name": "linux-gcc", "inherits": "base", "configurePreset": "linux-gcc" },
-    { "name": "linux-clang", "inherits": "base", "configurePreset": "linux-clang" }
+    { "name": "linux-clang", "inherits": "base", "configurePreset": "linux-clang" },
+    {
+      "name": "linux-asan",
+      "inherits": "base",
+      "configurePreset": "linux-asan",
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=1:abort_on_error=1",
+        "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"
+      }
+    }
   ]
 }
