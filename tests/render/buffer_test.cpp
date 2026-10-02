@@ -68,6 +68,19 @@ TEST_CASE("a device-local buffer is not mapped, and has an address only when ask
     CHECK(created.value().instance().validation_counts().errors == 0);
 }
 
+TEST_CASE("a readback buffer is always mapped") {
+    vx::Result<vx::render::Context> created = create_context();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+
+    vx::Result<vx::render::Buffer> made =
+        vx::render::Buffer::create(created.value().device(), 128, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                   vx::render::BufferMemory::readback);
+    REQUIRE(made.has_value());
+    CHECK(made.value().mapping().size() == 128);
+    CHECK(created.value().instance().validation_counts().errors == 0);
+}
+
 TEST_CASE("a buffer without a size is an error, not a Vulkan call") {
     vx::Result<vx::render::Context> created = create_context();
     INFO((created.has_value() ? std::string() : created.error().message));
