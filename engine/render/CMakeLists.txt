@@ -21,7 +21,13 @@ FetchContent_Declare(vma
     GIT_TAG v3.4.0
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR sources-only)
-FetchContent_MakeAvailable(vulkan_headers volk vma)
+# glm, for the camera's float math (RFC 0001). It is header-only.
+FetchContent_Declare(glm
+    GIT_REPOSITORY https://github.com/g-truc/glm.git
+    GIT_TAG 1.0.3
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR sources-only)
+FetchContent_MakeAvailable(vulkan_headers volk vma glm)
 
 # volk loads the Vulkan loader at run time and every entry point from it, so
 # nothing links the loader. Built without our warnings: it is not our code.
@@ -39,6 +45,11 @@ add_library(vx_vma STATIC src/vma.cpp)
 target_include_directories(vx_vma SYSTEM PUBLIC "${vma_SOURCE_DIR}/include")
 target_compile_definitions(vx_vma PRIVATE VMA_IMPLEMENTATION)
 target_link_libraries(vx_vma PUBLIC vx_volk)
+
+# Vulkan's depth range runs from 0 to 1, not from -1 to 1 as OpenGL's does.
+add_library(vx_glm INTERFACE)
+target_include_directories(vx_glm SYSTEM INTERFACE "${glm_SOURCE_DIR}")
+target_compile_definitions(vx_glm INTERFACE GLM_FORCE_DEPTH_ZERO_TO_ONE)
 
 add_library(vx_render STATIC
     src/buffer.cpp
@@ -59,7 +70,7 @@ add_library(vx_render STATIC
 add_library(vx::render ALIAS vx_render)
 
 target_include_directories(vx_render PUBLIC include)
-target_link_libraries(vx_render PUBLIC vx::core vx_volk vx_vma)
+target_link_libraries(vx_render PUBLIC vx::core vx_volk vx_vma vx_glm)
 target_compile_features(vx_render PUBLIC cxx_std_20)
 vx_target_warnings(vx_render)
 vx_target_engine_options(vx_render)
