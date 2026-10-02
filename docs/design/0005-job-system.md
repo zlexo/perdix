@@ -133,7 +133,7 @@ The scheduler has no dependencies: a job is submitted only once it can run. The 
 
 A running job is never interrupted; it lasts microseconds to milliseconds, and the world thread drops results for chunks that are gone. When a chunk unloads, its queued jobs are canceled and their inputs unpinned at once; a running job's inputs are unpinned when it reports back.
 
-Only shutdown and tests wait for jobs, and no engine lock is held while a job runs or while another engine lock is taken: with no cycle of waits, there is no deadlock to find. Idle workers sleep on a condition variable, never spinning or yielding, and nothing uses a standalone fence, which ThreadSanitizer does not support. Shutdown runs in a fixed order: the world thread stops feeding, cancels everything queued, drains until every running job has reported back, frees its chunks and exits; then the job system, which asserts it is idle, joins its workers; RFC 0007's mesh allocator goes last.
+Only shutdown and tests wait for jobs, and no engine lock is held while a job runs or while another engine lock is taken: with no cycle of waits, there is no deadlock to find. Idle workers sleep on a condition variable, never spinning or yielding, and nothing uses a standalone fence, which ThreadSanitizer does not support. Shutdown runs in a fixed order: the world thread stops feeding, cancels everything queued, drains until every running job has reported back, frees its chunks and exits; then the job system, which asserts it is idle, joins its workers; the mesh result pool goes last.
 
 ### Feeding: a short queue
 
@@ -161,9 +161,9 @@ An inbox is a lock and two arrays swapped on drain. Messages from one producer a
 
 The main thread never reads a chunk. It sends the action and the view ray; the world thread finds the targeted block (M5's raycast), applies the edit, and sends back the target for the selection outline. Player physics is simulation and lives on the world thread too.
 
-Meshes travel through the world thread, so the main thread sees one ordered stream and a mesh can never arrive after its chunk's unload. The world thread forwards a mesh only if its chunk is loaded with the same load id and the mesh is newer than the last one forwarded; otherwise it frees it. The remeshes of one edit form a batch that goes out as a single message once all have finished, and RFC 0007 shows it in one frame, so breaking a block never leaves a hole. While a batch is pending, newer results for its chunks join it instead of going out alone; a member whose chunk unloads leaves it; load ids are checked when it is sent. The world thread holds back new streaming mesh jobs while meshes forwarded minus meshes uploaded (a running count the main thread sends with the player's position) is over a limit; edits are exempt.
+Meshes travel through the world thread, so the main thread sees one ordered stream and a mesh can never arrive after its chunk's unload. The world thread forwards a mesh only if its chunk is loaded with the same load id and the mesh is newer than the last one forwarded; otherwise it frees it. The remeshes of one edit form a batch that goes out as a single message once all have finished, and RFC 0007's `upload_batch` uploads it whole in the frame it arrives, outside the upload budget, so breaking a block never leaves a hole. While a batch is pending, newer results for its chunks join it instead of going out alone; a member whose chunk unloads leaves it; load ids are checked when it is sent. The world thread holds back new streaming mesh jobs while meshes forwarded minus meshes uploaded (a running count the main thread sends with the player's position) is over a limit; edits are exempt.
 
-A generated chunk is a `ChunkStorage` allocated on the worker. A mesh job copies its quads from scratch into one result buffer, which RFC 0007 defines (on unified memory, possibly GPU memory) and makes safe to allocate and free from any thread.
+A generated chunk is a `ChunkStorage` allocated on the worker. A mesh job copies its quads from scratch into one result buffer from a `MeshResultPool` in `core`: CPU memory in size classes with a lock each, like RFC 0002's block data, allocated on workers and freed by the main thread once RFC 0007 has copied the quads into its arena. A mesh update owns its buffer, so RFC 0003's spans into scratch never leave the worker.
 
 ### The world loop
 
@@ -260,7 +260,7 @@ Targets on the reference machine, release build. Scheduler numbers from nanobenc
 2. `linux-tsan` preset and CI job, with its planted-race control.
 3. `core`: thread names, QoS and `cache_line`; `JobSystem` in deterministic mode with order, cancellation and limit tests, and its benchmarks.
 4. `core`: worker threads, wake-ups and shutdown; the stress test.
-5. `core`: `WakeEvent` and `Inbox`, with tests.
+5. `core`: `WakeEvent`, `Inbox` and the `MeshResultPool`, with tests.
 6. Tracy: thread names, job zones, tick frames, plots, the lockable scheduler lock.
 7. `world`: RFC 0002's changes (`clone`, `const` methods without hidden writes, locked size classes, the `from_dense` table from scratch, compaction on the world thread).
 8. `world`: chunk versions and pins on RFC 0006's chunk map, with tests.
