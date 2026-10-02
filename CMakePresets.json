@@ -13,9 +13,13 @@
       "name": "mac",
       "hidden": true,
       "inherits": "base",
-      "description": "Apple Clang, chosen by path so an older clang++ earlier on PATH is never picked up.",
+      "description": "Apple Clang, chosen by path so an older clang++ earlier on PATH is never picked up, and flags of its own: CMake would otherwise start them from the shell's CFLAGS, CXXFLAGS and LDFLAGS, and the LDFLAGS Homebrew suggests for llvm@14 links LLVM 14's libunwind into every executable.",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
-      "cacheVariables": { "CMAKE_CXX_COMPILER": "/usr/bin/clang++" }
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "/usr/bin/clang", "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
+        "CMAKE_C_FLAGS": "", "CMAKE_CXX_FLAGS": "",
+        "CMAKE_EXE_LINKER_FLAGS": "", "CMAKE_SHARED_LINKER_FLAGS": "", "CMAKE_MODULE_LINKER_FLAGS": ""
+      }
     },
     {
       "name": "linux",
@@ -37,6 +41,13 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
+      "name": "mac-profile",
+      "displayName": "macOS, Apple Clang, Release with the profiler",
+      "inherits": "mac",
+      "description": "The release build with Tracy compiled in, and debug info for its call stacks and source view.",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_C_FLAGS": "-g", "CMAKE_CXX_FLAGS": "-g", "VX_PROFILE": "ON" }
+    },
+    {
       "name": "mac-ubsan",
       "displayName": "macOS, Apple Clang, UndefinedBehaviorSanitizer",
       "inherits": "mac",
@@ -51,20 +62,27 @@
       "name": "linux-gcc",
       "displayName": "Linux, GCC 13, Debug",
       "inherits": "linux",
-      "cacheVariables": { "CMAKE_CXX_COMPILER": "g++-13", "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": { "CMAKE_C_COMPILER": "gcc-13", "CMAKE_CXX_COMPILER": "g++-13", "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
       "name": "linux-clang",
       "displayName": "Linux, Clang 18, Debug",
       "inherits": "linux",
-      "cacheVariables": { "CMAKE_CXX_COMPILER": "clang++-18", "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang-18", "CMAKE_CXX_COMPILER": "clang++-18", "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "linux-lavapipe",
+      "displayName": "Linux, Clang 22, Debug, for lavapipe",
+      "inherits": "linux",
+      "description": "The lavapipe job's build. The job runs Ubuntu 26.04, for its validation layers, and Clang 22 is that image's newest. The profiler is compiled in, so Tracy's code builds on Linux and its Vulkan calls run under validation.",
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang-22", "CMAKE_CXX_COMPILER": "clang++-22", "CMAKE_BUILD_TYPE": "Debug", "VX_PROFILE": "ON" }
     },
     {
       "name": "linux-asan",
       "displayName": "Linux, Clang 18, AddressSanitizer + UndefinedBehaviorSanitizer",
       "inherits": "linux",
       "cacheVariables": {
-        "CMAKE_CXX_COMPILER": "clang++-18",
+        "CMAKE_C_COMPILER": "clang-18", "CMAKE_CXX_COMPILER": "clang++-18",
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -O1",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
@@ -74,9 +92,11 @@
   "buildPresets": [
     { "name": "mac-debug", "configurePreset": "mac-debug" },
     { "name": "mac-release", "configurePreset": "mac-release" },
+    { "name": "mac-profile", "configurePreset": "mac-profile" },
     { "name": "mac-ubsan", "configurePreset": "mac-ubsan" },
     { "name": "linux-gcc", "configurePreset": "linux-gcc" },
     { "name": "linux-clang", "configurePreset": "linux-clang" },
+    { "name": "linux-lavapipe", "configurePreset": "linux-lavapipe" },
     { "name": "linux-asan", "configurePreset": "linux-asan" }
   ],
   "testPresets": [
@@ -88,18 +108,26 @@
     },
     { "name": "mac-debug", "inherits": "base", "configurePreset": "mac-debug" },
     { "name": "mac-release", "inherits": "base", "configurePreset": "mac-release" },
+    { "name": "mac-profile", "inherits": "base", "configurePreset": "mac-profile" },
     {
       "name": "mac-ubsan",
       "inherits": "base",
       "configurePreset": "mac-ubsan",
       "environment": { "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1" }
     },
-    { "name": "linux-gcc", "inherits": "base", "configurePreset": "linux-gcc" },
-    { "name": "linux-clang", "inherits": "base", "configurePreset": "linux-clang" },
+    { "name": "linux-gcc", "inherits": "base", "configurePreset": "linux-gcc", "filter": { "exclude": { "label": "vulkan" } } },
+    { "name": "linux-clang", "inherits": "base", "configurePreset": "linux-clang", "filter": { "exclude": { "label": "vulkan" } } },
+    {
+      "name": "linux-lavapipe",
+      "inherits": "base",
+      "configurePreset": "linux-lavapipe",
+      "description": "Every test, the Vulkan ones included, on a machine with a Vulkan driver such as Mesa's lavapipe."
+    },
     {
       "name": "linux-asan",
       "inherits": "base",
       "configurePreset": "linux-asan",
+      "filter": { "exclude": { "label": "vulkan" } },
       "environment": {
         "ASAN_OPTIONS": "detect_leaks=1:abort_on_error=1",
         "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"

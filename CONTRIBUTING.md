@@ -60,6 +60,22 @@ Scopes follow the source layout (`core`, `world`, `mesh`, `render`, `app`), plus
 
 Numbers come from the benchmark harness on the reference machine (an Apple M3 with 8 GB, see the vision), and the pull request says how they were measured. Shared CI runners are too noisy for timing, so CI never asserts a time budget; it only checks that benchmarks still run.
 
+## Profiling
+
+Tracy is compiled in when `VX_PROFILE` is on. The `mac-profile` preset is the release build with it, and debug info for Tracy's call stacks:
+
+```sh
+cmake --preset mac-profile
+cmake --build --preset mac-profile
+./build/mac-profile/app/perdix
+```
+
+The viewer must speak the client's protocol, so it is Tracy 0.13.1, the version CMake fetches: on macOS, `brew install tracy`, then `brew pin tracy` so an upgrade cannot break the match. Bump the two together. Start `tracy` and connect to `127.0.0.1`: the client listens on localhost only. From a terminal, `tracy-capture -o run.tracy -a 127.0.0.1` records a run and `tracy-csvexport run.tracy` lists its CPU zones (`-g` for GPU zones).
+
+A capture shows each frame's steps as CPU zones, the GPU time of each frame and pass, and every heap allocation with its call stack. RFC 0001's budget of no allocations a frame is also a test, `vx_render_allocation_tests`, which runs in every build.
+
+For a glance without Tracy, in any build, F3 shows the overlay, and `--overlay` shows it from the start: graphs of the CPU's and the GPU's time over the last 240 frames, against the 0.5 ms budget, the startup report, the present mode switch, the camera's position and the validation count. Its CPU time is each frame's interval less the time the renderer waited on the GPU or the display, and its GPU time comes from the renderer's own timestamps, which span what Tracy's Frame zone does. Debug builds run with validation, which costs CPU time, so judge the CPU graph against the budget in `mac-profile` or `mac-release`.
+
 ## Code style
 
 Formatting is enforced by `clang-format` with the configuration in the repository root, at the version CI pins. Install the same release with `pipx install clang-format==22.1.8` and check that `clang-format --version` reports 22.1.8: other versions format the same file differently, and older ones, such as Homebrew's 14, reject the configuration. Static analysis runs `clang-tidy` with the repository's `.clang-tidy`, also pinned: `pipx install clang-tidy==22.1.8`, then `git ls-files 'engine/*.cpp' 'app/*.cpp' | xargs clang-tidy -p build/mac-debug` after configuring. It also checks naming. Naming, error handling and the rest of the conventions are set in RFC 0000.
