@@ -405,3 +405,16 @@ Pull request plan item 9, the bindless texture array and the textured cube, land
 - **Each face tints the checker with its color**, so the cube tests still tell the faces apart, reading which channel is lit rather than an exact color.
 - **The validation layers do not see a wrong slot.** The array is partially bound, so reading an empty slot is not an error they report; on MoltenVK it reads as transparent black. The pixel tests catch it.
 - **Vertices grew to 48 bytes**, padded so std430 and scalar layout agree on them.
+
+Pull request plan item 10, Tracy, landed as three pull requests: the client with CPU zones, GPU zones, and allocations.
+
+- **Tracy 0.13.1, not the newest 0.14.1.** The viewer must speak the client's protocol, and Homebrew's viewer is 0.13.1 (protocol 76; 0.14 speaks 82), so the two are bumped together (decided 2026-10-02).
+- **Two upstream fixes are backported** to Tracy's Vulkan context, by a script that runs at every configure: a query result buffer half the size its collection reads, fixed after 0.14.1, and 0.14's pool of 4,096 queries on Apple drivers, since KosmicKrisp cannot make the 65,536 that 0.13.1 asks for.
+- **`VX_PROFILE`, off by default, compiles the profiler in;** without it, Tracy's macros produce no code. `mac-profile` is the release build with it, and the lavapipe job builds with it, so Tracy's Vulkan calls run under validation on every pull request. The client listens on localhost only and does not announce itself.
+- **CPU zones wrap each frame step**, each step a function of its own: Wait for frame slot, Acquire, Record, Submit and Present, inside Render; startup shows the renderer's creation by part. The app marks frames and names its thread Main.
+- **GPU zones span passes, not draws:** KosmicKrisp drops timestamps written within rendering, so a zone around the draw call never arrived there, while MoltenVK reported it. Frame and Cube pass are collected at the start of each frame. Tracy has no macOS host time domain for calibrated timestamps, so the GPU and CPU clocks are aligned once, when the context is made.
+- **Allocations:** in profiling builds the app reports every allocation through `operator new` to Tracy, with its call stack. The budget of none a frame is a test of its own, which attributes each allocation to the library that made it, since the replaced `operator new` sees the drivers too.
+- **Measured on the reference machine**, release build with the profiler, 300 frames at 2560 by 1440: recording and submitting a frame takes about 0.03 ms of CPU, against a budget of 0.5 ms, and creating the renderer, from the instance to the uploaded cube, takes 44 ms of the 500 ms budgeted for startup to the first presented frame.
+- **Perdix allocates nothing a frame.** The drivers do: in the allocation test, Apple's Metal driver allocates 3 times a frame under KosmicKrisp, and MoltenVK 32 times.
+- **Over budget: GPU time on KosmicKrisp.** A frame, a clear and one cube, takes 0.73 ms of GPU time on KosmicKrisp against a budget of 0.5 ms, and 0.32 ms on MoltenVK, on the same GPU.
+- **Where the time goes, as item 4 asked:** both drivers pace frames at the display's 60 Hz, about 16.2 ms each, but in different places: KosmicKrisp waits in Acquire, MoltenVK in Submit. The 118 frames per second item 5 saw under FIFO did not recur in these captures.
