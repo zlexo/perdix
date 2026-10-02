@@ -181,15 +181,18 @@ public:
 
 ## Performance budget
 
-On the reference machine, release build, measured with nanobench over random positions in a 4-bit chunk:
+On the reference machine, release build, measured with nanobench in a 4-bit chunk. `get` is measured as throughput over independent random positions; the latency of one read whose index depends on the previous read is reported next to it, not budgeted.
 
-| Operation | Target |
-|---|---|
-| `get` | under 2 ns |
-| `set`, no growth | under 10 ns |
-| `to_dense` | under 30 µs per chunk |
-| `from_dense` | under 100 µs per chunk |
-| Header of a uniform chunk | 32 bytes or less |
+| Operation | Target | Prototype |
+|---|---|---|
+| `get`, throughput | under 2 ns | 0.78 ns |
+| `get`, dependent latency | not budgeted | 4.3 ns |
+| `set`, no growth | under 10 ns | 4.5 ns |
+| `to_dense` | under 30 µs per chunk | 5.4 µs |
+| `from_dense` | under 100 µs per chunk | 14.3 µs |
+| Header of a uniform chunk | 32 bytes or less | 32 bytes |
+
+The prototype column comes from a throwaway implementation of this design measured on the reference machine on 2026-10-02 (Apple Clang 17, `-O2 -mcpu=apple-m3`, median of seven runs, a chunk with ten terrain-like states). It shows the budget is reachable with room to spare; the implementation's own benchmarks replace it.
 
 ## Test plan
 
