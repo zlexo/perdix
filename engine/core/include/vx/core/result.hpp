@@ -27,15 +27,15 @@ public:
     explicit operator bool() const noexcept { return has_value(); }
 
     [[nodiscard]] T& value() & {
-        assert(has_value());
+        assert(value_.has_value());
         return *value_;
     }
     [[nodiscard]] const T& value() const& {
-        assert(has_value());
+        assert(value_.has_value());
         return *value_;
     }
     [[nodiscard]] T&& value() && {
-        assert(has_value());
+        assert(value_.has_value());
         return std::move(*value_);
     }
 
