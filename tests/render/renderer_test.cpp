@@ -58,6 +58,17 @@ bool near(const Pixel& pixel, const Pixel& expected) {
     return true;
 }
 
+// Whether `channel` alone of red, green and blue is lit: the face of that
+// color, through either shade of the checker it tints.
+bool only(const Pixel& pixel, std::size_t channel) {
+    for (std::size_t other = 0; other < 3; ++other) {
+        if (other != channel && pixel.at(other) > 1) {
+            return false;
+        }
+    }
+    return pixel.at(channel) >= 140;
+}
+
 // How many pixels in rows [first, end) are not near `expected`.
 std::size_t pixels_off(const std::vector<std::uint8_t>& pixels, std::uint32_t width,
                        std::uint32_t first, std::uint32_t end, const Pixel& expected) {
@@ -122,9 +133,39 @@ TEST_CASE("a cube shows its front face from in front, and its top from above") {
     const vx::Result<std::vector<std::uint8_t>> top = renderer.capture();
     REQUIRE(top.has_value());
 
-    // Faces get one color each until textures come: +z blue, +y green.
-    CHECK(near(pixel_at(front.value(), image_size.width, 32, 16), {0, 0, 255, 255}));
-    CHECK(near(pixel_at(top.value(), image_size.width, 32, 16), {0, 255, 0, 255}));
+    // Each face tints the checker with its color: +z blue, +y green.
+    CHECK(only(pixel_at(front.value(), image_size.width, 32, 16), 2));
+    CHECK(only(pixel_at(top.value(), image_size.width, 32, 16), 1));
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}
+
+TEST_CASE("up close, a face shows the checker it tints, in both shades") {
+    vx::Result<vx::render::Renderer> created = headless_renderer();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+
+    // Three tenths of a block from the front face, which fills the view with
+    // about 13 by 7 of the checker's 16 by 16 texels, each some 5 pixels wide.
+    vx::render::Camera close;
+    close.position = {0.5, 0.5, 1.3};
+    const std::array cubes = {glm::i64vec3(0, 0, 0)};
+    REQUIRE(renderer.render({.sky = black, .camera = close, .cubes = cubes}).has_value());
+    const vx::Result<std::vector<std::uint8_t>> pixels = renderer.capture();
+    REQUIRE(pixels.has_value());
+
+    // Sampled nearest, each pixel is one texel's gray tinted blue: sRGB 230
+    // or 150, decoded to linear for the tint and encoded back. About half the
+    // image is each.
+    const std::size_t all = std::size_t{image_size.width} * image_size.height;
+    const std::size_t light =
+        all - pixels_off(pixels.value(), image_size.width, 0, image_size.height, {0, 0, 230, 255});
+    const std::size_t dark =
+        all - pixels_off(pixels.value(), image_size.width, 0, image_size.height, {0, 0, 150, 255});
+    CHECK(light + dark == all);
+    CHECK(light > all / 4);
+    CHECK(dark > all / 4);
     CHECK(renderer.context().instance().validation_counts().errors == 0);
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }
@@ -145,7 +186,7 @@ TEST_CASE("the nearer of two cubes hides the other, though it is drawn first") {
     const vx::Result<std::vector<std::uint8_t>> pixels = renderer.capture();
     REQUIRE(pixels.has_value());
 
-    CHECK(near(pixel_at(pixels.value(), image_size.width, 32, 10), {0, 0, 255, 255}));
+    CHECK(only(pixel_at(pixels.value(), image_size.width, 32, 10), 2));
     CHECK(renderer.context().instance().validation_counts().errors == 0);
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }
@@ -171,7 +212,7 @@ TEST_CASE("10 million blocks out, a cube renders exactly as near the origin") {
     const std::vector<std::uint8_t> far_out =
         view({10'000'000.0, 64.0, -10'000'000.0}, {10'000'000, 64, -10'000'000});
 
-    CHECK(near(pixel_at(near_origin, image_size.width, 32, 16), {0, 0, 255, 255}));
+    CHECK(only(pixel_at(near_origin, image_size.width, 32, 16), 2));
     CHECK(far_out == near_origin);
     CHECK(renderer.context().instance().validation_counts().errors == 0);
 }

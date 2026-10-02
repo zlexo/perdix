@@ -20,6 +20,8 @@ FeatureReport check_feature_floor(const DeviceFeatures& features) {
     require(features.descriptor_indexing, "descriptorIndexing");
     require(features.runtime_descriptor_array, "runtimeDescriptorArray");
     require(features.descriptor_binding_partially_bound, "descriptorBindingPartiallyBound");
+    require(features.shader_sampled_image_array_dynamic_indexing,
+            "shaderSampledImageArrayDynamicIndexing");
     require(features.multi_draw_indirect, "multiDrawIndirect");
     require(features.draw_indirect_first_instance, "drawIndirectFirstInstance");
 

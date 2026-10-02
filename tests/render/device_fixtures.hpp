@@ -20,6 +20,7 @@ inline render::DeviceFeatures full_floor(std::uint32_t api_version = VK_API_VERS
         .descriptor_indexing = true,
         .runtime_descriptor_array = true,
         .descriptor_binding_partially_bound = true,
+        .shader_sampled_image_array_dynamic_indexing = true,
         .multi_draw_indirect = true,
         .draw_indirect_first_instance = true,
     };
