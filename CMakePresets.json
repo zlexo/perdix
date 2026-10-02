@@ -15,7 +15,7 @@
       "inherits": "base",
       "description": "Apple Clang, chosen by path so an older clang++ earlier on PATH is never picked up.",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
-      "cacheVariables": { "CMAKE_CXX_COMPILER": "/usr/bin/clang++" }
+      "cacheVariables": { "CMAKE_C_COMPILER": "/usr/bin/clang", "CMAKE_CXX_COMPILER": "/usr/bin/clang++" }
     },
     {
       "name": "linux",
@@ -51,20 +51,20 @@
       "name": "linux-gcc",
       "displayName": "Linux, GCC 13, Debug",
       "inherits": "linux",
-      "cacheVariables": { "CMAKE_CXX_COMPILER": "g++-13", "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": { "CMAKE_C_COMPILER": "gcc-13", "CMAKE_CXX_COMPILER": "g++-13", "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
       "name": "linux-clang",
       "displayName": "Linux, Clang 18, Debug",
       "inherits": "linux",
-      "cacheVariables": { "CMAKE_CXX_COMPILER": "clang++-18", "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang-18", "CMAKE_CXX_COMPILER": "clang++-18", "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
       "name": "linux-asan",
       "displayName": "Linux, Clang 18, AddressSanitizer + UndefinedBehaviorSanitizer",
       "inherits": "linux",
       "cacheVariables": {
-        "CMAKE_CXX_COMPILER": "clang++-18",
+        "CMAKE_C_COMPILER": "clang-18", "CMAKE_CXX_COMPILER": "clang++-18",
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -O1",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
@@ -94,12 +94,13 @@
       "configurePreset": "mac-ubsan",
       "environment": { "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1" }
     },
-    { "name": "linux-gcc", "inherits": "base", "configurePreset": "linux-gcc" },
-    { "name": "linux-clang", "inherits": "base", "configurePreset": "linux-clang" },
+    { "name": "linux-gcc", "inherits": "base", "configurePreset": "linux-gcc", "filter": { "exclude": { "label": "vulkan" } } },
+    { "name": "linux-clang", "inherits": "base", "configurePreset": "linux-clang", "filter": { "exclude": { "label": "vulkan" } } },
     {
       "name": "linux-asan",
       "inherits": "base",
       "configurePreset": "linux-asan",
+      "filter": { "exclude": { "label": "vulkan" } },
       "environment": {
         "ASAN_OPTIONS": "detect_leaks=1:abort_on_error=1",
         "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"

@@ -18,3 +18,19 @@ add_executable(vx_core_tests
 target_link_libraries(vx_core_tests PRIVATE vx::core doctest::doctest)
 vx_target_warnings(vx_core_tests)
 doctest_discover_tests(vx_core_tests)
+
+add_executable(vx_render_tests
+    main.cpp
+    render/feature_floor_test.cpp)
+target_link_libraries(vx_render_tests PRIVATE vx::render doctest::doctest)
+vx_target_warnings(vx_render_tests)
+doctest_discover_tests(vx_render_tests)
+
+# Tests that talk to a real Vulkan loader and driver. Labeled so presets
+# without one can leave them out.
+add_executable(vx_render_vulkan_tests
+    main.cpp
+    render/instance_test.cpp)
+target_link_libraries(vx_render_vulkan_tests PRIVATE vx::render doctest::doctest)
+vx_target_warnings(vx_render_vulkan_tests)
+doctest_discover_tests(vx_render_vulkan_tests PROPERTIES LABELS vulkan)
