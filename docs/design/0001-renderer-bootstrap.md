@@ -137,13 +137,30 @@ Two frames in flight: the CPU records frame N+1 while the GPU draws frame N. Mor
 
 ### Memory
 
-Through VMA with buffer device address enabled. The reference machine has unified memory: Apple GPUs offer memory that is both device-local and host-visible. VMA's automatic usage with sequential-write host access picks that memory when it exists, so uploads on the reference machine write straight into GPU memory, while discrete GPUs go through a staging buffer. One upload helper hides the difference:
+Through VMA with buffer device address enabled. The reference machine has unified memory: Apple GPUs offer memory that is both device-local and host-visible. Buffers that receive uploads follow VMA's documented pattern for this case, and also get `VK_BUFFER_USAGE_TRANSFER_DST_BIT`:
 
 ```cpp
-// Copies bytes into a GPU buffer: a direct write on unified memory,
-// a staging copy recorded into `cmd` otherwise.
-void upload(UploadContext& ctx, VkCommandBuffer cmd, const Buffer& dst, std::span<const std::byte> bytes);
+const VmaAllocationCreateInfo upload_target{
+    .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+             VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT |
+             VMA_ALLOCATION_CREATE_MAPPED_BIT,
+    .usage = VMA_MEMORY_USAGE_AUTO,
+};
 ```
+
+VMA then prefers memory that is device-local and host-visible, and falls back to device-local memory alone when there is none or it is full. Sequential-write access alone would not do: with automatic usage it requires host-visible memory, so a discrete GPU would never stage.
+
+So `upload` asks where the destination landed (`vmaGetAllocationMemoryProperties`), not what kind of GPU it runs on. Host-visible memory is written directly, on unified memory and on discrete GPUs with resizable BAR alike; anything else goes through a staging buffer:
+
+```cpp
+// Copies bytes into dst at dst_offset: through dst's mapping when its memory
+// is host-visible (flushed if it is not coherent), otherwise into the frame
+// slot's staging buffer, with the copy recorded into `cmd`.
+void upload(UploadContext& ctx, VkCommandBuffer cmd, const Buffer& dst,
+            VkDeviceSize dst_offset, std::span<const std::byte> bytes);
+```
+
+The destination offset lets RFC 0007 write each chunk mesh into its range of one shared arena.
 
 ### Geometry: vertex pulling
 
