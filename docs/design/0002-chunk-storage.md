@@ -129,7 +129,7 @@ Block data per chunk at each width:
 | 8 | 256 | 32 KiB |
 | 16 (direct) | none | 64 KiB |
 
-Five power-of-two sizes means the block data comes from five size classes. Each class keeps a free list, so loading and unloading chunks for hours does not fragment the heap.
+Five power-of-two sizes means the block data comes from five size classes. Each class keeps a free list, so loading and unloading chunks for hours does not fragment the heap. Generation jobs allocate block data on workers and the world thread frees it (RFC 0005), so the lists are shared between threads and each size class takes a lock. Allocation is rare (a generated chunk, a width change, a clone), so the lock costs little; per-thread caches can come later if profiling shows contention.
 
 ### Changing blocks
 
@@ -217,6 +217,7 @@ The prototype column comes from a throwaway implementation of this design measur
 - **Storage:** a default chunk is uniform air with zero block data, and `uniform` gives the same for any state; `clone` gives an equal copy that later writes to either leave the other unchanged; one `set` makes it 1-bit; growth through every width up to direct mode; `compact` after overwrites shrinks the width again.
 - **Round trips:** random chunks (seeded, so failures reproduce) survive `from_dense` then `to_dense` unchanged at every width, and `get` agrees with a plain array after thousands of random `set` calls.
 - **Memory:** `memory_bytes` matches the table above at every width.
+- **Pools:** several threads allocate and free block data of every size class at once, under ThreadSanitizer (RFC 0005's `linux-tsan` job).
 - **Layering control:** `engine/world` is the second layer, so its pull request proves that including a header from a layer it does not link fails to compile (RFC 0000's test plan).
 
 ## Pull request plan
@@ -227,7 +228,7 @@ The prototype column comes from a throwaway implementation of this design measur
 4. Benchmark harness: nanobench in `bench/`, run in release, numbers printed for the pull request. First benchmarks: the packed array.
 5. `ChunkStorage`: modes, `uniform`, `clone`, `get`, `set`, growth, direct mode, `compact`, with tests.
 6. Bulk conversion (`from_dense`, `to_dense`, `copy_face`) with tests and benchmarks.
-7. Size-class pools for block data and memory accounting.
+7. Size-class pools for block data, with a lock per class, and memory accounting.
 
 ## Open questions
 
