@@ -26,6 +26,7 @@ target_compile_definitions(vx_volk PUBLIC VK_NO_PROTOTYPES)
 target_link_libraries(vx_volk PRIVATE ${CMAKE_DL_LIBS})
 
 add_library(vx_render STATIC
+    src/device.cpp
     src/device_report.cpp
     src/device_selection.cpp
     src/feature_floor.cpp
