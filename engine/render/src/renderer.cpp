@@ -3,6 +3,8 @@
 #include "vk_result.hpp"
 
 #include <vx/render/buffer.hpp>
+#include <vx/render/upload.hpp>
+#include <vx/shaders/triangle.hpp>
 
 #include <array>
 #include <cassert>
@@ -22,6 +24,34 @@ constexpr std::uint64_t forever = std::numeric_limits<std::uint64_t>::max();
 constexpr VkFormat offscreen_format = VK_FORMAT_R8G8B8A8_SRGB;
 
 enum class Target : std::uint8_t { swapchain, offscreen };
+
+// The triangle's vertices as triangle.slang reads them: positions in clip
+// space, where y points down the screen, and linear colors.
+struct TriangleVertex {
+    std::array<float, 4> position;
+    std::array<float, 4> color;
+};
+static_assert(sizeof(TriangleVertex) == 32, "triangle.slang's vertex stride");
+
+constexpr std::array<TriangleVertex, 3> triangle_vertices = {{
+    {.position = {0.0F, -0.6F, 0.0F, 1.0F}, .color = {1.0F, 0.0F, 0.0F, 1.0F}}, // top, red
+    {.position = {0.6F, 0.6F, 0.0F, 1.0F}, .color = {0.0F, 1.0F, 0.0F, 1.0F}},  // right, green
+    {.position = {-0.6F, 0.6F, 0.0F, 1.0F}, .color = {0.0F, 0.0F, 1.0F, 1.0F}}, // left, blue
+}};
+
+// triangle.slang's push constants.
+struct TrianglePush {
+    VkDeviceAddress vertices;
+};
+
+Result<GraphicsPipeline> make_triangle_pipeline(const Device& device, VkFormat color_format) {
+    return GraphicsPipeline::create(device, {.spirv = shaders::triangle,
+                                             .vertex_entry = "vertex_main",
+                                             .fragment_entry = "fragment_main",
+                                             .color_format = color_format,
+                                             .push_constant_size = sizeof(TrianglePush),
+                                             .push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT});
+}
 
 void transition(VkCommandBuffer commands, VkImage image, VkPipelineStageFlags2 src_stage,
                 VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage,
@@ -71,11 +101,13 @@ void begin_commands(VkCommandBuffer commands) {
     vkBeginCommandBuffer(commands, &begin);
 }
 
-// One frame's commands: the image becomes a color attachment, is cleared, and,
-// for a swapchain, becomes presentable. An offscreen image stays a color
-// attachment, ready for the next frame or for capture.
-void record_clear(VkCommandBuffer commands, Target target, VkImage image, VkImageView view,
-                  VkExtent2D extent, Color clear) {
+// One frame's commands: the image becomes a color attachment, is cleared, has
+// the triangle drawn over it, and, for a swapchain, becomes presentable. An
+// offscreen image stays a color attachment, ready for the next frame or for
+// capture.
+void record_frame(VkCommandBuffer commands, Target target, VkImage image, VkImageView view,
+                  VkExtent2D extent, Color clear, const GraphicsPipeline& pipeline,
+                  VkDeviceAddress vertices) {
     begin_commands(commands);
 
     // For a swapchain image, the submission waits for the acquired image at
@@ -113,6 +145,25 @@ void record_clear(VkCommandBuffer commands, Target target, VkImage image, VkImag
         .pStencilAttachment = nullptr,
     };
     vkCmdBeginRendering(commands, &rendering);
+
+    // The vertex shader pulls the vertices through their buffer's address.
+    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle());
+    const VkViewport viewport = {
+        .x = 0.0F,
+        .y = 0.0F,
+        .width = static_cast<float>(extent.width),
+        .height = static_cast<float>(extent.height),
+        .minDepth = 0.0F,
+        .maxDepth = 1.0F,
+    };
+    vkCmdSetViewport(commands, 0, 1, &viewport);
+    const VkRect2D scissor = {.offset = {.x = 0, .y = 0}, .extent = extent};
+    vkCmdSetScissor(commands, 0, 1, &scissor);
+    const TrianglePush push = {.vertices = vertices};
+    vkCmdPushConstants(commands, pipeline.layout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push),
+                       &push);
+    vkCmdDraw(commands, static_cast<std::uint32_t>(triangle_vertices.size()), 1, 0, 0);
+
     vkCmdEndRendering(commands);
 
     if (target == Target::swapchain) {
@@ -211,24 +262,46 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
         offscreen = std::move(made).value();
     }
 
+    const VkFormat color_format =
+        swapchain.has_value() ? swapchain->choice().format.format : offscreen_format;
+    Result<GraphicsPipeline> pipeline =
+        make_triangle_pipeline(context.value().device(), color_format);
+    if (!pipeline.has_value()) {
+        return pipeline.error();
+    }
+    Result<Buffer> vertices = Buffer::create(context.value().device(), sizeof(triangle_vertices),
+                                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                             BufferMemory::upload_target);
+    if (!vertices.has_value()) {
+        return vertices.error();
+    }
+
     Renderer renderer(std::move(context).value(), std::move(swapchain), std::move(offscreen),
-                      desc.framebuffer, desc.present_mode);
+                      std::move(pipeline).value(), std::move(vertices).value(), desc.framebuffer,
+                      desc.present_mode);
     if (const Result<void> made = renderer.create_frame_objects(); !made.has_value()) {
         return made.error();
+    }
+    if (const Result<void> uploaded = renderer.upload_triangle(); !uploaded.has_value()) {
+        return uploaded.error();
     }
     return renderer;
 }
 
 Renderer::Renderer(Context context, std::optional<Swapchain> swapchain,
-                   std::optional<OffscreenImage> offscreen, Extent framebuffer,
-                   PresentMode present_mode)
+                   std::optional<OffscreenImage> offscreen, GraphicsPipeline triangle_pipeline,
+                   Buffer triangle_buffer, Extent framebuffer, PresentMode present_mode)
     : context_(std::move(context)), swapchain_(std::move(swapchain)),
-      offscreen_(std::move(offscreen)), framebuffer_(framebuffer), target_framebuffer_(framebuffer),
-      present_mode_(present_mode) {}
+      offscreen_(std::move(offscreen)), triangle_pipeline_(std::move(triangle_pipeline)),
+      triangle_buffer_(std::move(triangle_buffer)), framebuffer_(framebuffer),
+      target_framebuffer_(framebuffer), present_mode_(present_mode) {}
 
 Renderer::Renderer(Renderer&& other) noexcept
     : context_(std::move(other.context_)), swapchain_(std::move(other.swapchain_)),
-      offscreen_(std::move(other.offscreen_)), framebuffer_(other.framebuffer_),
+      offscreen_(std::move(other.offscreen_)),
+      triangle_pipeline_(std::move(other.triangle_pipeline_)),
+      triangle_buffer_(std::move(other.triangle_buffer_)), framebuffer_(other.framebuffer_),
       target_framebuffer_(other.target_framebuffer_), present_mode_(other.present_mode_),
       swapchain_stale_(other.swapchain_stale_), slots_(std::exchange(other.slots_, {})),
       image_rendered_(std::exchange(other.image_rendered_, {})),
@@ -303,6 +376,31 @@ Result<void> Renderer::add_rendered_semaphores() {
     return {};
 }
 
+// On unified memory the vertices go through their buffer's mapping and
+// nothing is recorded. Elsewhere the staged copy is submitted, and waited for
+// before its staging buffer goes away with `uploads`.
+Result<void> Renderer::upload_triangle() {
+    const Device& device = context_.device();
+    UploadContext uploads(device);
+    VkCommandBuffer commands = slots_[0].command_buffer;
+    begin_commands(commands);
+    const Result<void> uploaded =
+        upload(uploads, commands, triangle_buffer_, 0, std::as_bytes(std::span(triangle_vertices)));
+    uploads.finish(commands);
+    vkEndCommandBuffer(commands);
+    if (!uploaded.has_value()) {
+        return uploaded.error();
+    }
+    if (uploads.staged_bytes() > 0) {
+        if (const Result<void> submitted = submit(device.queue(), commands, {}, {});
+            !submitted.has_value()) {
+            return submitted.error();
+        }
+        vkQueueWaitIdle(device.queue());
+    }
+    return {};
+}
+
 Result<void> Renderer::recreate_target() {
     // The last frames, and their presentation, may still use the old target.
     vkDeviceWaitIdle(context_.device().handle());
@@ -315,6 +413,16 @@ Result<void> Renderer::recreate_target() {
         }
         swapchain_ = std::move(replacement).value(); // destroys the old one
         swapchain_stale_ = false;
+        // A surface may offer a different format after a change, such as a
+        // move to another display.
+        if (const VkFormat format = swapchain_->choice().format.format;
+            format != triangle_pipeline_.color_format()) {
+            Result<GraphicsPipeline> rebuilt = make_triangle_pipeline(context_.device(), format);
+            if (!rebuilt.has_value()) {
+                return rebuilt.error();
+            }
+            triangle_pipeline_ = std::move(rebuilt).value();
+        }
     } else {
         Result<OffscreenImage> replacement =
             OffscreenImage::create(context_.device(), vk_extent(framebuffer_), offscreen_format);
@@ -362,8 +470,9 @@ Result<Frame> Renderer::render(Color clear) {
 
     if (offscreen_.has_value()) {
         vkResetCommandPool(device, slot.command_pool, 0);
-        record_clear(slot.command_buffer, Target::offscreen, offscreen_->image(),
-                     offscreen_->view(), offscreen_->extent(), clear);
+        record_frame(slot.command_buffer, Target::offscreen, offscreen_->image(),
+                     offscreen_->view(), offscreen_->extent(), clear, triangle_pipeline_,
+                     triangle_buffer_.address());
         if (const Result<void> submitted =
                 submit(queue, slot.command_buffer, {}, std::span(&frame_done, 1));
             !submitted.has_value()) {
@@ -388,8 +497,9 @@ Result<Frame> Renderer::render(Color clear) {
     swapchain_stale_ = acquired == VK_SUBOPTIMAL_KHR; // draw this frame, replace after it
 
     vkResetCommandPool(device, slot.command_pool, 0);
-    record_clear(slot.command_buffer, Target::swapchain, swapchain.images()[index],
-                 swapchain.views()[index], swapchain.choice().extent, clear);
+    record_frame(slot.command_buffer, Target::swapchain, swapchain.images()[index],
+                 swapchain.views()[index], swapchain.choice().extent, clear, triangle_pipeline_,
+                 triangle_buffer_.address());
 
     const VkSemaphoreSubmitInfo wait =
         semaphore_submit(slot.image_acquired, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
