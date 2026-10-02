@@ -14,6 +14,7 @@ permissions:
 
 env:
   CLANG_FORMAT_VERSION: "22.1.8"
+  CLANG_TIDY_VERSION: "22.1.8"
   # The X11 and Wayland development packages SDL3 needs to build its video
   # drivers on Linux: https://wiki.libsdl.org/SDL3/README-linux
   SDL_LINUX_PACKAGES: >-
@@ -86,3 +87,24 @@ jobs:
         run: |
           clang-format --version
           git ls-files '*.cpp' '*.hpp' | xargs clang-format --dry-run --Werror
+
+  lint:
+    name: Lint (clang-tidy)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Ninja and SDL's dependencies
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build $SDL_LINUX_PACKAGES
+      - name: Install clang-tidy ${{ env.CLANG_TIDY_VERSION }}
+        run: pipx install "clang-tidy==${CLANG_TIDY_VERSION}"
+      # Configuring writes compile_commands.json and the headers generated
+      # then; building writes those generated at build time, such as the
+      # renderer's compiled shaders, which clang-tidy reads too.
+      - name: Configure
+        run: cmake --preset linux-clang
+      - name: Build
+        run: cmake --build --preset linux-clang
+      - name: Run clang-tidy
+        run: |
+          clang-tidy --version
+          git ls-files 'engine/*.cpp' 'app/*.cpp' | xargs clang-tidy -p build/linux-clang --quiet
