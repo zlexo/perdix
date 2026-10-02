@@ -232,7 +232,7 @@ Targets on the reference machine, release build:
 - **Command splitting (unit):** with a fake `maxDrawIndirectCount` of 3, calls split and no command is lost.
 - **CI on lavapipe,** synchronization validation on: a seeded scene of a few hundred chunks renders identically with culling on and off, and with the staging path forced (lavapipe, like Apple GPUs, offers host-visible device memory, so staging only runs when forced). Control: a planted sign error in the face mask must turn the job red.
 - **Compaction stress (CI):** a deliberately small arena, many moves and repacks, the same image.
-- **By hand on both Apple drivers:** the overlay counters, freeze culling, and an Xcode frame capture through MoltenVK (ADR 0002) showing one Metal draw per run. Debug sessions on KosmicKrisp run GPU-assisted validation, which the SDK supports there and not on MoltenVK, and which flags reads outside any buffer.
+- **By hand on both Apple drivers:** the overlay counters, freeze culling, and an Xcode frame capture through MoltenVK (ADR 0002) showing one Metal draw per run. Debug sessions run GPU-assisted validation, which flags reads outside any buffer, on whichever Apple driver the SDK supports it for; which one that is was not confirmed while writing this RFC, so the first chunk-rendering pull request checks it on both.
 
 ## Pull request plan
 
