@@ -114,15 +114,17 @@ The world half, one state per record:
 |---|---|---|
 | `queued` | In the region, waiting for a plan job | dispatched: `planning` |
 | `planning` | A job makes its plan (RFC 0008), which needs nothing else | done: `planned` |
-| `planned` | Waiting for the plans of its 26 neighbors | all 26 planned: `building` |
+| `planned` | Waiting for the plans of its 26 neighbors | all 26 planned: `build_queued` |
+| `build_queued` | All 27 plans exist; waiting in the build backlog | dispatched: `building` |
 | `building` | A job builds its blocks from the 27 plans | done: `ready` |
 | `ready` | Blocks in memory, waiting for its neighbors' blocks | its 26th neighbor is ready: `complete` |
 | `complete` | It and all 26 neighbors are ready: it can be meshed | a neighbor unloads: `ready` |
 | `unloading` | Left the region; waits for its job (from M8, its save) | done: freed; back in range: previous state |
 
 - A chunk that leaves the region is freed at once and its queued jobs are canceled (RFC 0005), except while a job runs and, from M8, when edited: those pass through `unloading`. Chunks in the outer plan ring stay `planned`.
-- A column's chunks are requested once the surface ranges of the column and its eight neighbors are known (small column jobs, first in line). A chunk out of the generator's reach (RFC 0008's `out_of_reach`) or above its column's surface range is uniform: it goes straight to `ready`, with no job and no block data.
-- Each record counts its planned and its ready neighbors; a chunk changing state updates its 26 neighbors (26 lookups). A plan is dropped once every chunk that reads it is built, and made again if a new neighbor needs it.
+- A column's chunks are requested once the surface ranges of the column and its eight neighbors are known (small column jobs, first in line). A chunk out of the generator's reach (RFC 0008's `out_of_reach`) or above its column's surface range is uniform: it goes straight to `ready`, with no job and no block data. It counts as planned and ready for its neighbors, builds read a null plan for it (RFC 0008), and mesh jobs take its state from their job record instead of pinning blocks it does not have (RFC 0005).
+- Each record counts its planned and its ready neighbors; a chunk changing state updates its 26 neighbors (26 lookups). A plan is dropped once every chunk that reads it is built, and made again if a new neighbor needs it. `planned_neighbors` counts the plans that exist right now, so dropping a plan lowers its neighbors' counts and remaking it raises them; a chunk is build-queued only while all 27 plans exist.
+- A plan that a running build reads is pinned like a chunk version (RFC 0005), and so is the generator's parameter snapshot (RFC 0008). Freeing a chunk that leaves the region, dropping a plan and publishing new parameters all wait for the last job that reads them, so a neighbor leaving mid-build cannot free a plan in use.
 - When RFC 0008's parameters change, the generator's version bumps: unedited chunks regenerate from the earliest affected pass, nearest first, keeping their old blocks and meshes on screen until replaced, and results of older versions are dropped. Light (M6) will add a stage under the same neighbor rule.
 
 The world reports events to the mesh half: `shown` (complete and in the drawn region), `changed`, `hidden` (left the drawn region) and `freed`. The mesh half keeps a 16-byte record per chunk in the drawn region:
@@ -134,6 +136,8 @@ The world reports events to the mesh half: `shown` (complete and in the drawn re
 | `meshing` | A job meshes pinned versions of the chunk and its 26 neighbors (RFC 0005) | result: `sent`, or `drawn` if empty |
 | `sent` | Forwarded to the main thread, where RFC 0007 uploads it within its frame budget | uploaded: `drawn` |
 | `drawn` | On screen; RFC 0007 owns it from here | changed: `queued`, still drawn; hidden: removed |
+
+A `changed` event while `meshing` or `sent` marks the record to queue again once the current mesh is drawn. `hidden` or `freed` removes the record in any state, and a mesh result that arrives for a removed record is dropped; RFC 0005's load id tells it from a newer chunk at the same position.
 
 A complete chunk that is uniform air, or uniform opaque with six uniform opaque face neighbors, has no faces and skips meshing. A drawn mesh stays on screen until its replacement is drawable, so changes never flicker or leave holes.
 
@@ -258,7 +262,7 @@ On the reference machine, release build, placeholder terrain, measured by the fl
 
 - **Map and hash:** seeded random inserts, erases and lookups agree with `std::unordered_map`, with negative coordinates and keys at the edges of the range; probe runs stay short after heavy churn; the table doubles at half full. The 2,097,152 positions of a 128 by 128 by 128 block of chunks share no 64-bit hash, at the origin and at both edges of the range.
 - **Region:** counts match the formulas (3,209 drawn and 3,473 loaded columns at 32 chunks); for random cameras and surface ranges, every drawn chunk has its 26 neighbors loaded and every loaded chunk its 26 neighbors planned; crossing a border back and forth loads and unloads nothing after the first time; climbing keeps the disc; nothing outside the 32-bit world is requested.
-- **Lifecycle,** in RFC 0005's deterministic mode: each transition in both tables; a chunk builds exactly when its 26th neighbor's plan lands and is complete exactly at its 26th ready neighbor, and back to ready when one unloads; leaving while a job runs frees the record when the job ends, and coming back keeps its result; uniform chunks never create jobs; a corner edit changes 8 chunks and an inner one 1; a stale mesh newer than the last forwarded one is forwarded and the chunk stays queued; edited chunks survive leaving the region; a generator version change regenerates unedited chunks nearest first and drops older results.
+- **Lifecycle,** in RFC 0005's deterministic mode: each transition in both tables; a chunk becomes build-queued exactly when its 26th neighbor's plan lands and is complete exactly at its 26th ready neighbor, and back to ready when one unloads; leaving while a job runs frees the record when the job ends, and coming back keeps its result; uniform chunks never create jobs; a corner edit changes 8 chunks and an inner one 1; a stale mesh newer than the last forwarded one is forwarded and the chunk stays queued; edited chunks survive leaving the region; a generator version change regenerates unedited chunks nearest first and drops older results.
 - **Budgets and memory,** with a fake clock: a burst of 10,000 results is integrated in steps of at most 0.5 ms plus one result. With a small memory budget, eviction takes hysteresis chunks farthest first, then lowers the view distance, never touches the region or edited chunks, and raises it again later.
 - **Placeholder:** chunks generated on different threads in different orders are byte-identical; `out_of_reach` and the chunks above a column's surface range agree with a full build; no surface lies outside `surface_range`.
 - **CI:** the 5-second flythrough on lavapipe checks invariants every frame: no chunk drawn without its 26 neighbors, state counts that add up, and chunk data after `teleport` within 5% of its level after `load`.
