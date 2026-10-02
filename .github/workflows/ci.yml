@@ -34,6 +34,24 @@ jobs:
       - name: Test
         run: ctest --preset linux-${{ matrix.compiler }}
 
+  sanitizers:
+    name: Linux (ASan + UBSan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Ninja
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+      # Recent Ubuntu kernels randomize memory mappings more than older
+      # AddressSanitizer runtimes expect, which can make them crash or hang.
+      - name: Lower ASLR entropy for AddressSanitizer
+        run: sudo sysctl vm.mmap_rnd_bits=28
+      - name: Configure
+        run: cmake --preset linux-asan
+      - name: Build
+        run: cmake --build --preset linux-asan
+      - name: Test
+        run: ctest --preset linux-asan
+
   # macOS minutes bill at ten times the Linux rate on private repositories,
   # so this job only runs once the repository is public, where they are free.
   macos:
