@@ -107,7 +107,7 @@ The registry fills RFC 0003's `BlockVisual`, one per state, indexed by RFC 0002'
 
 A texture layer stands for a texture plus a number of clockwise quarter turns. Turning a block turns its textures within each face (a log on its side has its bark running along the log), and every turned texture is baked into a layer of its own at load. The quad and the shader never deal with rotation, and turned faces never merge with unturned ones, because their layers differ. Turned copies of symmetric textures are duplicates; at 1,364 bytes each they are not worth detecting. Layer 0 is a built-in magenta and black checker, so a zeroed or missing entry is visibly wrong instead of quietly showing another block's texture.
 
-Cutout faces need an alpha test. On Apple GPUs, fragments that can be discarded are handled less efficiently by hidden surface removal, and Apple asks for them to be drawn after all opaque geometry. RFC 0003's `ChunkMesh` groups quads by face only, so it needs opaque and cutout quads in separate ranges for RFC 0007 to draw in that order.
+Cutout faces need an alpha test. On Apple GPUs, fragments that can be discarded are handled less efficiently by hidden surface removal, and Apple asks for them to be drawn after all opaque geometry. RFC 0003's `ChunkMesh` keeps opaque and cutout quads in separate ranges per face, so RFC 0007 draws them in that order.
 
 ### Building the texture array
 
@@ -125,7 +125,7 @@ The array gets its own binding in RFC 0001's global descriptor set, next to the 
 
 ### Filtering
 
-RFC 0001's sampler magnifies with nearest filtering. Texels stay sharp, but their edges alias and crawl as the camera moves, and anisotropic filtering cannot be relied on with a nearest filter: the Vulkan specification notes that vendors interpret such samplers differently. Without anisotropic filtering, ground seen at a shallow angle turns blurry close to the player, and at long view distance most of the screen is ground at a shallow angle.
+Nearest filtering, which RFC 0001's cube uses, keeps texels sharp, but their edges alias and crawl as the camera moves, and anisotropic filtering cannot be relied on with a nearest filter: the Vulkan specification notes that vendors interpret such samplers differently. Without anisotropic filtering, ground seen at a shallow angle turns blurry close to the player, and at long view distance most of the screen is ground at a shallow angle.
 
 The chunk shader instead samples with a linear sampler (repeat addressing, trilinear, anisotropic when the device offers `samplerAnisotropy`) and sharpens the coordinate itself:
 
@@ -215,7 +215,7 @@ The registry is built once at startup and never changes. Every method is `const`
 | Dependency | Version | Used by | Why |
 |---|---|---|---|
 | toml++ | 3.4.0 | world | TOML 1.0, MIT license, works without exceptions, line and column for every value; compiled once instead of header-only |
-| stb_image | 2.30 | render | one header, public domain or MIT; built with `STBI_ONLY_PNG` in its own target, outside our warning flags; pinned to a commit, because stb has no release tags (the one exception to RFC 0000's rule) |
+| stb_image | 2.30 | render | one header, public domain or MIT; built with `STBI_ONLY_PNG` in its own target, outside our warning flags; pinned to a commit, because stb has no release tags (RFC 0000's rule for libraries without releases) |
 
 ## Alternatives considered
 
@@ -268,7 +268,7 @@ Targets on the reference machine, release build. CPU numbers from nanobench, GPU
 
 1. **Data files or C++ tables.** C++ tables need no parser and catch some mistakes at compile time, but every content change is a rebuild, content lives inside engine code, and mistakes surface as compiler errors instead of a file and a line. Recommendation: **data files, in TOML**: a restart instead of a rebuild, errors that point at the content, and the same files for a dedicated server later.
 2. **Derived or pinned ids.** Pinned ids, from a checked-in table that gives every key its number forever, would let saves skip the remap. The cost is a generated file that every branch adding blocks edits by hand, and gaps when blocks are removed. Recommendation: **derived ids**, with saves storing keys, as Minecraft and Luanti store names.
-3. **Filtering, the owner's call by eye.** Plain nearest is the classic look and RFC 0001's default. The sharpened filter adds clean texel edges and makes anisotropic filtering usable. Recommendation: **the sharpened filter with anisotropic filtering** by default, its level set from measurements, with plain nearest kept as a toggle.
+3. **Filtering, the owner's call by eye.** Plain nearest is the classic look and what RFC 0001's cube uses. The sharpened filter adds clean texel edges and makes anisotropic filtering usable. Recommendation: **the sharpened filter with anisotropic filtering** by default, its level set from measurements, with plain nearest kept as a toggle.
 4. **Art direction, the owner's taste call.** Minecraft's textures are copyrighted and are not used, nor is anything traced from them.
    - *Original pixel art made for the project:* a look of its own and unambiguous ownership. It costs drawing time: M2 needs about ten textures, M4 a few dozen.
    - *A CC0 pack:* Kenney's Voxel Pack is CC0, but its tiles are 128 by 128 in a flat vector style, not 16 by 16 pixel art. OpenGameArt hosts CC0 16 by 16 block sets, but their status rests on each uploader's word and their origin cannot be checked. The best-known open 16 by 16 packs, Pixel Perfection (CC BY-SA 4.0) and Minetest Game's (CC BY-SA 3.0), are not CC0.
