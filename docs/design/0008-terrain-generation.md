@@ -21,7 +21,7 @@ How a world seed and a chunk position become blocks: climate fields, a 3D densit
 
 Goals:
 
-- The same seed and parameter file give byte-identical chunks on every supported compiler, CPU architecture and thread count, checked by golden hashes in CI.
+- The same seed and parameter file give byte-identical chunks on every supported compiler, CPU architecture and thread count, checked by golden hashes: in CI on Linux x86-64, and on the reference machine for arm64 until a macOS job exists.
 - A chunk is generated from its position alone, in two passes: a plan that needs nothing else, and a build that needs only the plans of its 26 neighbors, never their blocks.
 - 3D terrain: overhangs, cliffs, large caverns, long tunnels and thin tunnels, in a world without a top or bottom.
 - Terrain 2^30 blocks from the origin is as smooth as at the origin.
@@ -90,7 +90,7 @@ IEEE 754 rounds addition, subtraction, multiplication, division and square root 
 |---|---|
 | Fused multiply-add. Clang's default `-ffp-contract=on` fuses `a * b + c` on arm64, which always has FMA, but not on baseline x86-64; GCC's default outside ISO C modes is `fast`; MSVC 2022 does not fuse under `/fp:precise`. | `-ffp-contract=off` on every engine target, in RFC 0000's CMake helper next to the warnings. |
 | `-ffast-math`, `/fp:fast` | Never, anywhere in the build. |
-| `sin`, `exp`, `pow` and friends are not correctly rounded (glibc does not aim for it), so math libraries can disagree. | Not used in generation. Curves and noise need only arithmetic, `floor`, `abs` and `sqrt`. |
+| `sin`, `exp`, `pow` and friends are not correctly rounded (most libraries do not guarantee it; glibc 2.41 added correctly rounded versions of some, which not every platform has), so math libraries can disagree. | Not used in generation. Curves and noise need only arithmetic, `floor`, `abs` and `sqrt`. |
 | Approximate SIMD instructions: x86 `rcp` and `rsqrt` even differ between Intel and AMD. | Not used. |
 | SIMD widths | Element-wise only, no reductions. The scalar code is the reference, and SIMD code is tested bit for bit against it. |
 | Precision far from the origin | Positions are `int32`. Scaling and rotation into noise space happen in `double`; only the offset inside a noise cell becomes `float`. |
@@ -151,7 +151,7 @@ Interpolation is `a * (1 - t) + b * t`, with `t` a multiple of a quarter or an e
 
 A biome is a box in (temperature, humidity, continentalness, erosion, weirdness, depth) plus its blocks and features, listed in the parameter file. Each 4 by 4 by 4 cell takes the nearest box (distance zero inside; ties go to the earlier biome), as in Minecraft's multi-noise biomes, looked up with a hashed offset of up to 2 blocks per column so borders do not follow the cell grid. Depth below the surface is in the lookup though no M4 biome uses it, so cave biomes later are data, not code.
 
-The fill stage interpolates density to blocks: solid becomes stone (deep stone below a dithered band), open becomes air. The surface stage then walks each column down from the apron: the first solid block under air becomes the biome's top block (sand or gravel below sea level), and the blocks below it, down to the biome's filler depth plus 2D noise, become filler. Filler depth is at most 8 blocks, the apron's height. An overhang's top is ground like any other.
+The fill stage interpolates density to blocks: solid becomes stone (deep stone below a dithered band), open becomes air. The surface stage then walks each column down from the apron's top corner layer (y = base + 40), the 9 layers a filler depth of 8 needs above the chunk's top layer, so that layer never seams: the first solid block under air becomes the biome's top block (sand or gravel below sea level), and the blocks below it, down to the biome's filler depth plus 2D noise, become filler. Filler depth is at most 8 blocks, the apron's height. An overhang's top is ground like any other.
 
 ### Features across chunk borders
 
@@ -168,7 +168,7 @@ Every chunk applies the same placements in the same order, so a tree split acros
 |---|---|---|
 | Out of reach | Above the highest possible terrain plus the tallest feature, or below the deepest cave, ore and terrain variation. Bounds come from the parameters once; each curve segment is bounded by its Bezier control points, so they are conservative by construction. | Everything: no plan, no neighbors |
 | Out of the column's reach | The same test with the column's own highest surface and smallest squash, from stage 1 | The lattice; the plan is empty |
-| Uniform lattice | All 486 corners have one sign, and no gathered placement reaches the chunk | The block array and `from_dense` |
+| Uniform lattice | All 486 corners have one sign, no gathered placement reaches the chunk, and the chunk lies wholly above or below the deep-stone dither band | The block array and `from_dense` |
 | Mixed | | Nothing |
 
 A column's surface range spans `sea_level + height + jag` plus or minus `1 / squash` over its 81 lattice columns, raised by the tallest feature that can reach it from the column or its 8 neighbors, and rounded out to whole chunks. Caves start at a parameter depth below the surface and taper there, so with the default preset none opens to the sky; a preset that lets them open widens the range by their depth.
@@ -241,7 +241,7 @@ public:
 - **Carver caves** (random walks, in Minecraft and Luanti): a tunnel starting in one chunk runs through many others, so every chunk would gather starts from a wide 3D neighborhood. Noise caves are a function of position. Carvers with a bounded reach can come later.
 - **Terrain from biomes**, blended at their borders (Minecraft before 1.18): seams and blending cost; 1.18 dropped it.
 - **Minecraft's nested splines:** more expressive than six curves, far harder to tune by hand.
-- **Fixed-point noise:** deterministic without float rules, but slower and awkward with float parameters. The float rules suffice, and the golden tests prove it.
+- **Fixed-point noise:** deterministic without float rules, but slower and awkward with float parameters. The float rules suffice, and the golden tests check it on every compiler and architecture we build for.
 - **FastNoise2 or FastNoiseLite:** see Noise and open question 1.
 - **Parameters as C++ constants:** no file to parse, but every idea costs a rebuild, which is what the taste loop exists to avoid. **JSON:** no comments, and RFC 0004 already chose TOML for block files.
 
