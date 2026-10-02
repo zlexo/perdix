@@ -140,6 +140,36 @@ TEST_CASE("a cube shows its front face from in front, and its top from above") {
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }
 
+TEST_CASE("up close, a face shows the checker it tints, in both shades") {
+    vx::Result<vx::render::Renderer> created = headless_renderer();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+
+    // Three tenths of a block from the front face, which fills the view with
+    // about 13 by 7 of the checker's 16 by 16 texels, each some 5 pixels wide.
+    vx::render::Camera close;
+    close.position = {0.5, 0.5, 1.3};
+    const std::array cubes = {glm::i64vec3(0, 0, 0)};
+    REQUIRE(renderer.render({.sky = black, .camera = close, .cubes = cubes}).has_value());
+    const vx::Result<std::vector<std::uint8_t>> pixels = renderer.capture();
+    REQUIRE(pixels.has_value());
+
+    // Sampled nearest, each pixel is one texel's gray tinted blue: sRGB 230
+    // or 150, decoded to linear for the tint and encoded back. About half the
+    // image is each.
+    const std::size_t all = std::size_t{image_size.width} * image_size.height;
+    const std::size_t light =
+        all - pixels_off(pixels.value(), image_size.width, 0, image_size.height, {0, 0, 230, 255});
+    const std::size_t dark =
+        all - pixels_off(pixels.value(), image_size.width, 0, image_size.height, {0, 0, 150, 255});
+    CHECK(light + dark == all);
+    CHECK(light > all / 4);
+    CHECK(dark > all / 4);
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}
+
 TEST_CASE("the nearer of two cubes hides the other, though it is drawn first") {
     vx::Result<vx::render::Renderer> created = headless_renderer();
     INFO((created.has_value() ? std::string() : created.error().message));
