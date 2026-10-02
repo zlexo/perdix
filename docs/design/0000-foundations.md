@@ -151,7 +151,7 @@ Measured on the reference machine, not asserted in CI:
 
 ## Open questions
 
-1. **Exceptions and RTTI.** Recommendation: off in engine code; errors are values (return codes, `std::optional`, or a small `Result` type until `std::expected` is allowed by ADR 0001). The skeleton keeps the compiler defaults until this is settled.
+1. **Exceptions and RTTI.** Recommendation: off in engine code; errors are values (return codes, `std::optional`, or a small `Result` type, until a later ADR moves the standard to C++23 and `std::expected` can replace it). The skeleton keeps the compiler defaults until this is settled.
 2. **Naming.** Recommendation: types in `PascalCase`; functions, variables, namespaces and files in `snake_case`; private members with a trailing underscore (`size_`); macros in `VX_SCREAMING_CASE`. The skeleton follows this.
 3. **Namespace `vx`, or the product's name once it has one.** Recommendation: `vx`, so naming the product never touches code.
 4. **doctest or Catch2.** Recommendation: doctest, for compile speed.
