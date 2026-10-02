@@ -99,6 +99,8 @@ Only opaque blocks occlude. A face's four corner values, 2 bits each, become par
 
 Within one slice (all faces of one direction at one depth), faces merge when their merge key matches: same texture layer and same four occlusion values. The merge runs on bitmasks too: take the lowest set bit of a row, extend the run along the row while the bits stay set and the keys match, then extend the run row by row while the next row holds the same run with the same key, and clear what was merged. A slice of uniform terrain becomes a handful of quads in a few dozen bit operations.
 
+Culling and merging want rows in different directions. Culling's rows run along the face normal, one bit per depth; merging's rows lie inside a slice. Between the two, each visible face bit moves into the row of its slice. A prototype on the reference machine spent about 4 ns per face on this step, most of the worst case's time. The same prototype measured an alternative: build only the rows along x, and get the faces in the y and z directions by and-not between neighboring x rows, which already lie inside their slices, so only the x faces need moving. That halved the fixed cost of building masks, about 25 µs per chunk whatever the chunk holds. The implementation pull request picks between the two with benchmarks.
+
 Textures repeat across a merged quad, which works because blocks use a texture array (RFC 0001) rather than an atlas, where repeating would bleed into neighboring tiles.
 
 Merging can be switched off at runtime in the debug overlay, to measure what it saves and to debug it.
