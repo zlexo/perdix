@@ -223,7 +223,7 @@ The prototype column comes from a throwaway implementation of culling, occlusion
 5. Ambient occlusion, with tests.
 6. Merging, with the coverage property test and before and after quad counts.
 7. Drawing one chunk: upload, the shared index buffer, the decoding vertex shader. The M2 milestone image.
-8. Overlay toggles: wireframe, merging, ambient occlusion, quad counts.
+8. Overlay toggles: wireframe, merging, ambient occlusion, quad counts. Wireframe draws with `VK_POLYGON_MODE_LINE`, which needs the `fillModeNonSolid` feature. Like `samplerAnisotropy`, it is outside RFC 0001's floor: enabled when the device offers it, and without it the toggle is hidden.
 
 ## Open questions
 
