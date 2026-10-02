@@ -111,3 +111,26 @@ TEST_CASE("with no device at all, the error says so") {
     REQUIRE_FALSE(chosen.has_value());
     CHECK(chosen.error().message == "no Vulkan device found");
 }
+
+TEST_CASE("a device whose queue cannot present to the window is never chosen") {
+    vx::render::DeviceInfo no_present = discrete_gpu();
+    no_present.presents = false;
+    const std::vector devices = {no_present, m3_on_kosmickrisp()};
+
+    const vx::Result<std::size_t> chosen = vx::render::choose_device(devices);
+
+    REQUIRE(chosen.has_value());
+    CHECK(chosen.value() == 1);
+}
+
+TEST_CASE("presentation is named when it is what a device lacks") {
+    vx::render::DeviceInfo no_present = m3_on_kosmickrisp();
+    no_present.presents = false;
+    const std::vector devices = {no_present};
+
+    const vx::Result<std::size_t> chosen = vx::render::choose_device(devices);
+
+    REQUIRE_FALSE(chosen.has_value());
+    CHECK(chosen.error().message == "no Vulkan device meets the feature floor:\n"
+                                    "  Apple M3 (KosmicKrisp) lacks presentation to the window");
+}
