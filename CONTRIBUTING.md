@@ -30,13 +30,14 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/):
 | `fix` | a bug fix |
 | `perf` | a change made for speed or memory, with numbers in the body |
 | `refactor` | restructuring without behavior change |
+| `style` | formatting only |
 | `test` | tests only |
 | `docs` | documentation, RFCs, ADRs |
 | `build` | CMake, dependencies, toolchains |
 | `ci` | workflows |
 | `chore` | everything else |
 
-Scopes follow the source layout (`core`, `world`, `mesh`, `render`, `app`) plus `rfc` and `adr` for design documents.
+Scopes follow the source layout (`core`, `world`, `mesh`, `render`, `app`), plus `rfc` and `adr` for design documents and `github` for templates and repository settings.
 
 - **Small and frequent.** One coherent step per commit. A change, its tests and its documentation are usually separate commits.
 - **Every commit builds and passes the tests,** so history stays bisectable.
