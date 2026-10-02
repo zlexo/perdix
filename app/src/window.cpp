@@ -1,5 +1,7 @@
 #include "window.hpp"
 
+#include "overlay.hpp"
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <tracy/Tracy.hpp>
@@ -47,7 +49,7 @@ Window::~Window() {
     destroy();
 }
 
-bool Window::handle_events() {
+bool Window::handle_events(Overlay& overlay) {
     ZoneScopedN("Events");
     const SDL_WindowID id = SDL_GetWindowID(window_);
     SDL_Event event{};
@@ -58,7 +60,14 @@ bool Window::handle_events() {
         if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == id) {
             return false;
         }
-        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.windowID == id) {
+        // A captured mouse flies the camera, so only a free one reaches the
+        // overlay.
+        const bool overlay_took = !mouse_captured() && overlay.take_event(event);
+        if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F3 && !event.key.repeat) {
+            overlay.toggle();
+        }
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.windowID == id &&
+            !overlay_took) {
             SDL_SetWindowRelativeMouseMode(window_, true);
         }
         if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE) {
