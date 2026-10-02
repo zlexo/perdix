@@ -66,8 +66,8 @@ Dependencies come from CMake's built-in `FetchContent`, pinned to a release tag 
 
 ```
 CMakeLists.txt          project, options, layers
-CMakePresets.json
-cmake/                  helper modules (warnings, later sanitizers)
+CMakePresets.json       every configuration, sanitizer builds included (#18)
+cmake/                  helper modules (warnings)
 engine/
   core/
     include/vx/core/    public headers
