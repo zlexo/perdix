@@ -38,7 +38,7 @@ Goals:
 Non-goals:
 
 - Chunks, mesh formats and the chunk renderer: RFC 0003 and M3.
-- GPU memory arenas for streaming, transfer queues and culling: M3.
+- GPU memory arenas, streaming uploads and culling: RFC 0007 (M3).
 - Lighting (M6) and translucency (M7).
 - Shader hot reload: a later tooling RFC.
 - Multiple windows, HDR output, VR.
@@ -286,7 +286,7 @@ public:
 - **Standard Z** (near 0, far 1): precision collapses with distance, which works against the north star.
 - **World-space float positions**: fine near the origin, but float precision loss makes them jitter far from it, by a whole block at 10 million blocks. Retrofitting camera-relative rendering touches every system that produces positions, so it is done first.
 - **Three frames in flight:** smoother when the CPU spikes, at the cost of a frame of latency. Revisited with numbers in M3.
-- **A dedicated transfer queue:** not worth it for one cube; M3's streaming RFC owns it.
+- **A dedicated transfer queue:** not worth it for one cube, and RFC 0007 settles it for chunks: copies share the graphics queue, because KosmicKrisp exposes a single queue and a transfer queue would only pay off on discrete GPUs we cannot measure.
 
 ## Performance budget
 
