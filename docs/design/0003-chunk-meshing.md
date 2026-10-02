@@ -70,17 +70,17 @@ struct BlockVisual {
 
 ### Face culling with column bitmasks
 
-For each axis, every row of 34 blocks along that axis becomes one 64-bit mask, one bit per block, set when the block is solid. A face is visible where a solid block has a non-solid neighbor, which is two shifts and an and-not for a whole row:
+For each axis, every row of 34 blocks along that axis becomes two 64-bit masks, one bit per block: `draws` (the block has faces: opaque or cutout) and `hides` (the block hides the faces next to it: opaque). A face is visible where a block that draws sits next to one that does not hide, which is two shifts and an and-not for a whole row:
 
 ```cpp
 // Bit i is block i along the row, padding included (bits 0 and 33).
-const std::uint64_t pos_faces = solid & ~(solid >> 1);   // solid, next block along +axis is not
-const std::uint64_t neg_faces = solid & ~(solid << 1);   // solid, previous block along -axis is not
+const std::uint64_t pos_faces = draws & ~(hides >> 1);   // next block along +axis does not hide it
+const std::uint64_t neg_faces = draws & ~(hides << 1);   // previous block along -axis does not hide it
 // Keep bits 1..32: faces of this chunk's own blocks, not the border's.
 constexpr std::uint64_t inner = 0x1'FFFF'FFFEull;
 ```
 
-Cutout blocks (leaves, glass) are solid for their own faces but do not hide a neighbor's face. Whether faces between two cutout blocks of the same kind are drawn is open question 2.
+With only opaque blocks the two masks are equal. Cutout blocks (leaves, glass) draw faces but do not hide a neighbor's. Whether faces between two cutout blocks of the same kind are drawn is open question 2; if they are culled, that comparison runs only on rows that contain cutouts, so all-opaque terrain pays nothing for it.
 
 ### Ambient occlusion
 
