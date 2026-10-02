@@ -9,6 +9,10 @@
 #include <string>
 #include <utility>
 
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
+
 TEST_CASE("an instance with validation creates cleanly") {
     vx::Result<vx::render::Instance> created =
         vx::render::Instance::create({.extensions = {}, .validation = true, .portability = false});
@@ -44,4 +48,19 @@ TEST_CASE("moving an instance moves ownership of its handle") {
 
     CHECK(second.handle() == handle);
     CHECK(first.handle() == VK_NULL_HANDLE); // a moved-from instance owns nothing
+}
+
+TEST_CASE("the loader's path names the file Vulkan was loaded from") {
+    const vx::Result<std::string> path = vx::render::vulkan_loader_path();
+    INFO((path.has_value() ? std::string() : path.error().message));
+    REQUIRE(path.has_value());
+#ifndef _WIN32
+    REQUIRE_FALSE(path.value().empty());
+    // RTLD_NOLOAD hands back a handle only for a file that is loaded already.
+    void* const handle = dlopen(path.value().c_str(), RTLD_NOW | RTLD_NOLOAD);
+    CHECK(handle != nullptr);
+    if (handle != nullptr) {
+        dlclose(handle);
+    }
+#endif
 }

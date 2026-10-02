@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 
 namespace vx::render {
 
@@ -26,6 +27,12 @@ struct ValidationCounts {
     std::uint32_t warnings = 0;
     std::uint32_t errors = 0;
 };
+
+// Loads the Vulkan loader if nothing has yet, and names the file it came from,
+// so a window library can load the very same loader: on macOS the one the
+// engine found may be reachable by its path alone. Empty on Windows, where the
+// system's lookup always finds it.
+[[nodiscard]] Result<std::string> vulkan_loader_path();
 
 // Owns a VkInstance and, with validation on, its debug messenger. Creating the
 // first instance also loads Vulkan through volk.
