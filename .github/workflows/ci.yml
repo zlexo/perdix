@@ -129,3 +129,18 @@ jobs:
         run: |
           clang-tidy --version
           git ls-files 'engine/*.cpp' 'app/*.cpp' | xargs clang-tidy -p build/linux-clang --quiet
+
+  # ADR 0003: no GPU or window code in the world and mesh layers. Include
+  # paths fence off the engine's own headers, but not system ones such as
+  # Vulkan's, so this checks the includes themselves (#28).
+  layering:
+    name: Layering
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: No GPU or window headers in world and mesh
+        run: |
+          if git grep -nE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"](vulkan/|volk\.h|vk_mem_alloc\.h|SDL[0-9]*/|SDL\.h|GLFW/)' -- engine/world engine/mesh; then
+            echo "::error::GPU or window headers in engine/world or engine/mesh (ADR 0003)"
+            exit 1
+          fi
