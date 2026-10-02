@@ -26,7 +26,8 @@ target_compile_definitions(vx_volk PUBLIC VK_NO_PROTOTYPES)
 target_link_libraries(vx_volk PRIVATE ${CMAKE_DL_LIBS})
 
 add_library(vx_render STATIC
-    src/feature_floor.cpp)
+    src/feature_floor.cpp
+    src/instance.cpp)
 add_library(vx::render ALIAS vx_render)
 
 target_include_directories(vx_render PUBLIC include)
@@ -34,3 +35,11 @@ target_link_libraries(vx_render PUBLIC vx::core vx_volk)
 target_compile_features(vx_render PUBLIC cxx_std_20)
 vx_target_warnings(vx_render)
 vx_target_engine_options(vx_render)
+
+# macOS strips DYLD_LIBRARY_PATH from programs started through protected
+# binaries, so a loader that the SDK's setup script made findable by name can
+# vanish. The SDK seen at configure time becomes a fallback path.
+if(APPLE AND DEFINED ENV{VULKAN_SDK})
+    target_compile_definitions(vx_render PRIVATE
+        VX_VULKAN_LOADER_FALLBACK="$ENV{VULKAN_SDK}/lib/libvulkan.1.dylib")
+endif()
