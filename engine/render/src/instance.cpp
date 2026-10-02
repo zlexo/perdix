@@ -139,6 +139,13 @@ Result<Instance> Instance::create(const InstanceDesc& desc) {
         extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
         flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
     }
+    // VK_EXT_debug_utils carries the validation messenger and the objects'
+    // debug names (RFC 0001). The names are wanted in every build, so that a
+    // GPU capture of a release build reads in our terms too; the validation
+    // layer offers the extension where the loader does not.
+    if (desc.validation || layer_has_extension(nullptr, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
+        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
 
     Instance instance;
     instance.counts_ = std::make_unique<ValidationCounts>();
@@ -171,7 +178,6 @@ Result<Instance> Instance::create(const InstanceDesc& desc) {
                          "install the Vulkan SDK, or turn validation off"};
         }
         layers.push_back(validation_layer);
-        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         chain = &creation_messenger;
         if (layer_has_extension(validation_layer, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME)) {
             extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);

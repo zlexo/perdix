@@ -79,6 +79,7 @@ add_library(vx_render STATIC
     src/camera.cpp
     src/camera_relative.cpp
     src/context.cpp
+    src/debug_name.cpp
     src/device.cpp
     src/device_report.cpp
     src/device_selection.cpp
