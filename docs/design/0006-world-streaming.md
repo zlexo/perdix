@@ -278,9 +278,11 @@ On the reference machine, release build, placeholder terrain, measured by the fl
 4. The `Generator` interface and the placeholder, with determinism, `out_of_reach` and `surface_range` tests.
 5. `WorldStreamer`'s data half: records, columns, plans, builds, neighbor counts, events and `set_block`, on RFC 0005's world thread and pins.
 6. Backlogs and priorities feeding RFC 0005's queue; integration in steps; regeneration when the generator's version changes.
-7. The mesh half: mesh records, the empty fast path, forwarding to the main thread and RFC 0007. The world streams in as you fly.
+7. The mesh half: mesh records, events and the empty fast path, on RFC 0005's forwarding to the main thread and RFC 0007. The world streams in as you fly.
 8. The memory budget, eviction and the effective view distance, with RFC 0007's arena signal; overlay counters.
 9. The benchmark flythrough with its CI smoke run, the "Benchmark result" issue template and a page on running it.
+
+This plan interleaves with RFC 0005's: item 2 here, RFC 0005's item 8 (pins and the world thread), items 3 to 5 here, RFC 0005's item 9 (the world loop, forwarding, batches, backpressure and catch-up), then items 6 to 9 here.
 
 ## Open questions
 
