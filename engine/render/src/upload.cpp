@@ -1,5 +1,6 @@
 #include <vx/render/upload.hpp>
 
+#include "transition.hpp"
 #include "vk_result.hpp"
 
 #include <algorithm>
@@ -8,6 +9,22 @@
 #include <utility>
 
 namespace vx::render {
+namespace {
+
+// What upload_image takes: the color formats of four bytes a texel.
+bool four_bytes_a_texel(VkFormat format) {
+    switch (format) {
+    case VK_FORMAT_R8G8B8A8_UNORM:
+    case VK_FORMAT_R8G8B8A8_SRGB:
+    case VK_FORMAT_B8G8R8A8_UNORM:
+    case VK_FORMAT_B8G8R8A8_SRGB:
+        return true;
+    default:
+        return false;
+    }
+}
+
+} // namespace
 
 void UploadContext::finish(VkCommandBuffer commands) {
     if (!unfinished_) {
@@ -36,6 +53,25 @@ void UploadContext::finish(VkCommandBuffer commands) {
     };
     vkCmdPipelineBarrier2(commands, &dependency);
     unfinished_ = false;
+}
+
+Result<VkBuffer> UploadContext::stage(std::span<const std::byte> bytes) {
+    Result<Buffer> made = Buffer::create(*device_, bytes.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                         BufferMemory::staging);
+    if (!made.has_value()) {
+        return made.error();
+    }
+    Buffer staging = std::move(made).value();
+    std::ranges::copy(bytes, staging.mapping().begin());
+    if (const VkResult result =
+            vmaFlushAllocation(device_->allocator(), staging.allocation(), 0, bytes.size());
+        result != VK_SUCCESS) {
+        return Error{"vmaFlushAllocation failed: " + vk_result_name(result)};
+    }
+    VkBuffer handle = staging.handle();
+    staging_.push_back(std::move(staging));
+    staged_bytes_ += bytes.size();
+    return handle;
 }
 
 void UploadContext::reset() noexcept {
@@ -67,17 +103,9 @@ Result<void> upload(UploadContext& context, VkCommandBuffer commands, const Buff
         return {};
     }
 
-    Result<Buffer> made = Buffer::create(*context.device_, bytes.size(),
-                                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT, BufferMemory::staging);
-    if (!made.has_value()) {
-        return made.error();
-    }
-    Buffer staging = std::move(made).value();
-    std::ranges::copy(bytes, staging.mapping().begin());
-    if (const VkResult result =
-            vmaFlushAllocation(allocator, staging.allocation(), 0, bytes.size());
-        result != VK_SUCCESS) {
-        return Error{"vmaFlushAllocation failed: " + vk_result_name(result)};
+    const Result<VkBuffer> staging = context.stage(bytes);
+    if (!staging.has_value()) {
+        return staging.error();
     }
     const VkBufferCopy2 region = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
@@ -89,15 +117,69 @@ Result<void> upload(UploadContext& context, VkCommandBuffer commands, const Buff
     const VkCopyBufferInfo2 copy = {
         .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
         .pNext = nullptr,
-        .srcBuffer = staging.handle(),
+        .srcBuffer = staging.value(),
         .dstBuffer = dst.handle(),
         .regionCount = 1,
         .pRegions = &region,
     };
     vkCmdCopyBuffer2(commands, &copy);
-    context.staging_.push_back(std::move(staging));
-    context.staged_bytes_ += bytes.size();
     context.unfinished_ = true;
+    return {};
+}
+
+Result<void> upload_image(UploadContext& context, VkCommandBuffer commands, const Image& image,
+                          std::span<const std::byte> pixels) {
+    if (!four_bytes_a_texel(image.format())) {
+        return Error{"upload_image takes images of four bytes a texel"};
+    }
+    const VkExtent2D extent = image.extent();
+    const std::size_t expected = std::size_t{extent.width} * extent.height * 4;
+    if (pixels.size() != expected) {
+        return Error{"an image of " + std::to_string(extent.width) + " by " +
+                     std::to_string(extent.height) + " takes " + std::to_string(expected) +
+                     " bytes of pixels, not " + std::to_string(pixels.size())};
+    }
+    const Result<VkBuffer> staging = context.stage(pixels);
+    if (!staging.has_value()) {
+        return staging.error();
+    }
+
+    // Every earlier command, reads of the image included, finishes before the
+    // move, which discards what the image held.
+    transition(commands, image.image(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_NONE,
+               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    const VkBufferImageCopy2 region = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+        .pNext = nullptr,
+        .bufferOffset = 0,
+        .bufferRowLength = 0, // rows with nothing between them
+        .bufferImageHeight = 0,
+        .imageSubresource =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel = 0,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        .imageOffset = {.x = 0, .y = 0, .z = 0},
+        .imageExtent = {.width = extent.width, .height = extent.height, .depth = 1},
+    };
+    const VkCopyBufferToImageInfo2 copy = {
+        .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+        .pNext = nullptr,
+        .srcBuffer = staging.value(),
+        .dstImage = image.image(),
+        .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .regionCount = 1,
+        .pRegions = &region,
+    };
+    vkCmdCopyBufferToImage2(commands, &copy);
+    // Shaders in any later command may sample it.
+    transition(commands, image.image(), VK_PIPELINE_STAGE_2_COPY_BIT,
+               VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     return {};
 }
 
