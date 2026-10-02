@@ -2,6 +2,8 @@
 
 #include "vk_result.hpp"
 
+#include <tracy/Tracy.hpp>
+
 #include <algorithm>
 #include <cstdio>
 #include <string>
@@ -117,6 +119,7 @@ Result<std::string> vulkan_loader_path() {
 }
 
 Result<Instance> Instance::create(const InstanceDesc& desc) {
+    ZoneScopedN("Create instance");
     if (!load_vulkan()) {
         return Error{no_loader_message};
     }

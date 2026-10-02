@@ -2,6 +2,8 @@
 
 #include "vk_result.hpp"
 
+#include <tracy/Tracy.hpp>
+
 #include <cstdint>
 #include <utility>
 
@@ -28,6 +30,7 @@ SurfaceSupport query_surface_support(VkPhysicalDevice physical_device, VkSurface
 
 Result<Swapchain> Swapchain::create(const Device& device, VkSurfaceKHR surface, Extent framebuffer,
                                     PresentMode mode, VkSwapchainKHR previous) {
+    ZoneScopedN("Create swapchain");
     const Result<SwapchainChoice> chosen = choose_swapchain(
         query_surface_support(device.physical_device(), surface), framebuffer, mode);
     if (!chosen.has_value()) {

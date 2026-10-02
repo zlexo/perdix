@@ -2,6 +2,8 @@
 
 #include "vk_result.hpp"
 
+#include <tracy/Tracy.hpp>
+
 #include <array>
 #include <cstdint>
 #include <utility>
@@ -10,6 +12,7 @@ namespace vx::render {
 
 Result<GraphicsPipeline> GraphicsPipeline::create(const Device& device,
                                                   const GraphicsPipelineDesc& desc) {
+    ZoneScopedN("Create pipeline");
     GraphicsPipeline pipeline;
     pipeline.device_ = device.handle();
     pipeline.color_format_ = desc.color_format;
