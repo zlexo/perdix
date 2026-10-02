@@ -4,7 +4,7 @@ A Minecraft-like voxel engine in C++20 and Vulkan, built for speed and view dist
 
 Named after Perdix, who in Greek myth invented the saw and the compass: tools for cutting and measuring precisely.
 
-Nothing renders yet. The project is being set up in the open, one reviewed pull request at a time.
+It renders a textured cube you can fly around, with a debug overlay: milestone 1, First Cube. The project is built in the open, one reviewed pull request at a time.
 
 ## Documents
 
