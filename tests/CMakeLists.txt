@@ -28,6 +28,7 @@ add_executable(vx_render_tests
     render/device_report_test.cpp
     render/device_selection_test.cpp
     render/feature_floor_test.cpp
+    render/projection_test.cpp
     render/swapchain_choice_test.cpp)
 target_link_libraries(vx_render_tests PRIVATE vx::render doctest::doctest)
 vx_target_warnings(vx_render_tests)
