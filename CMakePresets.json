@@ -21,6 +21,7 @@
       "name": "linux",
       "hidden": true,
       "inherits": "base",
+      "description": "GCC and Clang named with their version, so the build never depends on which g++ or clang++ is first on PATH.",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
     },
     {
@@ -37,15 +38,15 @@
     },
     {
       "name": "linux-gcc",
-      "displayName": "Linux, GCC, Debug",
+      "displayName": "Linux, GCC 13, Debug",
       "inherits": "linux",
-      "cacheVariables": { "CMAKE_CXX_COMPILER": "g++", "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "g++-13", "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
       "name": "linux-clang",
-      "displayName": "Linux, Clang, Debug",
+      "displayName": "Linux, Clang 18, Debug",
       "inherits": "linux",
-      "cacheVariables": { "CMAKE_CXX_COMPILER": "clang++", "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "clang++-18", "CMAKE_BUILD_TYPE": "Debug" }
     }
   ],
   "buildPresets": [
