@@ -48,7 +48,7 @@ Non-goals:
 ## Prior art
 
 - **Minecraft's paletted containers** (Java Edition): each 16 by 16 by 16 section stores a palette of block states plus bit-packed indices, with the bit width chosen from the palette size and a direct mode for very mixed sections. Since 1.16 an index never spans two 64-bit words. The design here is the same idea with power-of-two widths.
-- **OpenCubicChunks** (a Minecraft mod): cubic chunks instead of fixed-height columns, so the world extends without limit up and down and loads in all three directions.
+- **OpenCubicChunks** (a Minecraft mod): cubic chunks instead of fixed-height columns, so the world loads in all three directions and is effectively unlimited up and down: 2^30 blocks each way by default, "Infinite*" in its own tagline.
 - **Luanti** (formerly Minetest): 16 by 16 by 16 map blocks, the classic size for cubic storage.
 - **Cubyz**: cubic chunks with level of detail, a reference for how far cubic storage can scale.
 
