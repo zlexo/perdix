@@ -1,5 +1,6 @@
 #include <vx/render/renderer.hpp>
 
+#include "transition.hpp"
 #include "vk_result.hpp"
 
 #include <vx/render/buffer.hpp>
@@ -30,11 +31,10 @@ constexpr std::uint64_t forever = std::numeric_limits<std::uint64_t>::max();
 constexpr VkFormat offscreen_format = VK_FORMAT_R8G8B8A8_SRGB;
 
 // Headless rendering's color target, a copy source for capture().
-Result<AttachmentImage> make_offscreen_target(const Device& device, VkExtent2D extent) {
-    return AttachmentImage::create(device, extent, offscreen_format,
-                                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                                   VK_IMAGE_ASPECT_COLOR_BIT);
+Result<Image> make_offscreen_target(const Device& device, VkExtent2D extent) {
+    return Image::create(device, extent, offscreen_format,
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                         VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
 // RFC 0001: depth is a 32-bit float, so reversed-Z keeps its precision far
@@ -42,16 +42,15 @@ Result<AttachmentImage> make_offscreen_target(const Device& device, VkExtent2D e
 // device without this one is told why here.
 constexpr VkFormat depth_format = VK_FORMAT_D32_SFLOAT;
 
-Result<AttachmentImage> make_depth_target(const Device& device, VkExtent2D extent) {
+Result<Image> make_depth_target(const Device& device, VkExtent2D extent) {
     VkFormatProperties properties{};
     vkGetPhysicalDeviceFormatProperties(device.physical_device(), depth_format, &properties);
     if ((properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) == 0) {
         return Error{"the device cannot draw depth into 32-bit floats, which RFC 0001's "
                      "reversed-Z needs"};
     }
-    return AttachmentImage::create(device, extent, depth_format,
-                                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                                   VK_IMAGE_ASPECT_DEPTH_BIT);
+    return Image::create(device, extent, depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                         VK_IMAGE_ASPECT_DEPTH_BIT);
 }
 
 enum class Target : std::uint8_t { swapchain, offscreen };
@@ -137,45 +136,6 @@ Result<GraphicsPipeline> make_cube_pipeline(const Device& device, VkFormat color
                                              .cull_mode = VK_CULL_MODE_BACK_BIT,
                                              .push_constant_size = sizeof(DrawPush),
                                              .push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT});
-}
-
-void transition(VkCommandBuffer commands, VkImage image, VkPipelineStageFlags2 src_stage,
-                VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage,
-                VkAccessFlags2 dst_access, VkImageLayout from, VkImageLayout to,
-                VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
-    const VkImageMemoryBarrier2 barrier = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .pNext = nullptr,
-        .srcStageMask = src_stage,
-        .srcAccessMask = src_access,
-        .dstStageMask = dst_stage,
-        .dstAccessMask = dst_access,
-        .oldLayout = from,
-        .newLayout = to,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = image,
-        .subresourceRange =
-            {
-                .aspectMask = aspect,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-    };
-    const VkDependencyInfo dependency = {
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .pNext = nullptr,
-        .dependencyFlags = 0,
-        .memoryBarrierCount = 0,
-        .pMemoryBarriers = nullptr,
-        .bufferMemoryBarrierCount = 0,
-        .pBufferMemoryBarriers = nullptr,
-        .imageMemoryBarrierCount = 1,
-        .pImageMemoryBarriers = &barrier,
-    };
-    vkCmdPipelineBarrier2(commands, &dependency);
 }
 
 void begin_commands(VkCommandBuffer commands) {
@@ -354,7 +314,7 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     }
 
     std::optional<Swapchain> swapchain;
-    std::optional<AttachmentImage> offscreen;
+    std::optional<Image> offscreen;
     if (desc.surface.has_value()) {
         Result<Swapchain> made =
             Swapchain::create(context.value().device(), context.value().surface(), desc.framebuffer,
@@ -364,7 +324,7 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
         }
         swapchain = std::move(made).value();
     } else {
-        Result<AttachmentImage> made =
+        Result<Image> made =
             make_offscreen_target(context.value().device(), vk_extent(desc.framebuffer));
         if (!made.has_value()) {
             return made.error();
@@ -374,9 +334,9 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
 
     const VkFormat color_format =
         swapchain.has_value() ? swapchain->choice().format.format : offscreen_format;
-    Result<AttachmentImage> depth = make_depth_target(
-        context.value().device(),
-        swapchain.has_value() ? swapchain->choice().extent : vk_extent(desc.framebuffer));
+    Result<Image> depth = make_depth_target(context.value().device(),
+                                            swapchain.has_value() ? swapchain->choice().extent
+                                                                  : vk_extent(desc.framebuffer));
     if (!depth.has_value()) {
         return depth.error();
     }
@@ -405,9 +365,8 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
 }
 
 Renderer::Renderer(Context context, std::optional<Swapchain> swapchain,
-                   std::optional<AttachmentImage> offscreen, AttachmentImage depth,
-                   GraphicsPipeline cube_pipeline, Buffer cube_buffer, Extent framebuffer,
-                   PresentMode present_mode)
+                   std::optional<Image> offscreen, Image depth, GraphicsPipeline cube_pipeline,
+                   Buffer cube_buffer, Extent framebuffer, PresentMode present_mode)
     : context_(std::move(context)), swapchain_(std::move(swapchain)),
       offscreen_(std::move(offscreen)), depth_(std::move(depth)),
       cube_pipeline_(std::move(cube_pipeline)), cube_buffer_(std::move(cube_buffer)),
@@ -552,14 +511,14 @@ Result<void> Renderer::recreate_target() {
             cube_pipeline_ = std::move(rebuilt).value();
         }
     } else {
-        Result<AttachmentImage> replacement =
+        Result<Image> replacement =
             make_offscreen_target(context_.device(), vk_extent(framebuffer_));
         if (!replacement.has_value()) {
             return replacement.error();
         }
         offscreen_ = std::move(replacement).value();
     }
-    Result<AttachmentImage> depth = make_depth_target(context_.device(), extent);
+    Result<Image> depth = make_depth_target(context_.device(), extent);
     if (!depth.has_value()) {
         return depth.error();
     }
@@ -708,7 +667,7 @@ Result<std::vector<std::uint8_t>> Renderer::capture() {
     if (frame_ == 0) {
         return Error{"there is no frame to capture yet"};
     }
-    const AttachmentImage& image = *offscreen_;
+    const Image& image = *offscreen_;
     VkDevice device = context_.device().handle();
     VmaAllocator allocator = context_.device().allocator();
     VkQueue queue = context_.device().queue();
