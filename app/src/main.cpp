@@ -11,6 +11,7 @@
 #include <vx/render/swapchain_choice.hpp>
 
 #include <glm/ext/vector_int3_sized.hpp>
+#include <tracy/Tracy.hpp>
 
 #include <algorithm>
 #include <array>
@@ -59,6 +60,9 @@ vx::Result<Options> parse_options(std::span<char* const> args) {
 } // namespace
 
 int main(int argc, char* argv[]) {
+    // Named for Tracy (RFC 0005's Main, World and Worker threads) and for the
+    // OS, so debuggers show it too.
+    tracy::SetThreadName("Main");
     const std::span<char* const> args(argv, static_cast<std::size_t>(argc));
     const vx::Result<Options> options = parse_options(args.subspan(1));
     if (!options.has_value()) {
@@ -134,6 +138,7 @@ int main(int argc, char* argv[]) {
             // Presenting paces the loop; with nothing to present, a 60 Hz wait does.
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
+        FrameMark;
     }
 
     // With validation on, a run that broke Vulkan's rules fails, so a smoke run

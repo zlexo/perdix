@@ -2,6 +2,7 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+#include <tracy/Tracy.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -47,6 +48,7 @@ Window::~Window() {
 }
 
 bool Window::handle_events() {
+    ZoneScopedN("Events");
     const SDL_WindowID id = SDL_GetWindowID(window_);
     SDL_Event event{};
     while (SDL_PollEvent(&event)) {
