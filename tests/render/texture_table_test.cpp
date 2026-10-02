@@ -23,7 +23,7 @@ vx::Result<vx::render::Context> create_context() {
 vx::Result<vx::render::Image> texture(const vx::render::Device& device) {
     return vx::render::Image::create(device, {.width = 16, .height = 16}, VK_FORMAT_R8G8B8A8_SRGB,
                                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                                     VK_IMAGE_ASPECT_COLOR_BIT);
+                                     VK_IMAGE_ASPECT_COLOR_BIT, "test texture");
 }
 
 } // namespace
@@ -83,11 +83,13 @@ TEST_CASE("a pipeline takes the texture table as its set 0") {
 
     vx::Result<vx::render::TextureTable> table = vx::render::TextureTable::create(device);
     REQUIRE(table.has_value());
-    const vx::Result<vx::render::GraphicsPipeline> pipeline = vx::render::GraphicsPipeline::create(
-        device, {.spirv = vx::shaders::triangle,
-                 .color_format = VK_FORMAT_R8G8B8A8_SRGB,
-                 .set_layout = table.value().layout(),
-                 .push_constant_size = sizeof(VkDeviceAddress)});
+    const vx::Result<vx::render::GraphicsPipeline> pipeline =
+        vx::render::GraphicsPipeline::create(device,
+                                             {.spirv = vx::shaders::triangle,
+                                              .color_format = VK_FORMAT_R8G8B8A8_SRGB,
+                                              .set_layout = table.value().layout(),
+                                              .push_constant_size = sizeof(VkDeviceAddress)},
+                                             "triangle on the texture table");
     INFO((pipeline.has_value() ? std::string() : pipeline.error().message));
     REQUIRE(pipeline.has_value());
     CHECK(created.value().instance().validation_counts().errors == 0);

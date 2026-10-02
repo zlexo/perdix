@@ -1,16 +1,21 @@
 #include <vx/render/texture_table.hpp>
 
+#include "debug_name.hpp"
 #include "vk_result.hpp"
 
 #include <algorithm>
 #include <array>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace vx::render {
 namespace {
 
 constexpr std::uint32_t wanted_capacity = 1024;
+// The set, its layout and pool, and the sampler in it, as validation
+// messages and GPU captures name them.
+constexpr std::string_view debug_name = "texture table";
 
 } // namespace
 
@@ -55,6 +60,7 @@ Result<TextureTable> TextureTable::create(const Device& device) {
         result != VK_SUCCESS) {
         return Error{"vkCreateSampler failed: " + vk_result_name(result)};
     }
+    set_debug_name(table.device_, table.sampler_, debug_name);
 
     const std::array bindings = {
         VkDescriptorSetLayoutBinding{
@@ -93,6 +99,7 @@ Result<TextureTable> TextureTable::create(const Device& device) {
         result != VK_SUCCESS) {
         return Error{"vkCreateDescriptorSetLayout failed: " + vk_result_name(result)};
     }
+    set_debug_name(table.device_, table.layout_, debug_name);
 
     const std::array pool_sizes = {
         VkDescriptorPoolSize{.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
@@ -112,6 +119,7 @@ Result<TextureTable> TextureTable::create(const Device& device) {
         result != VK_SUCCESS) {
         return Error{"vkCreateDescriptorPool failed: " + vk_result_name(result)};
     }
+    set_debug_name(table.device_, table.pool_, debug_name);
     const VkDescriptorSetAllocateInfo allocate = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .pNext = nullptr,
@@ -123,6 +131,7 @@ Result<TextureTable> TextureTable::create(const Device& device) {
         result != VK_SUCCESS) {
         return Error{"vkAllocateDescriptorSets failed: " + vk_result_name(result)};
     }
+    set_debug_name(table.device_, table.set_, debug_name);
     return table;
 }
 

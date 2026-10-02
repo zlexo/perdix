@@ -1,5 +1,6 @@
 #include <vx/render/device.hpp>
 
+#include "debug_name.hpp"
 #include "vk_result.hpp"
 
 #include <tracy/Tracy.hpp>
@@ -204,6 +205,8 @@ Result<Device> Device::create(VkInstance instance, VkPhysicalDevice physical_dev
     }
     volkLoadDevice(device.device_);
     vkGetDeviceQueue(device.device_, family, 0, &device.queue_);
+    set_debug_name(device.device_, device.device_, "device");
+    set_debug_name(device.device_, device.queue_, "graphics queue");
 
     // VMA loads the rest of its functions through these two.
     VmaVulkanFunctions functions{};

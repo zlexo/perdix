@@ -167,9 +167,10 @@ TEST_CASE("a buffer without a mapping is filled through staging copies") {
 
     vx::Result<vx::render::Buffer> dst = vx::render::Buffer::create(
         device, 96, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        vx::render::BufferMemory::device_local);
-    vx::Result<vx::render::Buffer> readback = vx::render::Buffer::create(
-        device, 96, VK_BUFFER_USAGE_TRANSFER_DST_BIT, vx::render::BufferMemory::readback);
+        vx::render::BufferMemory::device_local, "upload destination");
+    vx::Result<vx::render::Buffer> readback =
+        vx::render::Buffer::create(device, 96, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                   vx::render::BufferMemory::readback, "readback buffer");
     REQUIRE(dst.has_value());
     REQUIRE(readback.has_value());
     REQUIRE(dst.value().mapping().empty());
@@ -205,8 +206,9 @@ TEST_CASE("an upload into a mapped buffer goes through the mapping, without stag
     REQUIRE(created.has_value());
     const vx::render::Device& device = created.value().device();
 
-    vx::Result<vx::render::Buffer> dst = vx::render::Buffer::create(
-        device, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vx::render::BufferMemory::upload_target);
+    vx::Result<vx::render::Buffer> dst =
+        vx::render::Buffer::create(device, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                   vx::render::BufferMemory::upload_target, "mapped destination");
     REQUIRE(dst.has_value());
     // Upload targets are mapped wherever the device has device-local memory
     // the CPU can write, as on unified memory; elsewhere the test above covers
@@ -231,8 +233,9 @@ TEST_CASE("an upload past the end of its buffer is an error and writes nothing")
     REQUIRE(created.has_value());
     const vx::render::Device& device = created.value().device();
 
-    vx::Result<vx::render::Buffer> dst = vx::render::Buffer::create(
-        device, 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT, vx::render::BufferMemory::device_local);
+    vx::Result<vx::render::Buffer> dst =
+        vx::render::Buffer::create(device, 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                   vx::render::BufferMemory::device_local, "small destination");
     REQUIRE(dst.has_value());
     const std::vector<std::byte> bytes = pattern(8, std::byte{0});
     vx::render::UploadContext uploads(device);
@@ -259,9 +262,10 @@ TEST_CASE("an image takes its pixels through a staging copy and gives back the s
         vx::render::Image::create(device, {.width = 8, .height = 4}, VK_FORMAT_R8G8B8A8_UNORM,
                                   VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                                  VK_IMAGE_ASPECT_COLOR_BIT);
-    vx::Result<vx::render::Buffer> readback = vx::render::Buffer::create(
-        device, 8 * 4 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, vx::render::BufferMemory::readback);
+                                  VK_IMAGE_ASPECT_COLOR_BIT, "uploaded image");
+    vx::Result<vx::render::Buffer> readback =
+        vx::render::Buffer::create(device, 8 * 4 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                   vx::render::BufferMemory::readback, "readback buffer");
     REQUIRE(image.has_value());
     REQUIRE(readback.has_value());
 
@@ -288,9 +292,10 @@ TEST_CASE("pixels of the wrong size for an image are an error, and nothing is st
     REQUIRE(created.has_value());
     const vx::render::Device& device = created.value().device();
 
-    vx::Result<vx::render::Image> image = vx::render::Image::create(
-        device, {.width = 8, .height = 4}, VK_FORMAT_R8G8B8A8_UNORM,
-        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    vx::Result<vx::render::Image> image =
+        vx::render::Image::create(device, {.width = 8, .height = 4}, VK_FORMAT_R8G8B8A8_UNORM,
+                                  VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                  VK_IMAGE_ASPECT_COLOR_BIT, "uneven image");
     REQUIRE(image.has_value());
     const std::vector<std::byte> pixels = pattern(127, std::byte{0});
     vx::render::UploadContext uploads(device);

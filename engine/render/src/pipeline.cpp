@@ -1,17 +1,20 @@
 #include <vx/render/pipeline.hpp>
 
+#include "debug_name.hpp"
 #include "vk_result.hpp"
 
 #include <tracy/Tracy.hpp>
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <utility>
 
 namespace vx::render {
 
 Result<GraphicsPipeline> GraphicsPipeline::create(const Device& device,
-                                                  const GraphicsPipelineDesc& desc) {
+                                                  const GraphicsPipelineDesc& desc,
+                                                  std::string_view name) {
     ZoneScopedN("Create pipeline");
     GraphicsPipeline pipeline;
     pipeline.device_ = device.handle();
@@ -34,8 +37,10 @@ Result<GraphicsPipeline> GraphicsPipeline::create(const Device& device,
     if (const VkResult result =
             vkCreatePipelineLayout(pipeline.device_, &layout_info, nullptr, &pipeline.layout_);
         result != VK_SUCCESS) {
-        return Error{"vkCreatePipelineLayout failed: " + vk_result_name(result)};
+        return Error{"vkCreatePipelineLayout failed for the pipeline \"" + std::string(name) +
+                     "\": " + vk_result_name(result)};
     }
+    set_debug_name(pipeline.device_, pipeline.layout_, name);
 
     // The module is only needed while the pipeline is made.
     const VkShaderModuleCreateInfo module_info = {
@@ -49,8 +54,10 @@ Result<GraphicsPipeline> GraphicsPipeline::create(const Device& device,
     if (const VkResult result =
             vkCreateShaderModule(pipeline.device_, &module_info, nullptr, &module);
         result != VK_SUCCESS) {
-        return Error{"vkCreateShaderModule failed: " + vk_result_name(result)};
+        return Error{"vkCreateShaderModule failed for the pipeline \"" + std::string(name) +
+                     "\": " + vk_result_name(result)};
     }
+    set_debug_name(pipeline.device_, module, name);
 
     const std::array stages = {
         VkPipelineShaderStageCreateInfo{
@@ -203,8 +210,10 @@ Result<GraphicsPipeline> GraphicsPipeline::create(const Device& device,
                                                       nullptr, &pipeline.pipeline_);
     vkDestroyShaderModule(pipeline.device_, module, nullptr);
     if (result != VK_SUCCESS) {
-        return Error{"vkCreateGraphicsPipelines failed: " + vk_result_name(result)};
+        return Error{"vkCreateGraphicsPipelines failed for the pipeline \"" + std::string(name) +
+                     "\": " + vk_result_name(result)};
     }
+    set_debug_name(pipeline.device_, pipeline.pipeline_, name);
     return pipeline;
 }
 

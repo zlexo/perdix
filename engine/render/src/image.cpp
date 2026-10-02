@@ -1,13 +1,16 @@
 #include <vx/render/image.hpp>
 
+#include "debug_name.hpp"
 #include "vk_result.hpp"
 
+#include <string>
 #include <utility>
 
 namespace vx::render {
 
 Result<Image> Image::create(const Device& device, VkExtent2D extent, VkFormat format,
-                            VkImageUsageFlags usage, VkImageAspectFlags aspect) {
+                            VkImageUsageFlags usage, VkImageAspectFlags aspect,
+                            std::string_view name) {
     Image image;
     image.device_ = device.handle();
     image.allocator_ = device.allocator();
@@ -36,8 +39,10 @@ Result<Image> Image::create(const Device& device, VkExtent2D extent, VkFormat fo
     if (const VkResult result = vmaCreateImage(image.allocator_, &image_info, &allocation_info,
                                                &image.image_, &image.allocation_, nullptr);
         result != VK_SUCCESS) {
-        return Error{"vmaCreateImage failed for an attachment image: " + vk_result_name(result)};
+        return Error{"vmaCreateImage failed for the image \"" + std::string(name) +
+                     "\": " + vk_result_name(result)};
     }
+    set_debug_name(image.device_, image.image_, name);
 
     const VkImageViewCreateInfo view_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -58,8 +63,10 @@ Result<Image> Image::create(const Device& device, VkExtent2D extent, VkFormat fo
     };
     if (const VkResult result = vkCreateImageView(image.device_, &view_info, nullptr, &image.view_);
         result != VK_SUCCESS) {
-        return Error{"vkCreateImageView failed for an attachment image: " + vk_result_name(result)};
+        return Error{"vkCreateImageView failed for the image \"" + std::string(name) +
+                     "\": " + vk_result_name(result)};
     }
+    set_debug_name(image.device_, image.view_, name);
     return image;
 }
 

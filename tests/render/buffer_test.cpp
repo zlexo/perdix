@@ -32,7 +32,7 @@ TEST_CASE("an upload target is mapped exactly when its memory is host-visible") 
 
     vx::Result<vx::render::Buffer> made = vx::render::Buffer::create(
         device, 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        vx::render::BufferMemory::upload_target);
+        vx::render::BufferMemory::upload_target, "mapped buffer");
     REQUIRE(made.has_value());
     const vx::render::Buffer& buffer = made.value();
 
@@ -55,9 +55,10 @@ TEST_CASE("a device-local buffer is not mapped, and has an address only when ask
 
     vx::Result<vx::render::Buffer> addressed = vx::render::Buffer::create(
         device, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        vx::render::BufferMemory::device_local);
-    vx::Result<vx::render::Buffer> plain = vx::render::Buffer::create(
-        device, 64, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, vx::render::BufferMemory::device_local);
+        vx::render::BufferMemory::device_local, "addressed buffer");
+    vx::Result<vx::render::Buffer> plain =
+        vx::render::Buffer::create(device, 64, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                   vx::render::BufferMemory::device_local, "plain buffer");
     REQUIRE(addressed.has_value());
     REQUIRE(plain.has_value());
 
@@ -75,7 +76,7 @@ TEST_CASE("a readback buffer is always mapped") {
 
     vx::Result<vx::render::Buffer> made =
         vx::render::Buffer::create(created.value().device(), 128, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                   vx::render::BufferMemory::readback);
+                                   vx::render::BufferMemory::readback, "readback buffer");
     REQUIRE(made.has_value());
     CHECK(made.value().mapping().size() == 128);
     CHECK(created.value().instance().validation_counts().errors == 0);
@@ -88,8 +89,8 @@ TEST_CASE("a buffer without a size is an error, not a Vulkan call") {
 
     const vx::Result<vx::render::Buffer> made =
         vx::render::Buffer::create(created.value().device(), 0, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                   vx::render::BufferMemory::device_local);
+                                   vx::render::BufferMemory::device_local, "empty buffer");
     REQUIRE_FALSE(made.has_value());
-    CHECK(made.error().message == "a buffer needs a size above zero");
+    CHECK(made.error().message == "the buffer \"empty buffer\" needs a size above zero");
     CHECK(created.value().instance().validation_counts().errors == 0);
 }

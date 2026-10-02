@@ -63,6 +63,17 @@ target_link_libraries(vx_render_vulkan_tests PRIVATE vx::render doctest::doctest
 vx_target_warnings(vx_render_vulkan_tests)
 doctest_discover_tests(vx_render_vulkan_tests PROPERTIES ${VX_VULKAN_DOCTEST_PROPERTIES})
 
+# Debug names reach validation messages (RFC 0001): a program that records
+# one command breaking a rule about a named buffer passes when the layer's
+# message about it carries the buffer's name.
+add_executable(vx_render_naming_probe render/naming_probe.cpp)
+target_link_libraries(vx_render_naming_probe PRIVATE vx::render)
+vx_target_warnings(vx_render_naming_probe)
+add_test(NAME "a validation message names the object it is about" COMMAND vx_render_naming_probe)
+set_tests_properties("a validation message names the object it is about" PROPERTIES
+    LABELS vulkan
+    PASS_REGULAR_EXPRESSION "VUID-vkCmdFillBuffer-dstOffset-00025[^\n]*named probe buffer")
+
 # A frame's heap allocations, counted by replacing the global operator new:
 # an executable of its own, since the count would take in every other test.
 add_executable(vx_render_allocation_tests

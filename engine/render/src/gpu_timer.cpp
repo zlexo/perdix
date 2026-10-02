@@ -1,5 +1,6 @@
 #include <vx/render/gpu_timer.hpp>
 
+#include "debug_name.hpp"
 #include "vk_result.hpp"
 
 #include <array>
@@ -47,6 +48,7 @@ Result<GpuTimer> GpuTimer::create(const Device& device, std::uint32_t slots) {
         return Error{"vkCreateQueryPool failed: " + vk_result_name(result)};
     }
     timer.device_ = device.handle();
+    set_debug_name(timer.device_, timer.pool_, "GPU frame timer");
 
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(device.physical_device(), &properties);

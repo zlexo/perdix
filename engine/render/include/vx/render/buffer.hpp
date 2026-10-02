@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string_view>
 
 namespace vx::render {
 
@@ -35,8 +36,11 @@ class Buffer {
 public:
     // `usage` says what the GPU does with the buffer. An upload target also
     // becomes a copy destination, for when its memory is not host-visible.
+    // `name` is its debug name, which validation messages and GPU captures
+    // show (RFC 0001), and errors too.
     [[nodiscard]] static Result<Buffer> create(const Device& device, VkDeviceSize size,
-                                               VkBufferUsageFlags usage, BufferMemory memory);
+                                               VkBufferUsageFlags usage, BufferMemory memory,
+                                               std::string_view name);
 
     Buffer(Buffer&& other) noexcept;
     Buffer& operator=(Buffer&& other) noexcept;
