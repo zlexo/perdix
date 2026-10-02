@@ -60,6 +60,13 @@
       "cacheVariables": { "CMAKE_C_COMPILER": "clang-18", "CMAKE_CXX_COMPILER": "clang++-18", "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
+      "name": "linux-lavapipe",
+      "displayName": "Linux, Clang 22, Debug, for lavapipe",
+      "inherits": "linux",
+      "description": "The lavapipe job's build. The job runs Ubuntu 26.04, for its validation layers, and Clang 22 is that image's newest.",
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang-22", "CMAKE_CXX_COMPILER": "clang++-22", "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
       "name": "linux-asan",
       "displayName": "Linux, Clang 18, AddressSanitizer + UndefinedBehaviorSanitizer",
       "inherits": "linux",
@@ -77,6 +84,7 @@
     { "name": "mac-ubsan", "configurePreset": "mac-ubsan" },
     { "name": "linux-gcc", "configurePreset": "linux-gcc" },
     { "name": "linux-clang", "configurePreset": "linux-clang" },
+    { "name": "linux-lavapipe", "configurePreset": "linux-lavapipe" },
     { "name": "linux-asan", "configurePreset": "linux-asan" }
   ],
   "testPresets": [
@@ -96,6 +104,12 @@
     },
     { "name": "linux-gcc", "inherits": "base", "configurePreset": "linux-gcc", "filter": { "exclude": { "label": "vulkan" } } },
     { "name": "linux-clang", "inherits": "base", "configurePreset": "linux-clang", "filter": { "exclude": { "label": "vulkan" } } },
+    {
+      "name": "linux-lavapipe",
+      "inherits": "base",
+      "configurePreset": "linux-lavapipe",
+      "description": "Every test, the Vulkan ones included, on a machine with a Vulkan driver such as Mesa's lavapipe."
+    },
     {
       "name": "linux-asan",
       "inherits": "base",

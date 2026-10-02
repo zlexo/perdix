@@ -5,6 +5,7 @@
 #include <vx/render/device_report.hpp>
 #include <vx/render/instance.hpp>
 #include <vx/render/renderer.hpp>
+#include <vx/render/swapchain.hpp>
 #include <vx/render/swapchain_choice.hpp>
 
 #include <charconv>
@@ -87,8 +88,10 @@ int main(int argc, char* argv[]) {
     }
     const vx::render::Context& context = renderer.value().context();
     std::cout << vx::render::format_device_report(context.device_info(),
-                                                  context.portability_fallback())
-              << vx::render::format_swapchain_report(renderer.value().swapchain().choice());
+                                                  context.portability_fallback());
+    if (const vx::render::Swapchain* swapchain = renderer.value().swapchain()) {
+        std::cout << vx::render::format_swapchain_report(swapchain->choice());
+    }
 
     // A daytime sky blue, #78A7FF in sRGB.
     constexpr vx::render::Color sky = {.r = 0.188F, .g = 0.386F, .b = 1.0F, .a = 1.0F};

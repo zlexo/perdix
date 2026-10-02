@@ -2,6 +2,7 @@
 
 #include <vx/core/result.hpp>
 #include <vx/render/context.hpp>
+#include <vx/render/offscreen_image.hpp>
 #include <vx/render/swapchain.hpp>
 #include <vx/render/swapchain_choice.hpp>
 
@@ -10,19 +11,21 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace vx::render {
 
 struct RendererDesc {
-    SurfaceSource surface; // the window to draw into
-    Extent framebuffer;    // its size in pixels
+    // The window to draw into; empty draws headless, into an offscreen image.
+    std::optional<SurfaceSource> surface;
+    Extent framebuffer; // the window's size in pixels, or the offscreen image's
     // VK_LAYER_KHRONOS_validation with synchronization validation: debug builds.
     bool validation = false;
     PresentMode present_mode = PresentMode::fifo;
 };
 
-// A color in linear RGB, with alpha. The swapchain encodes it to sRGB.
+// A color in linear RGB, with alpha. The target's sRGB format encodes it.
 struct Color {
     float r = 0.0F;
     float g = 0.0F;
@@ -35,9 +38,9 @@ enum class Frame : std::uint8_t {
     skipped, // the framebuffer has no area, as when the window is minimized
 };
 
-// Draws frames into the window. For now each frame clears it to one color
-// (RFC 0001 plan item 4), with two frames in flight: the CPU records frame
-// N + 1 while the GPU draws frame N.
+// Draws frames into a window's swapchain, or headless into an offscreen image
+// (RFC 0001). For now each frame clears its target to one color, with two
+// frames in flight: the CPU records frame N + 1 while the GPU draws frame N.
 class Renderer {
 public:
     [[nodiscard]] static Result<Renderer> create(const RendererDesc& desc);
@@ -49,27 +52,31 @@ public:
     Renderer& operator=(const Renderer&) = delete;
     ~Renderer();
 
-    // The window's framebuffer has this size now; the swapchain follows on the
-    // next frame.
+    // The framebuffer has this size now; the target follows on the next frame.
     void resize(Extent framebuffer) noexcept { framebuffer_ = framebuffer; }
 
-    // Clears the window to `clear` and presents it.
+    // Clears the target to `clear`, and presents it when it is a window's.
     [[nodiscard]] Result<Frame> render(Color clear);
 
     [[nodiscard]] const Context& context() const noexcept { return context_; }
-    [[nodiscard]] const Swapchain& swapchain() const noexcept { return swapchain_; }
+    // Null when headless.
+    [[nodiscard]] const Swapchain* swapchain() const noexcept {
+        return swapchain_.has_value() ? &swapchain_.value() : nullptr;
+    }
 
 private:
-    Renderer(Context context, Swapchain swapchain, Extent framebuffer, PresentMode present_mode);
+    Renderer(Context context, std::optional<Swapchain> swapchain,
+             std::optional<OffscreenImage> offscreen, Extent framebuffer, PresentMode present_mode);
     [[nodiscard]] Result<void> create_frame_objects();
     [[nodiscard]] Result<void> add_rendered_semaphores();
-    [[nodiscard]] Result<void> recreate_swapchain();
+    [[nodiscard]] Result<void> recreate_target();
     void destroy() noexcept;
 
-    Context context_; // declared first, so it is destroyed last
-    Swapchain swapchain_;
+    Context context_;                    // declared first, so it is destroyed last
+    std::optional<Swapchain> swapchain_; // exactly one of these two
+    std::optional<OffscreenImage> offscreen_;
     Extent framebuffer_;
-    Extent swapchain_framebuffer_; // the size the swapchain was made for
+    Extent target_framebuffer_; // the size the target was made for
     PresentMode present_mode_;
     bool swapchain_stale_ = false;
 
