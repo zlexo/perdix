@@ -25,7 +25,7 @@ TEST_CASE("the report says when the portability fallback was taken") {
 
     CHECK(report ==
           "Device: Apple M3 (integrated GPU)\n"
-          "Driver: MoltenVK 1.4.2, Vulkan 1.4.357\n"
+          "Driver: MoltenVK 1.4.2, Vulkan 1.3.357\n"
           "Portability fallback: taken, no device on a conformant driver passed the floor\n");
 }
 
@@ -56,5 +56,5 @@ TEST_CASE("an empty driver info leaves no stray space") {
 
     const std::string report = vx::render::format_device_report(device, true);
 
-    CHECK(report.find("Driver: MoltenVK, Vulkan 1.4.357\n") != std::string::npos);
+    CHECK(report.find("Driver: MoltenVK, Vulkan 1.3.357\n") != std::string::npos);
 }

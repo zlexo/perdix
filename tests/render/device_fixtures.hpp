@@ -26,7 +26,8 @@ inline render::DeviceFeatures full_floor(std::uint32_t api_version = VK_API_VERS
 }
 
 // The reference machine's GPU through each of its two drivers, as Vulkan SDK
-// 1.4.363.0 reports them.
+// 1.4.363.0 reports them to the engine's Vulkan 1.3 instance. MoltenVK caps its
+// version at the instance's: vulkaninfo, at 1.4, reads 1.4.357 instead.
 inline render::DeviceInfo m3_on_kosmickrisp() {
     return {
         .name = "Apple M3",
@@ -46,7 +47,7 @@ inline render::DeviceInfo m3_on_moltenvk() {
         .driver_name = "MoltenVK",
         .driver_info = "1.4.2",
         .type = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
-        .features = full_floor(VK_MAKE_API_VERSION(0, 1, 4, 357)),
+        .features = full_floor(VK_MAKE_API_VERSION(0, 1, 3, 357)),
         .optional = {.sampler_anisotropy = true, .fill_mode_non_solid = true},
         .portability_subset = true,
         .queue_family = 0U,
