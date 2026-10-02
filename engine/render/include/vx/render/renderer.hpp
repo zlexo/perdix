@@ -1,10 +1,10 @@
 #pragma once
 
 #include <vx/core/result.hpp>
-#include <vx/render/attachment_image.hpp>
 #include <vx/render/buffer.hpp>
 #include <vx/render/camera.hpp>
 #include <vx/render/context.hpp>
+#include <vx/render/image.hpp>
 #include <vx/render/pipeline.hpp>
 #include <vx/render/swapchain.hpp>
 #include <vx/render/swapchain_choice.hpp>
@@ -87,9 +87,8 @@ public:
     }
 
 private:
-    Renderer(Context context, std::optional<Swapchain> swapchain,
-             std::optional<AttachmentImage> offscreen, AttachmentImage depth,
-             GraphicsPipeline cube_pipeline, Buffer cube_buffer, Extent framebuffer,
+    Renderer(Context context, std::optional<Swapchain> swapchain, std::optional<Image> offscreen,
+             Image depth, GraphicsPipeline cube_pipeline, Buffer cube_buffer, Extent framebuffer,
              PresentMode present_mode);
     [[nodiscard]] Result<void> create_frame_objects();
     [[nodiscard]] Result<void> upload_cube();
@@ -99,8 +98,8 @@ private:
 
     Context context_;                    // declared first, so it is destroyed last
     std::optional<Swapchain> swapchain_; // exactly one of these two
-    std::optional<AttachmentImage> offscreen_;
-    AttachmentImage depth_; // beside either target, the size of its images
+    std::optional<Image> offscreen_;
+    Image depth_; // beside either target, the size of its images
     // The cube: its pipeline and its 36 vertices.
     GraphicsPipeline cube_pipeline_;
     Buffer cube_buffer_;

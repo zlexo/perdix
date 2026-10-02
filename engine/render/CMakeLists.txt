@@ -52,7 +52,6 @@ target_include_directories(vx_glm SYSTEM INTERFACE "${glm_SOURCE_DIR}")
 target_compile_definitions(vx_glm INTERFACE GLM_FORCE_DEPTH_ZERO_TO_ONE)
 
 add_library(vx_render STATIC
-    src/attachment_image.cpp
     src/buffer.cpp
     src/camera.cpp
     src/camera_relative.cpp
@@ -61,6 +60,7 @@ add_library(vx_render STATIC
     src/device_report.cpp
     src/device_selection.cpp
     src/feature_floor.cpp
+    src/image.cpp
     src/instance.cpp
     src/pipeline.cpp
     src/projection.cpp

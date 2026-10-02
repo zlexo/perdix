@@ -1,4 +1,4 @@
-#include <vx/render/attachment_image.hpp>
+#include <vx/render/image.hpp>
 
 #include "vk_result.hpp"
 
@@ -6,10 +6,9 @@
 
 namespace vx::render {
 
-Result<AttachmentImage> AttachmentImage::create(const Device& device, VkExtent2D extent,
-                                                VkFormat format, VkImageUsageFlags usage,
-                                                VkImageAspectFlags aspect) {
-    AttachmentImage image;
+Result<Image> Image::create(const Device& device, VkExtent2D extent, VkFormat format,
+                            VkImageUsageFlags usage, VkImageAspectFlags aspect) {
+    Image image;
     image.device_ = device.handle();
     image.allocator_ = device.allocator();
     image.extent_ = extent;
@@ -64,7 +63,7 @@ Result<AttachmentImage> AttachmentImage::create(const Device& device, VkExtent2D
     return image;
 }
 
-AttachmentImage::AttachmentImage(AttachmentImage&& other) noexcept
+Image::Image(Image&& other) noexcept
     : device_(std::exchange(other.device_, VK_NULL_HANDLE)),
       allocator_(std::exchange(other.allocator_, VK_NULL_HANDLE)),
       image_(std::exchange(other.image_, VK_NULL_HANDLE)),
@@ -72,7 +71,7 @@ AttachmentImage::AttachmentImage(AttachmentImage&& other) noexcept
       view_(std::exchange(other.view_, VK_NULL_HANDLE)), extent_(other.extent_),
       format_(other.format_) {}
 
-AttachmentImage& AttachmentImage::operator=(AttachmentImage&& other) noexcept {
+Image& Image::operator=(Image&& other) noexcept {
     if (this != &other) {
         destroy();
         device_ = std::exchange(other.device_, VK_NULL_HANDLE);
@@ -86,11 +85,11 @@ AttachmentImage& AttachmentImage::operator=(AttachmentImage&& other) noexcept {
     return *this;
 }
 
-AttachmentImage::~AttachmentImage() {
+Image::~Image() {
     destroy();
 }
 
-void AttachmentImage::destroy() noexcept {
+void Image::destroy() noexcept {
     if (view_ != VK_NULL_HANDLE) {
         vkDestroyImageView(device_, view_, nullptr);
         view_ = VK_NULL_HANDLE;
