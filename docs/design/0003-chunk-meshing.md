@@ -45,8 +45,8 @@ Non-goals:
 
 ## Prior art
 
-- **Mikola Lysenko, "Meshing in a Minecraft Game"** (0fps.net, 2012): face culling, greedy meshing, and merging only faces with the same merge key.
-- **Mikola Lysenko, "Ambient occlusion for Minecraft-like worlds"** (0fps.net, 2013): per-vertex occlusion from three neighbors, and choosing each quad's diagonal by comparing the occlusion sums of its two diagonals.
+- **Mikola Lysenko, "Meshing in a Minecraft Game"** (0fps.net, 30 June 2012): face culling and greedy meshing. Its **Part 2** (7 July 2012) meshes each block type and face direction separately: merging only faces with the same merge key.
+- **Mikola Lysenko, "Ambient occlusion for Minecraft-like worlds"** (0fps.net, 3 July 2013): per-vertex occlusion from three neighbors, the four occlusion values in the merge key, and choosing each quad's diagonal by comparing the occlusion sums of its two diagonals.
 - **cgerikj/binary-greedy-meshing**: face culling and merging with 64-bit column masks, one bit per block, instead of per-block loops.
 - **Sodium** (a Minecraft renderer mod): chunk geometry grouped by facing, so faces pointing away from the camera are skipped per chunk.
 - **Minecraft**: per-face culling and smooth lighting, without merging. The look to match; the cost to beat.
