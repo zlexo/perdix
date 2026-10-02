@@ -2,6 +2,8 @@
 
 #include "vk_result.hpp"
 
+#include <tracy/Tracy.hpp>
+
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -135,6 +137,7 @@ DeviceInfo describe_device(VkPhysicalDevice physical_device, VkSurfaceKHR surfac
 
 Result<Device> Device::create(VkInstance instance, VkPhysicalDevice physical_device,
                               const DeviceInfo& info, std::span<const char* const> extensions) {
+    ZoneScopedN("Create device");
     assert(info.queue_family.has_value() && "the device must have passed selection");
     const std::uint32_t family = *info.queue_family;
 

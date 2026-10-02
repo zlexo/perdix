@@ -12,6 +12,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
+#include <tracy/Tracy.hpp>
 
 #include <array>
 #include <cassert>
@@ -190,6 +191,7 @@ void begin_commands(VkCommandBuffer commands) {
 void record_frame(VkCommandBuffer commands, const FrameTarget& target, Color clear,
                   const GraphicsPipeline& pipeline, VkDescriptorSet textures, const DrawPush& push,
                   std::uint32_t cubes) {
+    ZoneScopedN("Record");
     begin_commands(commands);
 
     // For a swapchain image, the submission waits for the acquired image at
@@ -314,6 +316,7 @@ VkSemaphoreSubmitInfo semaphore_submit(VkSemaphore semaphore, std::uint64_t valu
 Result<void> submit(VkQueue queue, VkCommandBuffer commands,
                     std::span<const VkSemaphoreSubmitInfo> waits,
                     std::span<const VkSemaphoreSubmitInfo> signals) {
+    ZoneScopedN("Submit");
     const VkCommandBufferSubmitInfo command_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
         .pNext = nullptr,
@@ -338,6 +341,49 @@ Result<void> submit(VkQueue queue, VkCommandBuffer commands,
     return {};
 }
 
+// Blocks until the timeline reaches `value`: the GPU is done with the frames
+// that last used a slot.
+Result<void> wait_for_slot(VkDevice device, VkSemaphore frames_done, std::uint64_t value) {
+    ZoneScopedN("Wait for frame slot");
+    const VkSemaphoreWaitInfo wait = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .semaphoreCount = 1,
+        .pSemaphores = &frames_done,
+        .pValues = &value,
+    };
+    if (const VkResult result = vkWaitSemaphores(device, &wait, forever); result != VK_SUCCESS) {
+        return Error{"vkWaitSemaphores failed: " + vk_result_name(result)};
+    }
+    return {};
+}
+
+// The swapchain's next image, its index in `index`; `acquired` signals once
+// the presentation engine has let go of it.
+VkResult acquire_image(VkDevice device, VkSwapchainKHR swapchain, VkSemaphore acquired,
+                       std::uint32_t& index) {
+    ZoneScopedN("Acquire");
+    return vkAcquireNextImageKHR(device, swapchain, forever, acquired, VK_NULL_HANDLE, &index);
+}
+
+// Queues image `index` for presentation once `rendered` signals.
+VkResult present_image(VkQueue queue, VkSwapchainKHR swapchain, std::uint32_t index,
+                       VkSemaphore rendered) {
+    ZoneScopedN("Present");
+    const VkPresentInfoKHR present = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .pNext = nullptr,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &rendered,
+        .swapchainCount = 1,
+        .pSwapchains = &swapchain,
+        .pImageIndices = &index,
+        .pResults = nullptr,
+    };
+    return vkQueuePresentKHR(queue, &present);
+}
+
 VkExtent2D vk_extent(Extent extent) {
     return {.width = extent.width, .height = extent.height};
 }
@@ -345,6 +391,7 @@ VkExtent2D vk_extent(Extent extent) {
 } // namespace
 
 Result<Renderer> Renderer::create(const RendererDesc& desc) {
+    ZoneScopedN("Create renderer");
     Result<Context> context =
         Context::create({.surface = desc.surface, .validation = desc.validation});
     if (!context.has_value()) {
@@ -518,6 +565,7 @@ Result<void> Renderer::add_rendered_semaphores() {
 // nothing is recorded. Elsewhere the staged copy is submitted, and waited for
 // before its staging buffer goes away with `uploads`.
 Result<void> Renderer::upload_cube() {
+    ZoneScopedN("Upload cube");
     const Device& device = context_.device();
     UploadContext uploads(device);
     VkCommandBuffer commands = slots_[0].command_buffer;
@@ -549,6 +597,7 @@ Result<void> Renderer::upload_cube() {
 }
 
 Result<void> Renderer::recreate_target() {
+    ZoneScopedN("Recreate target");
     // The last frames, and their presentation, may still use the old target.
     vkDeviceWaitIdle(context_.device().handle());
     VkExtent2D extent = vk_extent(framebuffer_);
@@ -591,6 +640,7 @@ Result<void> Renderer::recreate_target() {
 }
 
 Result<Frame> Renderer::render(const FrameInputs& inputs) {
+    ZoneScopedN("Render");
     if (inputs.cubes.size() > max_cubes) {
         return Error{"a frame draws at most " + std::to_string(max_cubes) + " cubes, not " +
                      std::to_string(inputs.cubes.size())};
@@ -612,17 +662,9 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
     // The slot is free once the last frame that used it is done. The timeline
     // starts at 0, so the first frames do not wait.
     const std::uint64_t slot_free = frame > frames_in_flight ? frame - frames_in_flight : 0;
-    const VkSemaphoreWaitInfo slot_wait = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .semaphoreCount = 1,
-        .pSemaphores = &frames_done_,
-        .pValues = &slot_free,
-    };
-    if (const VkResult result = vkWaitSemaphores(device, &slot_wait, forever);
-        result != VK_SUCCESS) {
-        return Error{"vkWaitSemaphores failed: " + vk_result_name(result)};
+    if (const Result<void> waited = wait_for_slot(device, frames_done_, slot_free);
+        !waited.has_value()) {
+        return waited.error();
     }
     const VkSemaphoreSubmitInfo frame_done =
         semaphore_submit(frames_done_, frame, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
@@ -669,8 +711,7 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
     assert(swapchain_.has_value());
     const Swapchain& swapchain = *swapchain_;
     std::uint32_t index = 0;
-    const VkResult acquired = vkAcquireNextImageKHR(device, swapchain.handle(), forever,
-                                                    slot.image_acquired, VK_NULL_HANDLE, &index);
+    const VkResult acquired = acquire_image(device, swapchain.handle(), slot.image_acquired, index);
     if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
         swapchain_stale_ = true;
         return Frame::skipped;
@@ -706,18 +747,8 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
     }
     frame_ = frame;
 
-    VkSwapchainKHR handle = swapchain.handle();
-    const VkPresentInfoKHR present = {
-        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .pNext = nullptr,
-        .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &image_rendered_[index],
-        .swapchainCount = 1,
-        .pSwapchains = &handle,
-        .pImageIndices = &index,
-        .pResults = nullptr,
-    };
-    const VkResult presented = vkQueuePresentKHR(queue, &present);
+    const VkResult presented =
+        present_image(queue, swapchain.handle(), index, image_rendered_[index]);
     if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
         swapchain_stale_ = true;
     } else if (presented != VK_SUCCESS) {

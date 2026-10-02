@@ -2,6 +2,8 @@
 
 #include <vx/render/device.hpp>
 
+#include <tracy/Tracy.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -73,6 +75,7 @@ Result<Selection> select(const ContextDesc& desc, bool portability) {
 } // namespace
 
 Result<Context> Context::create(const ContextDesc& desc) {
+    ZoneScopedN("Create context");
     // An instance that does not opt in lists no portability driver, so MoltenVK
     // cannot win quietly. Only when that finds nothing, because no conformant
     // driver is installed or none of its devices passes the floor, opt in. That

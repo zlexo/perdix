@@ -41,6 +41,13 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
+      "name": "mac-profile",
+      "displayName": "macOS, Apple Clang, Release with the profiler",
+      "inherits": "mac",
+      "description": "The release build with Tracy compiled in, and debug info for its call stacks and source view.",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_C_FLAGS": "-g", "CMAKE_CXX_FLAGS": "-g", "VX_PROFILE": "ON" }
+    },
+    {
       "name": "mac-ubsan",
       "displayName": "macOS, Apple Clang, UndefinedBehaviorSanitizer",
       "inherits": "mac",
@@ -67,8 +74,8 @@
       "name": "linux-lavapipe",
       "displayName": "Linux, Clang 22, Debug, for lavapipe",
       "inherits": "linux",
-      "description": "The lavapipe job's build. The job runs Ubuntu 26.04, for its validation layers, and Clang 22 is that image's newest.",
-      "cacheVariables": { "CMAKE_C_COMPILER": "clang-22", "CMAKE_CXX_COMPILER": "clang++-22", "CMAKE_BUILD_TYPE": "Debug" }
+      "description": "The lavapipe job's build. The job runs Ubuntu 26.04, for its validation layers, and Clang 22 is that image's newest. The profiler is compiled in, so Tracy's code builds on Linux and its Vulkan calls run under validation.",
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang-22", "CMAKE_CXX_COMPILER": "clang++-22", "CMAKE_BUILD_TYPE": "Debug", "VX_PROFILE": "ON" }
     },
     {
       "name": "linux-asan",
@@ -85,6 +92,7 @@
   "buildPresets": [
     { "name": "mac-debug", "configurePreset": "mac-debug" },
     { "name": "mac-release", "configurePreset": "mac-release" },
+    { "name": "mac-profile", "configurePreset": "mac-profile" },
     { "name": "mac-ubsan", "configurePreset": "mac-ubsan" },
     { "name": "linux-gcc", "configurePreset": "linux-gcc" },
     { "name": "linux-clang", "configurePreset": "linux-clang" },
@@ -100,6 +108,7 @@
     },
     { "name": "mac-debug", "inherits": "base", "configurePreset": "mac-debug" },
     { "name": "mac-release", "inherits": "base", "configurePreset": "mac-release" },
+    { "name": "mac-profile", "inherits": "base", "configurePreset": "mac-profile" },
     {
       "name": "mac-ubsan",
       "inherits": "base",

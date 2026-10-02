@@ -17,6 +17,7 @@ set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 option(VX_WARNINGS_AS_ERRORS "Treat compiler warnings in engine code as errors" ON)
 option(VX_BUILD_TESTS "Build the unit tests" ${PROJECT_IS_TOP_LEVEL})
+option(VX_PROFILE "Compile in the Tracy profiler: CPU and GPU zones, frames and allocations" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(VxWarnings)
