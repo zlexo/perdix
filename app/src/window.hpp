@@ -1,6 +1,9 @@
 #pragma once
 
 #include <vx/core/result.hpp>
+#include <vx/render/context.hpp>
+
+#include <string>
 
 struct SDL_Window;
 
@@ -10,7 +13,14 @@ namespace vx::app {
 // subsystem, and destroying it shuts SDL down.
 class Window {
 public:
-    [[nodiscard]] static Result<Window> create(const char* title, int width, int height);
+    // A window the renderer can draw into with Vulkan. SDL loads a Vulkan
+    // library for that itself, and searching on its own it can take MoltenVK's
+    // in place of the loader: with the Vulkan SDK's environment set, its first
+    // candidate, an app bundle's MoltenVK, resolves through DYLD_LIBRARY_PATH
+    // to the SDK's. `vulkan_loader` names the loader file the engine uses, so
+    // SDL loads that one; empty lets SDL search.
+    [[nodiscard]] static Result<Window> create(const char* title, int width, int height,
+                                               const std::string& vulkan_loader);
 
     Window(Window&& other) noexcept;
     Window& operator=(Window&& other) noexcept;
@@ -20,6 +30,10 @@ public:
 
     // Handles every pending event. False once the window should close.
     [[nodiscard]] bool handle_events();
+
+    // How the renderer makes this window's Vulkan surface. Valid while the
+    // window lives.
+    [[nodiscard]] render::SurfaceSource surface_source() const;
 
     [[nodiscard]] SDL_Window* handle() const noexcept { return window_; }
 

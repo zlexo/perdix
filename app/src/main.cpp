@@ -3,13 +3,13 @@
 #include <vx/core/version.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/device_report.hpp>
+#include <vx/render/instance.hpp>
 
 #include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -59,20 +59,29 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Perdix " << vx::version_string() << '\n';
 
-    vx::Result<vx::render::Context> context =
-        vx::render::Context::create({.surface = std::nullopt, .validation = validation});
+    // SDL loads a Vulkan library for the window's surface, and it must be the
+    // engine's loader: a driver's library does not understand the loader's
+    // instances (see Window::create).
+    const vx::Result<std::string> loader = vx::render::vulkan_loader_path();
+    if (!loader.has_value()) {
+        std::cerr << "error: " << loader.error().message << '\n';
+        return 1;
+    }
+    vx::Result<vx::app::Window> window =
+        vx::app::Window::create("Perdix", 1280, 720, loader.value());
+    if (!window.has_value()) {
+        std::cerr << "error: " << window.error().message << '\n';
+        return 1;
+    }
+
+    vx::Result<vx::render::Context> context = vx::render::Context::create(
+        {.surface = window.value().surface_source(), .validation = validation});
     if (!context.has_value()) {
         std::cerr << "error: " << context.error().message << '\n';
         return 1;
     }
     std::cout << vx::render::format_device_report(context.value().device_info(),
                                                   context.value().portability_fallback());
-
-    vx::Result<vx::app::Window> window = vx::app::Window::create("Perdix", 1280, 720);
-    if (!window.has_value()) {
-        std::cerr << "error: " << window.error().message << '\n';
-        return 1;
-    }
     const std::uint64_t frames = options.value().frames;
     for (std::uint64_t frame = 0; frames == 0 || frame < frames; ++frame) {
         if (!window.value().handle_events()) {
