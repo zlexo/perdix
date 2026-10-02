@@ -72,7 +72,8 @@ Below `app`, nothing creates a thread: `world` and `mesh` are functions and sing
 |---|---|---|
 | Current chunk versions, the chunk map, pins | world thread | world thread |
 | A pinned chunk version, a mesh job's record | nobody while in use | the jobs holding it, the world thread |
-| Block visuals (RFC 0004), generator settings (RFC 0008) | before jobs run | everyone |
+| Block visuals (RFC 0004) | before jobs run | everyone |
+| Plans and parameter snapshots (RFC 0008) | the world thread, then frozen | the jobs pinning them |
 | Worker scratch | its worker | its worker |
 | Job queue, inboxes | any thread, under their lock | workers, inbox owners |
 
@@ -83,8 +84,9 @@ Below `app`, nothing creates a thread: `world` and `mesh` are functions and sing
 3. Writing to a pinned chunk first copies it (copy on write); the map points at the copy, and the frozen version stays for its jobs.
 4. Pins are plain integers changed only by the world thread: up when it submits a job, down when the job's completion (its last act) arrives or a cancel succeeds, on exactly the versions the job's record names, never on whatever is current by then.
 5. A version that is neither current nor pinned is freed at once, so an unloaded chunk lives until its last job reports back.
+6. The same rules cover RFC 0008's plans and parameter snapshots: a build job pins the 27 plans it reads and the snapshot they were made with, so a neighbor leaving the region, a dropped plan or new parameters published mid-build (RFC 0006) cannot free what a job reads.
 
-A mesh job pins its chunk and the 26 neighbors: 27 increments, and no copy unless an edit lands while the job runs. The world thread keeps one record per job in flight, in a pool sized to the job slots: the versions it pinned, the chunk's load id (never reused) and a sequence number. The job captures a pointer to its record. The worker builds RFC 0003's padded chunk in its scratch from the pinned versions with `to_dense` and `copy_face`. Jobs that compute changes (decoration, later light) return them as data for the world thread to apply.
+A mesh job pins its chunk and the 26 neighbors: 27 increments, and no copy unless an edit lands while the job runs. The world thread keeps one record per job in flight, in a pool sized to the job slots: the versions it pinned, the chunk's load id (never reused) and a sequence number. The job captures a pointer to its record. A uniform neighbor has no blocks to pin; its state goes into the job record instead. The worker builds RFC 0003's padded chunk in its scratch from the pinned versions with `to_dense`, `copy_face` and `get` (for the edge and corner neighbors). Jobs that compute changes (decoration, later light) return them as data for the world thread to apply.
 
 Pins need no atomics. Ordering comes from the queues: the world thread's writes precede the submit (a lock release), the worker's reads follow the take (the matching acquire), and the unpin follows draining the completion (another pair).
 
