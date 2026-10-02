@@ -24,3 +24,13 @@ target_include_directories(vx_volk SYSTEM PUBLIC
     "${volk_SOURCE_DIR}")
 target_compile_definitions(vx_volk PUBLIC VK_NO_PROTOTYPES)
 target_link_libraries(vx_volk PRIVATE ${CMAKE_DL_LIBS})
+
+add_library(vx_render STATIC
+    src/feature_floor.cpp)
+add_library(vx::render ALIAS vx_render)
+
+target_include_directories(vx_render PUBLIC include)
+target_link_libraries(vx_render PUBLIC vx::core vx_volk)
+target_compile_features(vx_render PUBLIC cxx_std_20)
+vx_target_warnings(vx_render)
+vx_target_engine_options(vx_render)
