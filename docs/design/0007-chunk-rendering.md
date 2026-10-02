@@ -31,7 +31,7 @@ Goals:
 Non-goals:
 
 - Which chunks are loaded, and when: RFC 0006.
-- Threads, the queue that delivers finished meshes, and cancelling stale jobs: RFC 0005.
+- Threads, the queue that delivers finished meshes, and canceling stale jobs: RFC 0005.
 - Occlusion culling and level of detail: M9.
 - Translucency and water: M7. Lighting: M6.
 - The device, frames in flight and the upload helper: RFC 0001.
@@ -88,18 +88,18 @@ A face group holds at most 32,768 quads (one direction of a checkerboard of two 
 
 ### Uploads
 
-Finished meshes arrive in the order RFC 0005 delivers them and are handled on the render thread, which alone owns the arena:
+Finished meshes arrive in the order RFC 0005 delivers them and are handled on the main thread, which renders (RFC 0005) and alone owns the arena:
 
 1. An update older than the record's generation is dropped: two remeshes of one chunk can finish out of order.
 2. An empty mesh removes the record. Otherwise: allocate, write the 12 groups, retire the old range.
-3. **Unified memory:** `memcpy` into the mapped arena. Writes to coherent memory made before a submission are visible to it, so no barrier is needed. A 32 KiB mesh copies in about 0.7 µs on an idle reference machine.
-4. **Discrete GPUs:** write into the frame slot's staging ring and record a copy region, executed before the chunk passes behind one barrier. Copies share the graphics queue: KosmicKrisp has no other, and a transfer queue would only pay off on discrete hardware we cannot measure.
+3. **Host-visible arena** (unified memory): `memcpy` into the mapped arena. Writes to coherent memory made before a submission are visible to it, so no barrier is needed. A 32 KiB mesh copies in about 0.7 µs on an idle reference machine.
+4. **Arena not host-visible** (most discrete GPUs): write into the frame slot's staging ring and record a copy region, executed before the chunk passes behind one barrier. Copies share the graphics queue: KosmicKrisp has no other, and a transfer queue would only pay off on discrete hardware we cannot measure.
 
 The budget is time: 1 ms per frame by default, plus the staging ring's free space. The first write to a page costs several times more than later ones (about seven times in the probe), so bytes would be the wrong unit while the arena is fresh. Meshes that do not fit wait, in order, on the main thread for the next frame; a loading screen raises the budget. An edit's batch (RFC 0005) goes ahead of waiting streaming meshes and is uploaded whole in the frame it arrives, outside the budget: at most 8 meshes, microseconds on unified memory. Every write goes through RFC 0001's `upload` helper, which takes the destination offset.
 
 ### Per-chunk data and the vertex shader
 
-Each command's `vertexOffset` is four times the first quad of its run, so `gl_VertexIndex >> 2` is the quad's index in the whole arena, and RFC 0003's shared index buffer (the pattern 0, 1, 2, 2, 3, 0, offset by 4 per quad; 32-bit, sized for the 196,608-quad worst case, because one command can cover all of a chunk's cutout groups: 4.5 MiB) serves every command with `firstIndex` 0. `firstInstance` is the chunk's slot in this frame's array of origins, so `drawIndirectFirstInstance` joins RFC 0001's feature floor.
+Each command's `vertexOffset` is four times the first quad of its run, so `gl_VertexIndex >> 2` is the quad's index in the whole arena, and RFC 0003's shared index buffer (the pattern 0, 1, 2, 2, 3, 0, offset by 4 per quad; 32-bit, sized for the 196,608-quad worst case, because one command can cover all of a chunk's cutout groups: 4.5 MiB) serves every command with `firstIndex` 0. `firstInstance` is the chunk's slot in this frame's array of origins, which is why `drawIndirectFirstInstance` is in RFC 0001's feature floor.
 
 The origin is computed on the CPU in 64-bit, as RFC 0001 requires, relative to the block the camera is in. That makes it an integer, exact as a float, and the camera's fraction is subtracted per vertex: a corner shared by two chunks gets the same float from both, so neighbors meet without cracks.
 
@@ -124,7 +124,7 @@ The origins and the commands live in one host-visible buffer per frame slot, gro
 
 ### Culling
 
-Each frame the render thread walks the records once:
+Each frame the main thread walks the records once:
 
 - **Frustum:** the chunk's 32-block cube against the near plane and the four side planes. The far plane is at infinity (RFC 0001); streaming bounds the distance.
 - **Face direction:** with `o` the chunk's corner relative to the camera's block, +x quads can face the camera only if `o.x <= 0`, and -x quads only if `o.x >= -31`; likewise for y and z. Integer tests, conservative by one block.
@@ -163,7 +163,7 @@ struct ChunkMeshUpdate {
     ChunkMesh mesh;             // RFC 0003's ranges, in a buffer from RFC 0005's MeshResultPool
 };
 
-// Owned by Renderer (RFC 0001); render thread only.
+// Owned by Renderer (RFC 0001); main thread only (RFC 0005).
 class ChunkRenderer {
 public:
     // Copies the quads; the mesh memory is free again on return. False when
