@@ -58,6 +58,9 @@ public:
     // Clears the target to `clear`, and presents it when it is a window's.
     [[nodiscard]] Result<Frame> render(Color clear);
 
+    // Headless only: the last frame's pixels, 8-bit RGBA, row after row.
+    [[nodiscard]] Result<std::vector<std::uint8_t>> capture();
+
     [[nodiscard]] const Context& context() const noexcept { return context_; }
     // Null when headless.
     [[nodiscard]] const Swapchain* swapchain() const noexcept {
