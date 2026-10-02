@@ -192,9 +192,6 @@ void begin_commands(VkCommandBuffer commands) {
     vkBeginCommandBuffer(commands, &begin);
 }
 
-// One frame's commands: the image becomes a color attachment, is cleared, has
-// the cubes drawn, and, for a swapchain, becomes presentable. An offscreen
-// image stays a color attachment, ready for the next frame or for capture.
 // What a frame's passes draw, besides the target they draw into.
 struct FrameDraw {
     Color clear;
@@ -311,7 +308,10 @@ void record_overlay_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx
 }
 
 // Records a frame's work into `commands`, inside the GPU zone Frame: the
-// targets' transitions around the cube pass.
+// target becomes a color attachment, the cube pass clears it and draws the
+// cubes, the overlay's pass draws over them when there is an overlay, and a
+// swapchain image then becomes presentable. An offscreen image stays a color
+// attachment, ready for the next frame or for capture.
 void record_passes(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_profiler,
                    const FrameTarget& target, const FrameDraw& draw) {
     TracyVkNamedZone(gpu_profiler, frame_zone, commands, "Frame", gpu_profiler != nullptr);
