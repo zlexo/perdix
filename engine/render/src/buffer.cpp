@@ -23,6 +23,11 @@ VmaAllocationCreateInfo allocation_info(BufferMemory memory) {
     case BufferMemory::device_local:
         info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
         break;
+    case BufferMemory::staging:
+        info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                     VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        info.usage = VMA_MEMORY_USAGE_AUTO;
+        break;
     case BufferMemory::readback:
         info.flags =
             VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;

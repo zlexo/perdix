@@ -53,6 +53,7 @@ add_library(vx_render STATIC
     src/surface.cpp
     src/swapchain.cpp
     src/swapchain_choice.cpp
+    src/upload.cpp
     src/vk_result.cpp)
 add_library(vx::render ALIAS vx_render)
 
