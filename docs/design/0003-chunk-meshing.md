@@ -75,7 +75,7 @@ struct BlockVisual {
 
 ### Face culling with column bitmasks
 
-For each axis, every row of 34 blocks along that axis becomes two 64-bit masks, one bit per block: `draws` (the block has faces: opaque or cutout) and `hides` (the block hides the faces next to it: opaque). A face is visible where a block that draws sits next to one that does not hide, which is two shifts and an and-not for a whole row:
+For each axis, every row of 34 blocks along that axis becomes two 64-bit masks, one bit per block: `draws` (the block has faces: opaque or cutout) and `hides` (the block hides the faces next to it: opaque). A face is visible where a block that draws sits next to one that does not hide, which is one shift and one and-not per direction for a whole row:
 
 ```cpp
 // Bit i is block i along the row, padding included (bits 0 and 33).
@@ -118,7 +118,7 @@ namespace vx {
 // One visible rectangle of faces. The vertex shader rebuilds its four
 // corners; the chunk's camera-relative origin comes from per-draw data.
 struct Quad {
-    std::uint32_t geometry;   // x:5 y:5 z:5 | width-1:5 height-1:5 | face:3 | spare:4
+    std::uint32_t geometry;   // x:5 y:5 z:5 | width-1:5 height-1:5 | face:3 (RFC 0002's Face) | spare:4
     std::uint32_t material;   // texture layer:16 | AO 4 corners x 2 bits | spare:8
 };
 static_assert(sizeof(Quad) == 8);
@@ -163,7 +163,7 @@ namespace vx {
 enum class Pass : std::uint8_t { opaque, cutout };
 
 struct ChunkMesh {
-    // ranges[pass][face], faces in the order +x, -x, +y, -y, +z, -z.
+    // ranges[pass][face], indexed by RFC 0002's Face (+x, -x, +y, -y, +z, -z).
     std::array<std::array<std::span<const Quad>, 6>, 2> ranges;
 };
 
@@ -227,7 +227,7 @@ The prototype column comes from a throwaway implementation of culling, occlusion
 5. Ambient occlusion, with tests.
 6. Merging, with the coverage property test and before and after quad counts.
 7. Drawing one chunk: upload, the shared index buffer, the decoding vertex shader. The M2 milestone image.
-8. Overlay toggles: wireframe, merging, ambient occlusion, quad counts. Wireframe draws with `VK_POLYGON_MODE_LINE`, which needs the `fillModeNonSolid` feature. Like `samplerAnisotropy`, it is outside RFC 0001's floor: enabled when the device offers it, and without it the toggle is hidden.
+8. Overlay toggles: wireframe, merging, ambient occlusion, quad counts. Wireframe draws with `VK_POLYGON_MODE_LINE`, which needs the `fillModeNonSolid` feature. Like `samplerAnisotropy`, it is outside RFC 0001's floor: enabled when the device offers it, and without it the toggle is hidden. KosmicKrisp does not offer it (RFC 0001), so on the reference machine the toggle shows only under MoltenVK (`VK_DRIVER_FILES`); edges drawn in the fragment shader from quad-local coordinates would need no feature at all.
 
 ## Open questions
 
