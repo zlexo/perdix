@@ -73,6 +73,9 @@ struct ChunkPos { std::int32_t x, y, z; };   // world chunk coordinates (block >
 constexpr ChunkPos chunk_of(BlockPos p) noexcept {
     return {p.x >> chunk_bits, p.y >> chunk_bits, p.z >> chunk_bits};
 }
+
+// The six faces of a block or a chunk, in RFC 0003's order.
+enum class Face : std::uint8_t { pos_x, neg_x, pos_y, neg_y, pos_z, neg_z };
 ```
 
 - Chunks are **cubic**, 32 by 32 by 32. There is no fixed world height: chunks exist wherever generation puts them, up and down (open question 2).
