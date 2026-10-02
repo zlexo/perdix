@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Accepted (2026-10-02) |
 | **Milestone** | M3 Infinite |
 | **Issue** | #19 |
 
@@ -268,6 +268,8 @@ Targets on the reference machine, release build. Scheduler numbers from nanobenc
 9. The sweep and the 10-minute run on the reference machine; defaults set from them, with the numbers in the pull request.
 
 ## Open questions
+
+All settled on 2026-10-02: every recommendation below was accepted.
 
 1. **Render on the main thread or its own.** Recommendation: **the main thread**. With the world on its own thread, a frame is a queue drain and a few draws; a render thread adds a frame of latency and double-buffered state. Revisit if RFC 0007's frame budget is missed.
 2. **Pins or copies for job inputs.** Recommendation: **pins**: 27 increments per mesh job instead of tens of KiB of copying, with a copy only when an edit lands mid-job. The price is `clone()` and world-side compaction in RFC 0002.
