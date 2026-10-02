@@ -7,6 +7,8 @@
 
 #include <volk.h>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -34,7 +36,8 @@ enum class Frame : std::uint8_t {
 };
 
 // Draws frames into the window. For now each frame clears it to one color
-// (RFC 0001 plan item 4), with one frame in flight; item 5 overlaps two.
+// (RFC 0001 plan item 4), with two frames in flight: the CPU records frame
+// N + 1 while the GPU draws frame N.
 class Renderer {
 public:
     [[nodiscard]] static Result<Renderer> create(const RendererDesc& desc);
@@ -70,13 +73,21 @@ private:
     PresentMode present_mode_;
     bool swapchain_stale_ = false;
 
-    VkCommandPool command_pool_ = VK_NULL_HANDLE;
-    VkCommandBuffer command_buffer_ = VK_NULL_HANDLE;
-    VkSemaphore image_acquired_ = VK_NULL_HANDLE;
+    // RFC 0001: two, since more would add a frame of input latency.
+    static constexpr std::size_t frames_in_flight = 2;
+
+    // What one frame in flight owns. Frame N uses slot N % frames_in_flight
+    // and reuses it once frame N - frames_in_flight is done.
+    struct FrameSlot {
+        VkCommandPool command_pool = VK_NULL_HANDLE;
+        VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+        VkSemaphore image_acquired = VK_NULL_HANDLE;
+    };
+    std::array<FrameSlot, frames_in_flight> slots_{};
     // One per swapchain image, not per frame: the presentation engine may hold
     // one after the frame that signaled it is done (RFC 0001).
     std::vector<VkSemaphore> image_rendered_;
-    // A timeline semaphore: frame N signals N, and frame N + 1 waits for it.
+    // A timeline semaphore: frame N signals N.
     VkSemaphore frames_done_ = VK_NULL_HANDLE;
     std::uint64_t frame_ = 0;
 };
