@@ -13,9 +13,13 @@
       "name": "mac",
       "hidden": true,
       "inherits": "base",
-      "description": "Apple Clang, chosen by path so an older clang++ earlier on PATH is never picked up.",
+      "description": "Apple Clang, chosen by path so an older clang++ earlier on PATH is never picked up, and flags of its own: CMake would otherwise start them from the shell's CFLAGS, CXXFLAGS and LDFLAGS, and the LDFLAGS Homebrew suggests for llvm@14 links LLVM 14's libunwind into every executable.",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
-      "cacheVariables": { "CMAKE_C_COMPILER": "/usr/bin/clang", "CMAKE_CXX_COMPILER": "/usr/bin/clang++" }
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "/usr/bin/clang", "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
+        "CMAKE_C_FLAGS": "", "CMAKE_CXX_FLAGS": "",
+        "CMAKE_EXE_LINKER_FLAGS": "", "CMAKE_SHARED_LINKER_FLAGS": "", "CMAKE_MODULE_LINKER_FLAGS": ""
+      }
     },
     {
       "name": "linux",
