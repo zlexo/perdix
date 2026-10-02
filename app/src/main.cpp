@@ -90,5 +90,14 @@ int main(int argc, char* argv[]) {
         // Until presenting paces the frames (RFC 0001 plan item 4), wait out one at 60 Hz.
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
+
+    // With validation on, a run that broke Vulkan's rules fails, so a smoke run
+    // with --frames catches it. Messages from shutting down still print.
+    const std::uint32_t errors = context.value().instance().validation_counts().errors;
+    if (errors > 0) {
+        std::cerr << "error: Vulkan validation counted " << errors
+                  << (errors == 1 ? " error\n" : " errors\n");
+        return 3;
+    }
     return 0;
 }
