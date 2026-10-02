@@ -133,7 +133,7 @@ The four occlusion values sit in bits 16 to 23 of `material`, two bits per corne
 
 ### Drawing a quad
 
-Quads are drawn with one static index buffer shared by every chunk, holding the pattern 0, 1, 2, 2, 3, 0 for quad 0, then the same offset by 4 for each following quad. The vertex shader finds its quad as `vertex_index >> 2` and its corner from `vertex_index & 3`, so each corner is shaded once and reused through the vertex cache.
+Quads are drawn with one static index buffer shared by every chunk, holding the pattern 0, 1, 2, 2, 3, 0 for quad 0, then the same offset by 4 for each following quad. RFC 0007 makes the indices 32-bit, since 16-bit ones would stop at 16,384 quads per draw, and sizes the buffer for the worst case of 98,304 quads: 98,304 × 6 indices × 4 bytes = 2.25 MiB. The vertex shader finds its quad as `vertex_index >> 2` and its corner from `vertex_index & 3`, so each corner is shaded once and reused through the vertex cache.
 
 The pattern splits every quad along the diagonal through corners 0 and 2. Where the four occlusion values are not coplanar, the two possible splits interpolate them differently, so a fixed split shades the same arrangement of blocks differently depending on which way the quad is turned: a lone dark corner stays in its own triangle under one split and smears in a stripe along the diagonal under the other. Lysenko compares the sums of the two diagonals, `a00 + a11 > a01 + a10`, and splits along the one with the larger sum, the brighter one, which keeps a lone dark corner in its own triangle. His a00 and a11 are corners 0 and 2 here:
 
