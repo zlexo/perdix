@@ -79,7 +79,7 @@ Result<Swapchain> Swapchain::create(const Device& device, VkSurfaceKHR surface, 
 
     swapchain.views_.reserve(count);
     for (std::size_t index = 0; index < swapchain.images_.size(); ++index) {
-        const VkImage image = swapchain.images_[index];
+        VkImage image = swapchain.images_[index];
         // The image and its view: what a frame draws to, image by image.
         const std::string name = "swapchain image " + std::to_string(index);
         set_debug_name(swapchain.device_, image, name);
