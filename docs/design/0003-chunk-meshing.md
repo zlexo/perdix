@@ -46,7 +46,7 @@ Non-goals:
 ## Prior art
 
 - **Mikola Lysenko, "Meshing in a Minecraft Game"** (0fps.net, 2012): face culling, greedy meshing, and merging only faces with the same merge key.
-- **Mikola Lysenko, "Ambient occlusion for Minecraft-like worlds"** (0fps.net, 2013): per-vertex occlusion from three neighbors, and flipping a quad's diagonal so occlusion interpolates evenly.
+- **Mikola Lysenko, "Ambient occlusion for Minecraft-like worlds"** (0fps.net, 2013): per-vertex occlusion from three neighbors, and choosing each quad's diagonal by comparing the occlusion sums of its two diagonals.
 - **cgerikj/binary-greedy-meshing**: face culling and merging with 64-bit column masks, one bit per block, instead of per-block loops.
 - **Sodium** (a Minecraft renderer mod): chunk geometry grouped by facing, so faces pointing away from the camera are skipped per chunk.
 - **Minecraft**: per-face culling and smooth lighting, without merging. The look to match; the cost to beat.
@@ -133,9 +133,18 @@ The four occlusion values sit in bits 16 to 23 of `material`, two bits per corne
 
 ### Drawing a quad
 
-Quads are drawn with one static index buffer shared by every chunk, holding the pattern 0, 1, 2, 2, 3, 0 for quad 0, then the same offset by 4 for each following quad. The vertex shader finds its quad as `vertex_index >> 2` and its corner as `vertex_index & 3`, so each corner is shaded once and reused through the vertex cache.
+Quads are drawn with one static index buffer shared by every chunk, holding the pattern 0, 1, 2, 2, 3, 0 for quad 0, then the same offset by 4 for each following quad. The vertex shader finds its quad as `vertex_index >> 2` and its corner from `vertex_index & 3`, so each corner is shaded once and reused through the vertex cache.
 
-Ambient occlusion needs the quad split along the diagonal whose corners are more alike, or the darkening smears in a visible stripe. The index pattern stays fixed; the shader rotates which corner each vertex plays when the other diagonal is the better split. No extra bits, no second index buffer.
+The pattern splits every quad along the diagonal through corners 0 and 2. Where the four occlusion values are not coplanar, the two possible splits interpolate them differently, so a fixed split shades the same arrangement of blocks differently depending on which way the quad is turned: a lone dark corner stays in its own triangle under one split and smears in a stripe along the diagonal under the other. Lysenko compares the sums of the two diagonals, `a00 + a11 > a01 + a10`, and splits along the one with the larger sum, the brighter one, which keeps a lone dark corner in its own triangle. His a00 and a11 are corners 0 and 2 here:
+
+```cpp
+// In the vertex shader. ao[c] is the occlusion value of corner c, 3 fully lit.
+// rotate: the diagonal through corners 1 and 3 is brighter, so every vertex
+// plays the next corner, (c + 1) & 3, which moves the split onto it.
+const bool rotate = ao[1] + ao[3] > ao[0] + ao[2];
+```
+
+A tie keeps the split through corners 0 and 2, where Lysenko's code takes the other one. Equal sums mean the four values are coplanar, and then both splits interpolate them identically, so a tie only has to be broken the same way every time. The index pattern stays fixed: no extra bits, no second index buffer.
 
 ### Output
 
@@ -188,7 +197,8 @@ The prototype column comes from a throwaway implementation of culling, occlusion
 - **A full chunk surrounded by air:** 6 quads of 32 by 32.
 - **Quad encoding:** every field round-trips at its limits (positions 0 and 31, sizes 1 and 32, all six faces), and the +x, +y and +z quads of a block at 31 decode to corners at 32.
 - **Borders:** a solid neighbor chunk hides this chunk's border faces; an unloaded one does not.
-- **Ambient occlusion:** known corner arrangements give the values in Lysenko's table, and the diagonal choice is checked for each case.
+- **Ambient occlusion:** known corner arrangements give the values in Lysenko's table.
+- **Diagonal:** for all 256 combinations of four 2-bit occlusion values, the decoded quad's two triangles share the diagonal that a reference implementation of Lysenko's comparison picks (ties through corners 0 and 2), and keep their winding.
 - **Coverage property:** for many random chunks (seeded), the merged mesh covers exactly the faces the unmerged mesh produces, each once, with the same texture and occlusion. This one test proves merging never adds, drops or changes a face.
 - **Look, by hand:** the chunk renders with merging on and off and looks identical; occlusion darkens inner corners the way Minecraft's smooth lighting does.
 
