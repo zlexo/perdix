@@ -67,7 +67,7 @@ Dependencies come from CMake's built-in `FetchContent`, pinned to a release tag 
 ```
 CMakeLists.txt          project, options, layers
 CMakePresets.json       every configuration, sanitizer builds included (#18)
-cmake/                  helper modules (warnings)
+cmake/                  helper modules (warnings, floating point)
 engine/
   core/
     include/vx/core/    public headers
@@ -94,6 +94,12 @@ Applied per target through `vx_target_warnings(<target>)`, only to our own targe
 - MSVC: `/W4 /permissive-`
 
 Warnings are errors (`-Werror`, `/WX`) through the option `VX_WARNINGS_AS_ERRORS`, on by default.
+
+### Floating point
+
+Every engine target compiles with `-ffp-contract=off` (MSVC: `/fp:precise`, which stopped contracting by default in Visual Studio 2022), applied per target by the same CMake helper module as the warnings. Nothing in the build, dependencies included, uses `-ffast-math` or `/fp:fast`.
+
+The reason is terrain generation, which must give the same bits on arm64 and x86-64 (RFC 0008). Clang, Apple Clang included, fuses `a * b + c` into one multiply-add by default wherever the CPU has one. Every arm64 CPU does and baseline x86-64 does not, so the same code rounds differently on the two, which RFC 0008 measured on the reference machine. With contraction off, both round every operation alike. RFC 0008's golden hashes check the result on every compiler and architecture; its control, an arm64 build with `-ffp-contract=fast` that must fail them, proves they can.
 
 ### Tests
 
