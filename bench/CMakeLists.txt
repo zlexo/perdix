@@ -16,8 +16,9 @@ target_compile_features(vx_nanobench PUBLIC cxx_std_20)
 # Every benchmark, in one program. Run a release build for numbers; CI runs
 # every build's with --quick, which checks they still run and times nothing.
 add_executable(vx_bench
-    main.cpp)
-target_link_libraries(vx_bench PRIVATE vx_nanobench)
+    main.cpp
+    world/packed_array_bench.cpp)
+target_link_libraries(vx_bench PRIVATE vx::world vx_nanobench)
 vx_target_warnings(vx_bench)
 
 if(VX_BUILD_TESTS)

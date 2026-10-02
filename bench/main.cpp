@@ -1,3 +1,5 @@
+#include "benchmarks.hpp"
+
 #include <nanobench.h>
 
 #include <cstddef>
@@ -31,6 +33,6 @@ int main(int argc, char* argv[]) {
     if (quick) {
         bench.epochs(1).epochIterations(1);
     }
-    static_cast<void>(bench); // the benchmarks come next
+    vx::bench::packed_array(bench);
     return 0;
 }
