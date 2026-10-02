@@ -47,6 +47,7 @@ add_library(vx_render STATIC
     src/feature_floor.cpp
     src/instance.cpp
     src/surface.cpp
+    src/swapchain.cpp
     src/swapchain_choice.cpp
     src/vk_result.cpp)
 add_library(vx::render ALIAS vx_render)

@@ -3,6 +3,8 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+#include <algorithm>
+#include <cstdint>
 #include <span>
 #include <string>
 #include <utility>
@@ -71,6 +73,14 @@ render::SurfaceSource Window::surface_source() const {
             return surface;
         },
     };
+}
+
+render::Extent Window::framebuffer_size() const {
+    int width = 0;
+    int height = 0;
+    SDL_GetWindowSizeInPixels(window_, &width, &height);
+    return {.width = static_cast<std::uint32_t>(std::max(width, 0)),
+            .height = static_cast<std::uint32_t>(std::max(height, 0))};
 }
 
 void Window::destroy() noexcept {

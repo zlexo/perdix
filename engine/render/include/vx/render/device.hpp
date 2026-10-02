@@ -7,6 +7,7 @@
 #include <volk.h>
 
 #include <cstdint>
+#include <span>
 
 namespace vx::render {
 
@@ -22,11 +23,14 @@ namespace vx::render {
 // Device may exist at a time.
 class Device {
 public:
-    // Enables the feature floor, each optional feature the device offers, and
+    // Enables the feature floor, each optional feature the device offers,
     // VK_KHR_portability_subset when the device lists it, as the specification
-    // requires. `info` describes `physical_device`, which passed selection.
-    [[nodiscard]] static Result<Device>
-    create(VkInstance instance, VkPhysicalDevice physical_device, const DeviceInfo& info);
+    // requires, and `extensions`, such as VK_KHR_swapchain for a window. `info`
+    // describes `physical_device`, which passed selection.
+    [[nodiscard]] static Result<Device> create(VkInstance instance,
+                                               VkPhysicalDevice physical_device,
+                                               const DeviceInfo& info,
+                                               std::span<const char* const> extensions);
 
     Device(Device&& other) noexcept;
     Device& operator=(Device&& other) noexcept;
