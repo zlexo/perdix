@@ -16,7 +16,7 @@ RFC 0002 made every block a 16-bit number, and nothing yet says what a number me
 
 - **Stable numbers.** A test chunk or a saved world has to mean the same blocks tomorrow and on another machine.
 - **A one-read lookup.** The mesher asks what each block looks like. A table indexed by state answers in one array read, at 14 bytes per state: under 14 KiB for a thousand states.
-- **Textures that hold up far away.** At 1440p with RFC 0001's 70 degree field of view, a 16-texel face seen head-on drops below one texel per pixel at about 64 blocks. Beyond that, unfiltered textures shimmer, trilinear filtering alone blurs ground seen at a shallow angle, and naive mipmaps darken the edges of leaves and thin them out. Minecraft fixed its dark mipmap edges only in release 1.21.11, in December 2025. At long view distance, most of the screen is that far away.
+- **Textures that hold up far away.** At 1440p with RFC 0001's 70 degree field of view, a 16-texel face seen head-on drops below one pixel per texel at about 64 blocks (74 on the reference display's 1,664 rows). Beyond that, unfiltered textures shimmer, trilinear filtering alone blurs ground seen at a shallow angle, and naive mipmaps darken the edges of leaves and thin them out. Minecraft fixed its dark mipmap edges only in release 1.21.11, in December 2025. At long view distance, most of the screen is that far away.
 
 ## Goals and non-goals
 
