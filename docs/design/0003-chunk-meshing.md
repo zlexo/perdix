@@ -173,6 +173,8 @@ ChunkMesh mesh_chunk(const PaddedChunk& blocks, std::span<const BlockVisual> vis
 } // namespace vx
 ```
 
+The spans point into `scratch`, so they are valid only until the next call that uses it. A caller that keeps the quads copies them out first: RFC 0005's mesh job copies them into a result buffer before its worker takes another job.
+
 Cutout faces (leaves, glass) get ranges of their own because they need an alpha test. Apple's GPUs handle fragments that may be discarded less efficiently in hidden surface removal, and Apple asks for them to be drawn after all opaque geometry; separate ranges let RFC 0007 do exactly that.
 
 Grouping by face direction lets the renderer skip the ranges that face away from the camera: for a chunk entirely above the camera, its upward faces cannot be seen. That roughly halves the quads drawn, at no cost here beyond keeping twelve ranges instead of one. RFC 0007 stores the ranges in GPU memory as +x, +y, +z, -x, -y, -z, an order in which the faces a camera sees form fewer draw commands, and reorders them when it uploads a mesh.
