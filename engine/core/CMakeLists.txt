@@ -34,6 +34,9 @@ if(VX_PROFILE)
     # A laptop joins networks it does not trust: the client listens on
     # localhost only, where the viewer runs, and does not announce itself.
     target_compile_definitions(vx_tracy PRIVATE TRACY_ONLY_LOCALHOST TRACY_NO_BROADCAST)
+    message(STATUS "Tracy profiler: compiled in")
+else()
+    message(STATUS "Tracy profiler: off, without VX_PROFILE")
 endif()
 
 configure_file(src/version_config.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/generated/version_config.hpp"
