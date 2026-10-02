@@ -10,6 +10,12 @@ struct SDL_Window;
 
 namespace vx::app {
 
+// Relative mouse motion, in pixels: x to the right, y down.
+struct MouseMotion {
+    float x = 0.0F;
+    float y = 0.0F;
+};
+
 // The application's one window, through SDL3. Creating it starts SDL's video
 // subsystem, and destroying it shuts SDL down.
 class Window {
@@ -29,8 +35,14 @@ public:
     Window& operator=(const Window&) = delete;
     ~Window();
 
-    // Handles every pending event. False once the window should close.
+    // Handles every pending event. False once the window should close. A
+    // click into the window captures the mouse and Escape releases it, so a
+    // run that is never clicked, such as a smoke run, never grabs it.
     [[nodiscard]] bool handle_events();
+
+    [[nodiscard]] bool mouse_captured() const;
+    // The captured mouse's motion since the last call.
+    [[nodiscard]] MouseMotion take_mouse_motion() noexcept;
 
     // How the renderer makes this window's Vulkan surface. Valid while the
     // window lives.
@@ -47,6 +59,7 @@ private:
     void destroy() noexcept;
 
     SDL_Window* window_ = nullptr;
+    MouseMotion motion_; // gathered while the mouse is captured
 };
 
 } // namespace vx::app

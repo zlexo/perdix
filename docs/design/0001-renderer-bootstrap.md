@@ -381,3 +381,15 @@ Pull request plan item 7, the shader build step and the first pipeline, landed a
 - **Buffers name what their memory is for:** an upload target, device-local, a readback or staging. `capture()` reads back through a readback buffer.
 - **`upload` decides by the destination's mapping**, not by the kind of GPU, so a device-local buffer takes the staging path on unified memory too, and a test runs it. Each staged upload gets its own staging buffer, freed when the context resets, where the design sketched one per frame slot: nothing uploads every frame yet, and RFC 0007's streaming can size a ring per slot from real numbers.
 - **The triangle's pipeline is made for the target's color format** and remade if a recreated swapchain changes it. Culling and depth wait for the cube.
+
+Pull request plan item 8, reversed-Z depth, the fly camera, camera-relative rendering and the cube, landed as seven pull requests: glm and the projection, camera-relative positions, one image type for attachments, depth, the camera, the cube, and the fly camera.
+
+- **glm 1.0.3**, its latest release, comes in as a system header, with Vulkan's depth range of 0 to 1.
+- **The near plane sits a twentieth of a block away**, which the design left open: reversed-Z keeps depth precise however close it is.
+- **32-bit float depth is checked when the renderer is made**, not added to ADR 0002's floor. Vulkan promises a 24-bit or a 32-bit depth format, not both; every GPU the engine targets has this one.
+- **The shared-corner test runs past 2^24 blocks** from the world's origin. At 10 million every whole block still fits in a float, so float math on world positions would pass there too.
+- **"Fly to 10 million blocks and confirm the cube does not jitter" is automated:** rendered headless, the same view of the same cube is byte for byte the same image at the world's origin and 10 million blocks from it.
+- **Shaders lay out matrices as glm stores them**, through `-matrix-layout-column-major`. Slang 2026.18.3 already does for SPIR-V, so the flag pins it; row-major draws nothing right, and the cube tests fail.
+- **`render()` takes `FrameInputs`:** the sky to clear to, the camera, and up to 256 cubes by their blocks, each an instance with its origin in the frame slot's per-frame buffer. The overlay joins it in item 11. `DrawPush` already carries `texture`, unused until item 9; faces have flat colors until then.
+- **The fly camera turns by yaw and pitch, without roll**, flies ten blocks a second and forty with Ctrl, stops its pitch short of straight up and down, and captures the mouse on a click into the window rather than at startup, so a smoke run never grabs it.
+- **For one pull request the demo was two triangles**, a farther one drawn last, so the depth test had something to decide; two cubes, the farther drawn last, took the test over.

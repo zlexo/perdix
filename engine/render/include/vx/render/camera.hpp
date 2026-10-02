@@ -17,6 +17,25 @@ struct Camera {
     float fov_y = glm::radians(70.0F); // vertical, RFC 0001's default
 };
 
+// What a fly camera does in one frame, from RFC 0001's controls.
+struct FlyInput {
+    // x right, y up, z forward, each from -1 to 1. Right and forward stay
+    // level whatever the pitch, and up is the world's.
+    glm::vec3 move{0.0F};
+    float yaw_turn = 0.0F;   // radians, added to the yaw
+    float pitch_turn = 0.0F; // radians, added to the pitch
+    bool fast = false;
+};
+
+// Blocks a second.
+inline constexpr float fly_speed = 10.0F;
+inline constexpr float fast_fly_speed = 40.0F;
+
+// Turns and moves the camera for one frame `seconds` long. Diagonals are no
+// faster than straight lines, and the pitch stops just short of straight up
+// and down, where the yaw would stop meaning anything.
+void fly(Camera& camera, const FlyInput& input, float seconds);
+
 // The direction the camera looks, a unit vector in world space.
 [[nodiscard]] glm::vec3 forward(float yaw, float pitch);
 

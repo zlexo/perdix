@@ -19,6 +19,7 @@ FetchContent_Declare(sdl3
 FetchContent_MakeAvailable(sdl3)
 
 add_executable(vx_app
+    src/fly_controls.cpp
     src/main.cpp
     src/window.cpp)
 target_link_libraries(vx_app PRIVATE vx::core vx::render SDL3::SDL3-static)
