@@ -137,7 +137,7 @@ Palettes do not shrink on every `set`. When a state's last block is overwritten,
 
 ### Bulk conversion
 
-Generators write a plain `BlockState[32768]` and compress it once with `from_dense`, which builds the palette with a per-thread reverse lookup table, then picks the smallest width that fits. The mesher calls `to_dense` to get a plain array, so its inner loops never touch the packed format. A second form of `to_dense` takes a layout (an offset plus row and layer strides) and writes straight into the inside of the mesher's padded 34 by 34 by 34 array, saving a full extra copy per mesh. The one-block border around it comes from all 26 neighbors (RFC 0003): the 6 face neighbors through `copy_face`, and the 12 edge and 8 corner neighbors through `get`, 392 single-block reads in all.
+Generators write a plain `BlockState[32768]` and compress it once with `from_dense`, which builds the palette with a per-thread reverse lookup table, then picks the smallest width that fits. A generator that already knows a chunk holds one state, such as all air above the terrain or all stone below the caves, skips the array and calls `uniform` (RFC 0008). The mesher calls `to_dense` to get a plain array, so its inner loops never touch the packed format. A second form of `to_dense` takes a layout (an offset plus row and layer strides) and writes straight into the inside of the mesher's padded 34 by 34 by 34 array, saving a full extra copy per mesh. The one-block border around it comes from all 26 neighbors (RFC 0003): the 6 face neighbors through `copy_face`, and the 12 edge and 8 corner neighbors through `get`, 392 single-block reads in all.
 
 ### API sketch
 
@@ -154,6 +154,7 @@ struct DenseLayout {
 class ChunkStorage {
 public:
     ChunkStorage() noexcept;   // uniform air, no allocation
+    [[nodiscard]] static ChunkStorage uniform(BlockState state) noexcept;   // any one state, no allocation
 
     [[nodiscard]] static ChunkStorage from_dense(std::span<const BlockState, chunk_volume> blocks);
     void to_dense(std::span<BlockState, chunk_volume> out) const noexcept;
@@ -208,7 +209,7 @@ The prototype column comes from a throwaway implementation of this design measur
 
 - **Coordinates:** block -1 is chunk -1, local 31; block -32 is chunk -1, local 0; block -33 is chunk -2, local 31; round trips at the edges of the 32-bit range.
 - **Index order:** neighbors along x are 1 apart, along z 32 apart, along y 1,024 apart.
-- **Storage:** a default chunk is uniform air with zero block data; one `set` makes it 1-bit; growth through every width up to direct mode; `compact` after overwrites shrinks the width again.
+- **Storage:** a default chunk is uniform air with zero block data, and `uniform` gives the same for any state; one `set` makes it 1-bit; growth through every width up to direct mode; `compact` after overwrites shrinks the width again.
 - **Round trips:** random chunks (seeded, so failures reproduce) survive `from_dense` then `to_dense` unchanged at every width, and `get` agrees with a plain array after thousands of random `set` calls.
 - **Memory:** `memory_bytes` matches the table above at every width.
 - **Layering control:** `engine/world` is the second layer, so its pull request proves that including a header from a layer it does not link fails to compile (RFC 0000's test plan).
@@ -219,7 +220,7 @@ The prototype column comes from a throwaway implementation of this design measur
 2. `engine/world` layer: `BlockState`, coordinates, `local_index`, with tests and the layering control.
 3. The bit-packed array (power-of-two widths), with tests.
 4. Benchmark harness: nanobench in `bench/`, run in release, numbers printed for the pull request. First benchmarks: the packed array.
-5. `ChunkStorage`: modes, `get`, `set`, growth, direct mode, `compact`, with tests.
+5. `ChunkStorage`: modes, `uniform`, `get`, `set`, growth, direct mode, `compact`, with tests.
 6. Bulk conversion (`from_dense`, `to_dense`, `copy_face`) with tests and benchmarks.
 7. Size-class pools for block data and memory accounting.
 
