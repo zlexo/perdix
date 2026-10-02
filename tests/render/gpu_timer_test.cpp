@@ -117,9 +117,9 @@ TEST_CASE("a GPU timer reads the time a pass took, within the time it was waited
 
     // A pass with work enough to time: clearing 4096 by 4096 texels. A pass,
     // not a transfer, which KosmicKrisp does not time (see GpuTimer).
-    const vx::Result<vx::render::Image> image =
-        vx::render::Image::create(device, {.width = 4096, .height = 4096}, VK_FORMAT_R8G8B8A8_UNORM,
-                                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    const vx::Result<vx::render::Image> image = vx::render::Image::create(
+        device, {.width = 4096, .height = 4096}, VK_FORMAT_R8G8B8A8_UNORM,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT, "timed target");
     REQUIRE(image.has_value());
 
     vx::test::OneShot shot(device);

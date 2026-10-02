@@ -43,7 +43,7 @@ constexpr VkFormat offscreen_format = VK_FORMAT_R8G8B8A8_SRGB;
 Result<Image> make_offscreen_target(const Device& device, VkExtent2D extent) {
     return Image::create(device, extent, offscreen_format,
                          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                         VK_IMAGE_ASPECT_COLOR_BIT);
+                         VK_IMAGE_ASPECT_COLOR_BIT, "offscreen target");
 }
 
 // RFC 0001: depth is a 32-bit float, so reversed-Z keeps its precision far
@@ -59,7 +59,7 @@ Result<Image> make_depth_target(const Device& device, VkExtent2D extent) {
                      "reversed-Z needs"};
     }
     return Image::create(device, extent, depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                         VK_IMAGE_ASPECT_DEPTH_BIT);
+                         VK_IMAGE_ASPECT_DEPTH_BIT, "depth target");
 }
 
 enum class Target : std::uint8_t { swapchain, offscreen };
@@ -586,14 +586,14 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     Result<Image> checker = Image::create(
         context.value().device(), {.width = checker_size, .height = checker_size},
         VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT);
+        VK_IMAGE_ASPECT_COLOR_BIT, "cube checker");
     if (!checker.has_value()) {
         return checker.error();
     }
     Result<Buffer> vertices = Buffer::create(context.value().device(), sizeof(cube_vertices),
                                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                             BufferMemory::upload_target);
+                                             BufferMemory::upload_target, "cube vertices");
     if (!vertices.has_value()) {
         return vertices.error();
     }
@@ -692,10 +692,10 @@ Result<void> Renderer::create_frame_objects() {
     frames_done_ = done.value();
 
     for (std::size_t slot = 0; slot < frames_in_flight; ++slot) {
-        Result<Buffer> origins = Buffer::create(context_.device(), max_cubes * sizeof(glm::vec4),
-                                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                BufferMemory::per_frame);
+        Result<Buffer> origins = Buffer::create(
+            context_.device(), max_cubes * sizeof(glm::vec4),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            BufferMemory::per_frame, "frame slot " + std::to_string(slot) + " cube origins");
         if (!origins.has_value()) {
             return origins.error();
         }
@@ -995,9 +995,9 @@ Result<std::vector<std::uint8_t>> Renderer::capture() {
     vkDeviceWaitIdle(device); // every frame is done, and every slot is free
 
     const VkExtent2D extent = image.extent();
-    Result<Buffer> readback =
-        Buffer::create(context_.device(), VkDeviceSize{extent.width} * extent.height * 4,
-                       VK_BUFFER_USAGE_TRANSFER_DST_BIT, BufferMemory::readback);
+    Result<Buffer> readback = Buffer::create(
+        context_.device(), VkDeviceSize{extent.width} * extent.height * 4,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT, BufferMemory::readback, "capture readback");
     if (!readback.has_value()) {
         return readback.error();
     }

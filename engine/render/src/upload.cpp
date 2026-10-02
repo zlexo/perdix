@@ -57,7 +57,7 @@ void UploadContext::finish(VkCommandBuffer commands) {
 
 Result<VkBuffer> UploadContext::stage(std::span<const std::byte> bytes) {
     Result<Buffer> made = Buffer::create(*device_, bytes.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                         BufferMemory::staging);
+                                         BufferMemory::staging, "staging");
     if (!made.has_value()) {
         return made.error();
     }

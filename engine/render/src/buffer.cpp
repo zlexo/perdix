@@ -1,5 +1,6 @@
 #include <vx/render/buffer.hpp>
 
+#include "debug_name.hpp"
 #include "vk_result.hpp"
 
 #include <string>
@@ -41,9 +42,9 @@ VmaAllocationCreateInfo allocation_info(BufferMemory memory) {
 } // namespace
 
 Result<Buffer> Buffer::create(const Device& device, VkDeviceSize size, VkBufferUsageFlags usage,
-                              BufferMemory memory) {
+                              BufferMemory memory, std::string_view name) {
     if (size == 0) {
-        return Error{"a buffer needs a size above zero"};
+        return Error{"the buffer \"" + std::string(name) + "\" needs a size above zero"};
     }
     if (memory == BufferMemory::upload_target) {
         usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -67,9 +68,10 @@ Result<Buffer> Buffer::create(const Device& device, VkDeviceSize size, VkBufferU
     if (const VkResult result = vmaCreateBuffer(buffer.allocator_, &buffer_info, &memory_info,
                                                 &buffer.buffer_, &buffer.allocation_, &allocated);
         result != VK_SUCCESS) {
-        return Error{"vmaCreateBuffer failed for " + std::to_string(size) +
-                     " bytes: " + vk_result_name(result)};
+        return Error{"vmaCreateBuffer failed for the buffer \"" + std::string(name) + "\", " +
+                     std::to_string(size) + " bytes: " + vk_result_name(result)};
     }
+    set_debug_name(device.handle(), buffer.buffer_, name);
     if (allocated.pMappedData != nullptr) {
         buffer.mapping_ = {static_cast<std::byte*>(allocated.pMappedData), size};
     }

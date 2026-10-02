@@ -6,17 +6,21 @@
 #include <vk_mem_alloc.h>
 #include <volk.h>
 
+#include <string_view>
+
 namespace vx::render {
 
 // An image with its memory and a view: one the renderer draws into, such as
 // headless rendering's color target (RFC 0001) or a depth attachment, or one
 // it samples, a texture. `usage` says how it is used, such as a copy source
 // for reading pixels back; `aspect` is the part the view sees, color or depth.
+// `name` is the debug name of the image and its view, which validation
+// messages and GPU captures show (RFC 0001), and errors too.
 class Image {
 public:
     [[nodiscard]] static Result<Image> create(const Device& device, VkExtent2D extent,
                                               VkFormat format, VkImageUsageFlags usage,
-                                              VkImageAspectFlags aspect);
+                                              VkImageAspectFlags aspect, std::string_view name);
 
     Image(Image&& other) noexcept;
     Image& operator=(Image&& other) noexcept;

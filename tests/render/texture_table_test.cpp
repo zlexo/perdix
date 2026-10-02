@@ -23,7 +23,7 @@ vx::Result<vx::render::Context> create_context() {
 vx::Result<vx::render::Image> texture(const vx::render::Device& device) {
     return vx::render::Image::create(device, {.width = 16, .height = 16}, VK_FORMAT_R8G8B8A8_SRGB,
                                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                                     VK_IMAGE_ASPECT_COLOR_BIT);
+                                     VK_IMAGE_ASPECT_COLOR_BIT, "test texture");
 }
 
 } // namespace
