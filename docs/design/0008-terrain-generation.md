@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Accepted (2026-10-02) |
 | **Milestone** | M4 Terrain |
 | **Issue** | #23 |
 
@@ -113,7 +113,7 @@ The alternatives, measured on the reference machine (4-octave 3D fBm over 64 chu
 | Far from the origin | Positions are `float`: 2.4 times rougher at a million blocks, 22 times at ten million | `double` positions: unchanged | `double` positions |
 | Also | Picks a SIMD path at run time; fetches FastSIMD through CPM | Hashing relies on signed overflow, which UBSan reports | Two pull requests of our own code |
 
-"Rougher" is the RMS of the second difference along a row of samples: 2.0e-4 at the origin and 4.3e-3 at ten million blocks for FastNoise2, 1.9e-4 at both for FastNoiseLite. Which to use is open question 1.
+"Rougher" is the RMS of the second difference along a row of samples: 2.0e-4 at the origin and 4.3e-3 at ten million blocks for FastNoise2, 1.9e-4 at both for FastNoiseLite. Open question 1 settled on our own port, with FastNoise2 in strict mode as the fallback.
 
 ### Climate and shape
 
@@ -293,6 +293,8 @@ What that buys: in RFC 0006's region for a 1,024-block view, flying at 64 blocks
 12. Overlay sliders, curve editors, save and load, live regeneration around the camera, and the price panel.
 
 ## Open questions
+
+All settled on 2026-10-02: every recommendation below was accepted.
 
 1. **Noise: our own OpenSimplex2, or FastNoise2.** Recommendation: **our own**. FastNoise2 in strict mode is deterministic and five times faster than FastNoiseLite, but its `float` positions make noise measurably rougher millions of blocks out, while RFC 0001 tests at ten million blocks and RFC 0002 promises the whole 32-bit range. FastNoiseLite keeps precision at a fifth of the speed. Our own costs two pull requests and must reach 25 ns per sample; if the 4-wide port cannot, FastNoise2 in strict mode is the fallback, and terrain quality falls off past about a million blocks.
 2. **How tall and how deep (taste).** Minecraft 1.18 builds from y -64 up to 319 with the sea at 63: about 256 blocks above the sea and 128 below. Recommendation: a default preset with peaks up to about 256 blocks above the sea and caves and ores down to 256 below, then solid stone forever, so below a camera at sea level the caves end where RFC 0006's near cylinder does (8 chunks, 256 blocks down). Deeper caves mean more mixed chunks underground, each costing memory and generation time; taller or deeper is a slider away, and the price panel shows the cost.
