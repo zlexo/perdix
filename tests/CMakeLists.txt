@@ -50,6 +50,7 @@ add_executable(vx_render_vulkan_tests
     render/pipeline_test.cpp
     render/renderer_test.cpp
     render/shader_test.cpp
+    render/texture_table_test.cpp
     render/upload_test.cpp)
 target_link_libraries(vx_render_vulkan_tests PRIVATE vx::render doctest::doctest)
 vx_target_warnings(vx_render_vulkan_tests)

@@ -22,6 +22,8 @@ struct GraphicsPipelineDesc {
     VkFormat depth_format = VK_FORMAT_UNDEFINED;
     // Faces wound counterclockwise, seen from outside, are front faces.
     VkCullModeFlags cull_mode = VK_CULL_MODE_NONE;
+    // Set 0: the texture table's layout, or none.
+    VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
     // Push constants from offset 0, and the stages that read them.
     std::uint32_t push_constant_size = 0;
     VkShaderStageFlags push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT;
