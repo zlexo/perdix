@@ -84,8 +84,9 @@ private:
 
     [[nodiscard]] const Block* find_block(std::string_view name) const;
     // Every state's faces, and the layers they use, from the definitions in
-    // name order.
-    void build_faces(std::span<const BlockDefinition> definitions);
+    // name order; an error when they need more layers than a face numbers.
+    [[nodiscard]] std::optional<Diagnostic>
+    build_faces(std::span<const BlockDefinition> definitions);
     // A block's state from each property's value index, and back.
     [[nodiscard]] static BlockState state_of(const Block& block,
                                              std::span<const std::size_t> values);

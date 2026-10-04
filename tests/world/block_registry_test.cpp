@@ -536,3 +536,67 @@ TEST_CASE("the same files in any order give the same visuals and textures") {
         CHECK(std::ranges::equal(again.textures(), textures));
     }
 }
+
+TEST_CASE("more cull groups than a cull group numbers fail the load") {
+    // 255 groups fit; the 256th, in name order, is reported where it is named.
+    std::vector<vx::SourceFile> files;
+    for (int group = 0; group < 256; ++group) {
+        const std::string name = "g" + std::to_string(1000 + group);
+        files.push_back({.path = "assets/test/blocks/" + name + ".toml",
+                         .text = "opacity = \"cutout\"\ncull_group = \"" + name +
+                                 "\"\n[textures]\nall = \"x\"\n"});
+    }
+    const vx::BlockLoad load = vx::BlockRegistry::load(files);
+    CHECK_FALSE(load.registry.has_value());
+    REQUIRE(load.diagnostics.size() == 1);
+    CHECK(vx::format(load.diagnostics[0]) ==
+          "assets/test/blocks/g1255.toml:2:14: error: the blocks name 256 cull groups, more than "
+          "the 255 a cull group number holds");
+
+    files.pop_back();
+    const vx::BlockRegistry fits = loaded(files);
+    CHECK(fits.visuals()[static_cast<std::size_t>(*fits.find("test:g1254"))].cull_group == 255);
+}
+
+TEST_CASE("more texture layers than a face numbers fail the load") {
+    // Dice with six textures of their own, whose 16 turns put each texture
+    // in all four quarter turns: 2,730 dice make 65,520 layers. Then blocks
+    // of one texture each: 15 of them fill every layer with the checker,
+    // exactly 65,536, and a 16th goes one over.
+    std::string turns;
+    for (int turn = 1; turn < 16; ++turn) {
+        turns += "[[variant]]\nwhen = { r = " + std::to_string(turn) +
+                 " }\nrotate_x = " + std::to_string(90 * (turn / 4)) +
+                 "\nrotate_y = " + std::to_string(90 * (turn % 4)) + "\n";
+    }
+    const auto pack = [&](int blocks) {
+        std::vector<vx::SourceFile> files;
+        for (int die = 0; die < 2'730; ++die) {
+            const std::string d = std::to_string(die);
+            files.push_back(
+                {.path = "assets/test/blocks/die" + d + ".toml",
+                 .text = "[properties]\nr = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, "
+                         "15]\n[textures]\neast = \"e" +
+                         d + "\"\nwest = \"w" + d + "\"\ntop = \"t" + d + "\"\nbottom = \"b" + d +
+                         "\"\nsouth = \"s" + d + "\"\nnorth = \"n" + d + "\"\n" + turns});
+        }
+        for (int block = 0; block < blocks; ++block) {
+            const std::string name = "k" + std::to_string(block);
+            files.push_back({.path = "assets/test/blocks/" + name + ".toml",
+                             .text = "[textures]\nall = \"" + name + "\"\n"});
+        }
+        return files;
+    };
+    const vx::BlockRegistry fits = loaded(pack(15));
+    CHECK(fits.textures().size() == 65'536);
+    CHECK(fits.textures().back().name == "test:w999");
+
+    // Reported where the first texture past the limit is used, in id order:
+    // k9 is the 16th block of one texture by name.
+    const vx::BlockLoad load = vx::BlockRegistry::load(pack(16));
+    CHECK_FALSE(load.registry.has_value());
+    REQUIRE(load.diagnostics.size() == 1);
+    CHECK(vx::format(load.diagnostics[0]) ==
+          "assets/test/blocks/k9.toml:2:7: error: the blocks need 65,537 texture layers with the "
+          "checker, more than the 65,536 a layer number holds");
+}

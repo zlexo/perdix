@@ -72,6 +72,11 @@ Diagnostic too_many_states(std::uint64_t total, std::span<const BlockDefinition>
             .message = message};
 }
 
+// A 16-bit texture layer numbers 65,536 layers, the checker among them.
+constexpr std::size_t max_layers = std::size_t{std::numeric_limits<std::uint16_t>::max()} + 1;
+// An 8-bit cull group numbers 255 groups; 0 is none.
+constexpr std::size_t max_cull_groups = std::numeric_limits<std::uint8_t>::max();
+
 // Every cull group the blocks name, in name order: group 1 is the first.
 std::vector<std::string_view> cull_groups_of(std::span<const BlockDefinition> blocks) {
     std::vector<std::string_view> groups;
@@ -382,9 +387,29 @@ public:
             ref.quarter_turns = quarter_turns;
             ref.first_use = block.path + ':' + std::to_string(texture.place.line) + ':' +
                             std::to_string(texture.place.column);
+            if (layers_.size() == max_layers && !past_limit_) {
+                past_limit_ = Diagnostic{.severity = Severity::error,
+                                         .file = block.path,
+                                         .line = texture.place.line,
+                                         .column = texture.place.column,
+                                         .message = {}};
+            }
         }
         (block.opacity == Opacity::cutout ? ref.used_cutout : ref.used_opaque) = true;
         return found->second;
+    }
+
+    // More layers than a face numbers, reported where, in id order, the first
+    // texture past the limit is used.
+    [[nodiscard]] std::optional<Diagnostic> past_limit() const {
+        if (!past_limit_) {
+            return std::nullopt;
+        }
+        Diagnostic error = *past_limit_;
+        error.message = "the blocks need " + with_commas(layers_.size() + 1) +
+                        " texture layers with the checker, more than the " +
+                        with_commas(max_layers) + " a layer number holds";
+        return error;
     }
 
     // Gives every layer its number, and lists them by number.
@@ -401,6 +426,7 @@ public:
 
 private:
     std::map<std::pair<std::string, std::uint8_t>, Layer> layers_;
+    std::optional<Diagnostic> past_limit_;
 };
 
 } // namespace
@@ -444,6 +470,21 @@ BlockLoad BlockRegistry::load(std::span<const SourceFile> files) {
     if (total > max_states) {
         load.diagnostics.push_back(too_many_states(total, definitions));
     }
+    const std::vector<std::string_view> groups = cull_groups_of(definitions);
+    if (groups.size() > max_cull_groups) {
+        // Reported on the first block, in name order, of the first group past the limit.
+        const std::string_view first_past = groups[max_cull_groups];
+        const BlockDefinition& block =
+            *std::ranges::find(definitions, first_past, &BlockDefinition::cull_group);
+        load.diagnostics.push_back({.severity = Severity::error,
+                                    .file = block.path,
+                                    .line = block.cull_group_place.line,
+                                    .column = block.cull_group_place.column,
+                                    .message = "the blocks name " + with_commas(groups.size()) +
+                                               " cull groups, more than the " +
+                                               with_commas(max_cull_groups) +
+                                               " a cull group number holds"});
+    }
     if (has_errors(load.diagnostics)) {
         return load;
     }
@@ -468,12 +509,15 @@ BlockLoad BlockRegistry::load(std::span<const SourceFile> files) {
         registry.types_.insert(registry.types_.end(), registry.blocks_[type].states,
                                static_cast<BlockType>(type));
     }
-    registry.build_faces(definitions);
+    if (std::optional<Diagnostic> error = registry.build_faces(definitions)) {
+        load.diagnostics.push_back(*std::move(error));
+        return load;
+    }
     load.registry = std::move(registry);
     return load;
 }
 
-void BlockRegistry::build_faces(std::span<const BlockDefinition> definitions) {
+std::optional<Diagnostic> BlockRegistry::build_faces(std::span<const BlockDefinition> definitions) {
     LayerTable layers;
     std::vector<std::array<const LayerTable::Layer*, 6>> faces(types_.size()); // air's stay null
     const std::vector<std::string_view> groups = cull_groups_of(definitions);
@@ -504,12 +548,16 @@ void BlockRegistry::build_faces(std::span<const BlockDefinition> definitions) {
             next_values(definition, values);
         }
     }
+    if (std::optional<Diagnostic> error = layers.past_limit()) {
+        return error;
+    }
     textures_ = layers.number();
     for (std::size_t state = 1; state < faces.size(); ++state) {
         for (std::size_t face = 0; face < 6; ++face) {
             visuals_[state].texture[face] = faces[state][face]->number;
         }
     }
+    return std::nullopt;
 }
 
 std::optional<BlockState> BlockRegistry::find(std::string_view key) const {
