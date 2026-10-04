@@ -285,3 +285,13 @@ Pull request plan item 6, bulk conversion:
 - **`DenseLayout`'s members default to a plain chunk-sized array**, so `to_dense(out, {})` writes what `to_dense(out)` does; a test holds the two together.
 - **Conversion packs and decodes a word at a time**, through one helper each way.
 - **The numbers**, medians of five release runs on the reference machine, on a 4-bit terrain chunk: `to_dense` takes 7.4 µs, against a budget of 30 and the prototype's 5.4; into the padded array 8.6 µs; `from_dense` 16.1 µs, against 100 and the prototype's 14.3; `copy_face` 0.27 µs for a y face and 0.36 µs for an x face.
+
+Pull request plan item 7, the pools and memory accounting:
+
+- **One pool for the process, never destroyed**, so a chunk freed during static destruction still finds it. Freed blocks stay cached for the life of the process.
+- **The free list lives in the freed blocks**, each one's first word holding the next one's address, so freeing never allocates and cannot fail. A block is zeroed when it is handed out.
+- **`PackedArray` owns its words through a plain pointer:** a `unique_ptr` with the pool's deleter would need the width beside it, and the array must stay 16 bytes.
+- **Palettes stay on the heap**, 4 to 512 bytes each, too small for classes of their own.
+- **Memory accounting is `block_data::stats()`**, each class's blocks in use and cached, beside each chunk's `memory_bytes`; the overlay shows it once streaming (RFC 0006) fills the world.
+- **The pool saves no time on the reference machine:** run interleaved with the heap's version, five release runs each, making and dropping a 4-bit array took 245 ns against 262, with nanobench's error near 15%, and `from_dense` 16.1 µs either way. What it buys is a heap that does not fragment over hours of streaming, which a benchmark of seconds cannot show.
+- **Several threads at once** are tested with four threads marking each block they hold; with the lock taken out of `allocate`, the test fails every run. ThreadSanitizer waits for RFC 0005's job.
