@@ -1,0 +1,5 @@
+opacity = true
+[textures]
+all = "stone"
+# path: assets/core/blocks/stone.toml
+# expect: assets/core/blocks/stone.toml:1:11: error: opacity is "opaque" or "cutout"
