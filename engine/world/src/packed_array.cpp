@@ -1,5 +1,7 @@
 #include <vx/world/packed_array.hpp>
 
+#include <vx/world/block_data_pool.hpp>
+
 #include <algorithm>
 #include <bit>
 #include <cassert>
@@ -18,10 +20,15 @@ std::uint8_t log2_of_width(int bits) {
 
 PackedArray::PackedArray(int bits) : log2_bits_(log2_of_width(bits)) {
     mask_ = (std::uint32_t{1} << static_cast<unsigned>(bits)) - 1;
-    // Zeroed. An array of words behind one pointer, for the header's size
-    // (see words_).
-    // NOLINTNEXTLINE(modernize-avoid-c-arrays)
-    words_ = std::make_unique<std::uint64_t[]>(words_for(log2_bits_));
+    // Zeroed, from the pool's class for the width.
+    words_ = block_data::allocate(log2_bits_);
+}
+
+void PackedArray::release() noexcept {
+    if (words_ != nullptr) {
+        block_data::deallocate(words_, log2_bits_);
+        words_ = nullptr;
+    }
 }
 
 PackedArray PackedArray::clone() const {
@@ -29,7 +36,7 @@ PackedArray PackedArray::clone() const {
         return {};
     }
     PackedArray copy(bits());
-    std::copy_n(words_.get(), word_count(), copy.words_.get());
+    std::copy_n(words_, word_count(), copy.words_);
     return copy;
 }
 
