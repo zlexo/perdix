@@ -2,15 +2,21 @@
 #include <vx/world/block_file.hpp>
 #include <vx/world/block_registry.hpp>
 #include <vx/world/block_state.hpp>
+#include <vx/world/block_visual.hpp>
+#include <vx/world/coordinates.hpp>
 
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <initializer_list>
 #include <optional>
 #include <random>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -27,10 +33,22 @@ std::vector<vx::SourceFile> example_pack() {
 facing = ["north", "east", "south", "west"]
 lit = [false, true]
 [textures]
-all = "furnace"
+side = "furnace_side"
+north = "furnace_front"
+top = "furnace_top"
+bottom = "furnace_top"
 [[variant]]
 when = { lit = true }
 textures = { north = "furnace_front_lit" }
+[[variant]]
+when = { facing = "east" }
+rotate_y = 90
+[[variant]]
+when = { facing = "south" }
+rotate_y = 180
+[[variant]]
+when = { facing = "west" }
+rotate_y = 270
 )"},
         {.path = "assets/core/blocks/oak_log.toml", .text = R"([properties]
 axis = ["y", "x", "z"]
@@ -42,6 +60,9 @@ bottom = "oak_log_top"
 when = { axis = "x" }
 rotate_x = 90
 rotate_y = 90
+[[variant]]
+when = { axis = "z" }
+rotate_x = 90
 )"},
     };
 }
@@ -77,6 +98,23 @@ std::vector<std::string> keys_of(const vx::BlockRegistry& registry) {
         keys.push_back(registry.key(state(static_cast<int>(id))));
     }
     return keys;
+}
+
+// A layer as "core:oak_log/1": its texture and its clockwise quarter turns.
+std::string layer_text(const vx::BlockRegistry& registry, std::uint16_t layer) {
+    const vx::TextureRef& texture = registry.textures()[layer];
+    return texture.name + '/' + std::to_string(texture.quarter_turns);
+}
+
+// A state's six faces, in Face order (+x, -x, +y, -y, +z, -z), as layer_text.
+std::vector<std::string> faces_of(const vx::BlockRegistry& registry, std::string_view key) {
+    const std::optional<vx::BlockState> found = registry.find(key);
+    REQUIRE(found.has_value());
+    std::vector<std::string> faces;
+    for (const std::uint16_t layer : registry.visuals()[static_cast<std::size_t>(*found)].texture) {
+        faces.push_back(layer_text(registry, layer));
+    }
+    return faces;
 }
 
 } // namespace
@@ -245,4 +283,256 @@ TEST_CASE("a block defined twice is an error, and so is any bad file, every prob
               "assets/core/blocks/stone.toml: error: core:stone is defined twice, also in "
               "assets/core/blocks/stone.toml",
           });
+}
+
+TEST_CASE("one visual per state: air has no faces, and layer 0 is the checker") {
+    const vx::BlockRegistry registry = loaded(example_pack());
+    REQUIRE(registry.visuals().size() == registry.state_count());
+    CHECK(registry.visuals()[0] == vx::BlockVisual{});
+    CHECK(registry.textures()[0] == vx::TextureRef{});
+    const vx::BlockVisual stone =
+        registry.visuals()[static_cast<std::size_t>(*registry.find("core:stone"))];
+    CHECK(stone.opacity == vx::Opacity::opaque);
+    CHECK(stone.cull_group == 0);
+    CHECK(faces_of(registry, "core:stone") == std::vector<std::string>(6, "core:stone/0"));
+}
+
+TEST_CASE("a single face beats side, which beats all, and variants name faces over them") {
+    const vx::BlockRegistry registry = loaded({
+        {.path = "assets/test/blocks/box.toml", .text = R"([properties]
+open = [false, true]
+[textures]
+north = "front"
+all = "plain"
+side = "side"
+[[variant]]
+when = { open = true }
+textures = { side = "open_side", top = "open_top" }
+)"},
+    });
+    // +x, -x, +y, -y, +z, -z: north is -z.
+    CHECK(faces_of(registry, "test:box[open=false]") ==
+          std::vector<std::string>{"test:side/0", "test:side/0", "test:plain/0", "test:plain/0",
+                                   "test:side/0", "test:front/0"});
+    // The variant's side covers the block's own north as well.
+    CHECK(faces_of(registry, "test:box[open=true]") ==
+          std::vector<std::string>{"test:open_side/0", "test:open_side/0", "test:open_top/0",
+                                   "test:plain/0", "test:open_side/0", "test:open_side/0"});
+}
+
+TEST_CASE("a log along x has its ends on +x and -x, and its bark turned to run along x") {
+    const vx::BlockRegistry registry = loaded(example_pack());
+    CHECK(faces_of(registry, "core:oak_log[axis=y]") ==
+          std::vector<std::string>{"core:oak_log/0", "core:oak_log/0", "core:oak_log_top/0",
+                                   "core:oak_log_top/0", "core:oak_log/0", "core:oak_log/0"});
+    // An odd number of quarter turns lays the bark's grain along x on the
+    // four faces around the log.
+    CHECK(faces_of(registry, "core:oak_log[axis=x]") ==
+          std::vector<std::string>{"core:oak_log_top/2", "core:oak_log_top/0", "core:oak_log/1",
+                                   "core:oak_log/1", "core:oak_log/1", "core:oak_log/3"});
+    // Along z: the ends on +z and -z, and the grain along z, unturned on the
+    // top face, where up in the image is north.
+    CHECK(faces_of(registry, "core:oak_log[axis=z]") ==
+          std::vector<std::string>{"core:oak_log/1", "core:oak_log/3", "core:oak_log/0",
+                                   "core:oak_log/2", "core:oak_log_top/0", "core:oak_log_top/2"});
+}
+
+TEST_CASE("a furnace facing east has its front on +x, and its top turned with it") {
+    const vx::BlockRegistry registry = loaded(example_pack());
+    CHECK(faces_of(registry, "core:furnace[facing=north]") ==
+          std::vector<std::string>{"core:furnace_side/0", "core:furnace_side/0",
+                                   "core:furnace_top/0", "core:furnace_top/0",
+                                   "core:furnace_side/0", "core:furnace_front/0"});
+    CHECK(faces_of(registry, "core:furnace[facing=east]") ==
+          std::vector<std::string>{"core:furnace_front/0", "core:furnace_side/0",
+                                   "core:furnace_top/1", "core:furnace_top/3",
+                                   "core:furnace_side/0", "core:furnace_side/0"});
+    CHECK(faces_of(registry, "core:furnace[facing=east,lit=true]")[0] ==
+          "core:furnace_front_lit/0");
+    CHECK(faces_of(registry, "core:furnace[facing=south]")[4] == "core:furnace_front/0");
+    CHECK(faces_of(registry, "core:furnace[facing=west]")[1] == "core:furnace_front/0");
+}
+
+TEST_CASE("every combination of rotate_x and rotate_y matches a hand-computed face map") {
+    // A die: each face its own texture, e w t b s n for east, west, top,
+    // bottom, south and north, so every face shows where it went.
+    std::string text = R"([properties]
+rx = [0, 90, 180, 270]
+ry = [0, 90, 180, 270]
+[textures]
+east = "e"
+west = "w"
+top = "t"
+bottom = "b"
+south = "s"
+north = "n"
+)";
+    for (const char* const angle : {"90", "180", "270"}) {
+        text += std::string("[[variant]]\nwhen = { rx = ") + angle + " }\nrotate_x = " + angle +
+                "\n[[variant]]\nwhen = { ry = " + angle + " }\nrotate_y = " + angle + "\n";
+    }
+    const vx::BlockRegistry registry =
+        loaded({{.path = "assets/test/blocks/die.toml", .text = text}});
+
+    // Worked out apart from the engine, with rotation matrices and each
+    // image's turn measured as an angle, then checked by hand against the
+    // log and the furnace above. Each entry is the texture a face shows and
+    // its clockwise quarter turns, the faces in the order +x, -x, +y, -y,
+    // +z, -z.
+    struct Expected {
+        int rx;
+        int ry;
+        std::array<const char*, 6> faces;
+    };
+    const std::array<Expected, 16> expected = {{
+        {.rx = 0, .ry = 0, .faces = {"e0", "w0", "t0", "b0", "s0", "n0"}},
+        {.rx = 0, .ry = 90, .faces = {"n0", "s0", "t1", "b3", "e0", "w0"}},
+        {.rx = 0, .ry = 180, .faces = {"w0", "e0", "t2", "b2", "n0", "s0"}},
+        {.rx = 0, .ry = 270, .faces = {"s0", "n0", "t3", "b1", "w0", "e0"}},
+        {.rx = 90, .ry = 0, .faces = {"e1", "w3", "s0", "n2", "b0", "t2"}},
+        {.rx = 90, .ry = 90, .faces = {"t2", "b0", "s1", "n1", "e1", "w3"}},
+        {.rx = 90, .ry = 180, .faces = {"w3", "e1", "s2", "n0", "t2", "b0"}},
+        {.rx = 90, .ry = 270, .faces = {"b0", "t2", "s3", "n3", "w3", "e1"}},
+        {.rx = 180, .ry = 0, .faces = {"e2", "w2", "b0", "t0", "n2", "s2"}},
+        {.rx = 180, .ry = 90, .faces = {"s2", "n2", "b1", "t3", "e2", "w2"}},
+        {.rx = 180, .ry = 180, .faces = {"w2", "e2", "b2", "t2", "s2", "n2"}},
+        {.rx = 180, .ry = 270, .faces = {"n2", "s2", "b3", "t1", "w2", "e2"}},
+        {.rx = 270, .ry = 0, .faces = {"e3", "w1", "n2", "s0", "t0", "b2"}},
+        {.rx = 270, .ry = 90, .faces = {"b2", "t0", "n3", "s3", "e3", "w1"}},
+        {.rx = 270, .ry = 180, .faces = {"w1", "e3", "n0", "s2", "b2", "t0"}},
+        {.rx = 270, .ry = 270, .faces = {"t0", "b2", "n1", "s1", "w1", "e3"}},
+    }};
+    for (const Expected& each : expected) {
+        const std::string key =
+            "test:die[rx=" + std::to_string(each.rx) + ",ry=" + std::to_string(each.ry) + "]";
+        INFO(key);
+        std::vector<std::string> faces;
+        for (const std::string& face : faces_of(registry, key)) {
+            // "test:e/1" as "e1".
+            faces.push_back(face.substr(5, 1) + face.substr(7));
+        }
+        CHECK(faces == std::vector<std::string>(each.faces.begin(), each.faces.end()));
+    }
+}
+
+TEST_CASE("the turns of every matching variant add up, past a whole turn") {
+    const vx::BlockRegistry registry = loaded({
+        {.path = "assets/test/blocks/die.toml", .text = R"([properties]
+a = [false, true]
+b = [false, true]
+[textures]
+east = "e"
+west = "w"
+top = "t"
+bottom = "b"
+south = "s"
+north = "n"
+[[variant]]
+when = { a = true }
+rotate_x = 270
+rotate_y = 90
+[[variant]]
+when = { b = true }
+rotate_x = 180
+rotate_y = 180
+[[variant]]
+when = { a = false, b = false }
+rotate_x = 90
+rotate_y = 270
+)"},
+    });
+    // 270 + 180 is a quarter past a whole turn: 90 about x, then 270 about y,
+    // which is what the third variant gives alone.
+    CHECK(faces_of(registry, "test:die[a=true,b=true]") ==
+          faces_of(registry, "test:die[a=false,b=false]"));
+    CHECK(faces_of(registry, "test:die[a=true,b=true]")[0] == "test:b/0");
+}
+
+TEST_CASE("the golden texture table: every layer, in name order, then by turns") {
+    const vx::BlockRegistry registry = loaded(example_pack());
+    std::vector<std::string> layers;
+    for (std::size_t layer = 1; layer < registry.textures().size(); ++layer) {
+        layers.push_back(layer_text(registry, static_cast<std::uint16_t>(layer)));
+    }
+    CHECK(layers == std::vector<std::string>{
+                        "core:furnace_front/0",
+                        "core:furnace_front_lit/0",
+                        "core:furnace_side/0",
+                        "core:furnace_top/0",
+                        "core:furnace_top/1",
+                        "core:furnace_top/2",
+                        "core:furnace_top/3",
+                        "core:oak_log/0",
+                        "core:oak_log/1",
+                        "core:oak_log/2",
+                        "core:oak_log/3",
+                        "core:oak_log_top/0",
+                        "core:oak_log_top/2",
+                        "core:stone/0",
+                    });
+    // Where each is first used, in id order, for the texture messages.
+    CHECK(registry.textures()[1].first_use == "assets/core/blocks/furnace.toml:6:9");
+    CHECK(registry.textures()[2].first_use == "assets/core/blocks/furnace.toml:11:22");
+    CHECK(registry.textures()[13].first_use == "assets/core/blocks/oak_log.toml:5:7");
+}
+
+TEST_CASE("texture names are in the block's namespace unless written with one") {
+    const vx::BlockRegistry registry = loaded({
+        {.path = "assets/moss/blocks/stone.toml",
+         .text = "[textures]\nall = \"moss_stone\"\ntop = \"core:grass\"\n"},
+    });
+    CHECK(faces_of(registry, "moss:stone")[2] == "core:grass/0");
+    CHECK(faces_of(registry, "moss:stone")[0] == "moss:moss_stone/0");
+}
+
+TEST_CASE("each texture knows whether opaque blocks, cutout blocks or both use it") {
+    const vx::BlockRegistry registry = loaded({
+        {.path = "assets/test/blocks/glass.toml",
+         .text = "opacity = \"cutout\"\n[textures]\nall = \"glass\"\ntop = \"shared\"\n"},
+        {.path = "assets/test/blocks/stone.toml",
+         .text = "[textures]\nall = \"stone\"\ntop = \"shared\"\n"},
+    });
+    const auto flags = [&](std::string_view name) {
+        const auto texture = std::ranges::find(registry.textures(), name, &vx::TextureRef::name);
+        REQUIRE(texture != registry.textures().end());
+        return std::pair{texture->used_opaque, texture->used_cutout};
+    };
+    CHECK(flags("test:glass") == std::pair{false, true});
+    CHECK(flags("test:stone") == std::pair{true, false});
+    CHECK(flags("test:shared") == std::pair{true, true});
+}
+
+TEST_CASE("cull groups are numbered in name order, and only cutout blocks have one") {
+    const vx::BlockRegistry registry = loaded({
+        {.path = "assets/test/blocks/oak_leaves.toml",
+         .text = "opacity = \"cutout\"\ncull_group = \"leaves\"\n[textures]\nall = \"x\"\n"},
+        {.path = "assets/test/blocks/birch_leaves.toml",
+         .text = "opacity = \"cutout\"\ncull_group = \"leaves\"\n[textures]\nall = \"x\"\n"},
+        {.path = "assets/test/blocks/glass.toml",
+         .text = "opacity = \"cutout\"\ncull_group = \"glass\"\n[textures]\nall = \"x\"\n"},
+        {.path = "assets/test/blocks/fence.toml",
+         .text = "opacity = \"cutout\"\n[textures]\nall = \"x\"\n"},
+    });
+    const auto visual = [&](std::string_view key) {
+        return registry.visuals()[static_cast<std::size_t>(*registry.find(key))];
+    };
+    CHECK(visual("test:glass").cull_group == 1);
+    CHECK(visual("test:oak_leaves").cull_group == 2);
+    CHECK(visual("test:birch_leaves").cull_group == 2);
+    CHECK(visual("test:fence").cull_group == 0);
+    CHECK(visual("test:fence").opacity == vx::Opacity::cutout);
+}
+
+TEST_CASE("the same files in any order give the same visuals and textures") {
+    const vx::BlockRegistry first = loaded(example_pack());
+    const std::vector<vx::BlockVisual> visuals(first.visuals().begin(), first.visuals().end());
+    const std::vector<vx::TextureRef> textures(first.textures().begin(), first.textures().end());
+    std::vector<vx::SourceFile> files = example_pack();
+    std::mt19937 generator(7);
+    for (int round = 0; round < 6; ++round) {
+        std::ranges::shuffle(files, generator);
+        const vx::BlockRegistry again = loaded(files);
+        CHECK(std::ranges::equal(again.visuals(), visuals));
+        CHECK(std::ranges::equal(again.textures(), textures));
+    }
 }
