@@ -81,6 +81,12 @@ void packed_array(ankerl::nanobench::Bench& bench) {
         PackedArray wider = fixture.array.repacked(8);
         ankerl::nanobench::doNotOptimizeAway(wider);
     });
+
+    // What a new array's memory costs: 16 KiB of words, zeroed, then freed.
+    bench.batch(1).unit("array").run("packed array, 4 bits: make and drop", [] {
+        PackedArray array(bits);
+        ankerl::nanobench::doNotOptimizeAway(array);
+    });
 }
 
 } // namespace vx::bench
