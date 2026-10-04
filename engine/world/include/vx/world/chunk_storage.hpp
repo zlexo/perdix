@@ -3,6 +3,7 @@
 #include <vx/world/block_state.hpp>
 #include <vx/world/packed_array.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -53,6 +54,13 @@ public:
     // more, or else the width doubles: 1, 2, 4, then 8 bits, then direct.
     void set(std::uint16_t index, BlockState state);
 
+    // Drops palette entries no block uses any more, when that lets the chunk
+    // shrink: to a narrower width, to uniform once one state is left, or from
+    // direct back to a palette once 256 or fewer are. A write, which the
+    // world thread runs as a pass of its own, on chunks no job is reading
+    // (RFC 0002).
+    void compact();
+
     [[nodiscard]] bool is_uniform() const noexcept { return indices_.empty(); }
     // 0 when uniform, 1, 2, 4 or 8 when paletted, 16 when direct.
     [[nodiscard]] int bits_per_block() const noexcept { return indices_.bits(); }
@@ -67,6 +75,10 @@ private:
     [[nodiscard]] std::uint32_t add_to_palette(std::uint16_t index, BlockState state);
     // Doubles the width, or goes direct from 8 bits.
     void grow();
+    // compact() for a direct chunk.
+    void compact_direct();
+    // How many blocks hold each palette entry.
+    [[nodiscard]] std::array<std::uint16_t, 256> count_uses() const noexcept;
     [[nodiscard]] std::uint32_t palette_capacity() const noexcept;
 
     // 32 bytes in all, RFC 0002's budget for a uniform chunk's header.
