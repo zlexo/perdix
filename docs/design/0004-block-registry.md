@@ -292,3 +292,12 @@ Pull request plan item 2, block files, landed as two pull requests: `Diagnostic`
 - **The rules across keys run only on tables read without a problem**, so one misspelt face does not also leave six faces without a texture. A misspelt key with a clear guess counts as that key read with a problem, and so does an opacity that cannot be read: `[propertes]` does not also leave every condition naming an unknown property, a misspelt `[textures]` is not also missing, and a misspelt or unreadable `opacity` does not turn a cull group into an error.
 - **The corpus is one file per error in `tests/world/bad_blocks`**, each ending in comments that give the path it stands for and the messages it must give. With the expectations at the end, its line numbers are its own, and both example messages above come out exactly.
 - **`Opacity` lives in `block_visual.hpp`** from item 2 on; `BlockVisual` joins it with item 4.
+
+Pull request plan item 3, the registry:
+
+- **`load` takes files given in memory**; reading a pack from disk comes with the shipped pack (item 7). Files are taken in path order, whatever order they arrive in, so the diagnostics come out the same.
+- **Names, not paths, number the blocks.** The two orders agree within a namespace, but not across namespaces such as `a` and `a0`: `/` sorts before `0`, and `:` after it.
+- **A block defined twice is an error**, which only files given in memory can cause.
+- **Too many states are reported on the largest block's file**, with the three largest blocks named.
+- **`state_count`** joins the sketch, for tests and tools that walk every state.
+- **Loading the synthetic pack of 1,000 blocks and 10,000 states takes 5.5 ms**, the median of five release runs on the reference machine, against a budget of 50.
