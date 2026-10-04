@@ -1,3 +1,21 @@
+include(FetchContent)
+
+# toml++, for block files (RFC 0004), at the release the RFC names. Only its
+# sources are fetched: vx_tomlplusplus compiles its implementation once,
+# without exceptions, as engine code builds.
+FetchContent_Declare(tomlplusplus
+    GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+    GIT_TAG v3.4.0
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR sources-only)
+FetchContent_MakeAvailable(tomlplusplus)
+
+add_library(vx_tomlplusplus STATIC src/tomlplusplus.cpp)
+target_include_directories(vx_tomlplusplus SYSTEM PUBLIC "${tomlplusplus_SOURCE_DIR}/include")
+target_compile_definitions(vx_tomlplusplus PUBLIC TOML_HEADER_ONLY=0 TOML_EXCEPTIONS=0)
+target_compile_features(vx_tomlplusplus PUBLIC cxx_std_20)
+vx_target_engine_options(vx_tomlplusplus)
+
 # The world layer (RFC 0002): blocks, chunks and their coordinates. It has no
 # GPU or window code (ADR 0003).
 add_library(vx_world STATIC
