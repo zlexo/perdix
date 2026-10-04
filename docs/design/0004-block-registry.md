@@ -301,3 +301,12 @@ Pull request plan item 3, the registry:
 - **Too many states are reported on the largest block's file**, with the three largest blocks named.
 - **`state_count`** joins the sketch, for tests and tools that walk every state.
 - **Loading the synthetic pack of 1,000 blocks and 10,000 states takes 5.5 ms**, the median of five release runs on the reference machine, against a budget of 50.
+
+Pull request plan item 4, the faces:
+
+- **Within one `textures` table, a single face beats `side`, which beats `all`; across tables, a later one wins whatever key it uses.** A variant's `side` covers a `north` the block named on its own, so a variant restates a face it wants to keep.
+- **Layers come in name order, then by quarter turns**, after the checker, which is layer 0 with an empty name. `first_use` is the first use in id order, at the texture's value in its file, as diagnostics place it.
+- **A quarter turn moves the image's top edge to its right**, clockwise as seen from outside the face. The sixteen combinations of `rotate_x` and `rotate_y` are worked out while compiling, by turning each face's direction and its image's top edge together; two compile-time checks pin the oak log above, and a test checks all sixteen against a table worked out apart from the engine.
+- **Two more errors than the RFC lists:** more than 65,536 layers, the checker among them, which a face's 16 bits cannot number, reported where the first texture past the limit is used; and more than 255 cull groups, which a state's 8 bits cannot number, reported where the first group past the limit is named.
+- **Each block's variants are read once**, into value masks and indices, so the work for each state compares numbers, never text.
+- **Loading the synthetic pack now takes 6.6 ms**, the median of five release runs on the reference machine, against 5.5 ms without the faces (measured again the same day): about 110 ns a state, against a budget of 50 ms for the whole load.
