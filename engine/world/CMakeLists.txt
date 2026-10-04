@@ -20,9 +20,11 @@ vx_target_engine_options(vx_tomlplusplus)
 # GPU or window code (ADR 0003).
 add_library(vx_world STATIC
     src/block_data_pool.cpp
+    src/block_file.cpp
     src/chunk_storage.cpp
     src/packed_array.cpp)
 add_library(vx::world ALIAS vx_world)
+target_link_libraries(vx_world PUBLIC vx::core PRIVATE vx_tomlplusplus)
 
 # The block data pool's locks.
 find_package(Threads REQUIRED)
