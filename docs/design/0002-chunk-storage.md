@@ -254,3 +254,9 @@ Pull request plan item 2, the world layer:
 - **The layer is headers only, an interface library, until item 3** brings its first source and makes it the static library RFC 0000 describes.
 - **`engine/world` is the third layer, not the second:** the renderer landed first, in milestone 1, without the layering control. It is proven here instead: a world header that includes `<vx/render/renderer.hpp>` fails to compile with `'vx/render/renderer.hpp' file not found`, since only targets that link `vx::render` see its headers.
 - **A CI job, `Layering` (#28),** fails when a file under `engine/world` or `engine/mesh` includes a Vulkan, volk, VMA, SDL or GLFW header: include paths fence off the engine's own headers, not system ones.
+
+Pull request plan item 3, the bit-packed array:
+
+- **`PackedArray`** has `get`, `set`, `repacked` for a copy at another width, and `clone`, the only way to copy one, since copies of a chunk's blocks are copy on write (RFC 0005). Item 5's paletted mode keeps a chunk's palette indices in it, and direct mode its block states.
+- **It adds 16 bytes to a chunk's header:** the words behind one pointer, sized by the width, and the width's mask and base-2 logarithm, which every read uses. A `std::vector` would take 24 bytes for the words alone, of the 32 that the performance budget allows a uniform chunk's whole header.
+- **Repacking to a narrower width needs every entry to fit**, which debug builds assert; compaction (item 5) checks before it narrows.
