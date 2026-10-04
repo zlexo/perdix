@@ -260,3 +260,9 @@ Pull request plan item 3, the bit-packed array:
 - **`PackedArray`** has `get`, `set`, `repacked` for a copy at another width, and `clone`, the only way to copy one, since copies of a chunk's blocks are copy on write (RFC 0005). Item 5's paletted mode keeps a chunk's palette indices in it, and direct mode its block states.
 - **It adds 16 bytes to a chunk's header:** the words behind one pointer, sized by the width, and the width's mask and base-2 logarithm, which every read uses. A `std::vector` would take 24 bytes for the words alone, of the 32 that the performance budget allows a uniform chunk's whole header.
 - **Repacking to a narrower width needs every entry to fit**, which debug builds assert; compaction (item 5) checks before it narrows.
+
+Pull request plan item 4, the benchmark harness:
+
+- **nanobench 4.6.0**, its latest release, fetched as sources only and compiled once; `vx_bench` holds every benchmark. On macOS it asks for a performance core: run on the efficiency cores (`taskpolicy -b`), the same benchmarks took 1.8 to 5.1 times as long, and varied more.
+- **Every build runs `vx_bench --quick` as the test `the benchmarks run`:** each benchmark once, timing nothing, so CI checks that the benchmarks still run without asserting a time.
+- **The packed array's first numbers**, the median of five release runs on the reference machine (Apple Clang 17, `-O3`): a read takes 0.33 ns as throughput and 3.86 ns as dependent latency, a write 0.62 ns, and a repack from 4 to 8 bits 52 µs. They are the array alone, under a chunk's palette; item 5 measures chunks against the budget.
