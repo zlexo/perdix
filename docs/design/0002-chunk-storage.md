@@ -267,3 +267,12 @@ Pull request plan item 4, the benchmark harness:
 - **Every build runs `vx_bench --quick` as the test `the benchmarks run`:** each benchmark once, timing nothing, so CI checks that the benchmarks still run without asserting a time.
 - **The packed array's first numbers**, the median of five release runs on the reference machine (Apple Clang 17, `-O3`): a read takes 0.33 ns as throughput, a write 0.62 ns, and a repack from 4 to 8 bits 52 µs. They are the array alone, under a chunk's palette; item 5 measures chunks against the budget.
 - **A dependent read takes 2.72 ns**, the median of seven runs. The first latency loop gave 3.86 ns, but it also timed its index hash: Apple Clang fuses the hash's multiply into one multiply-add with the value just read, so the multiply waited for the read. Run for run against the new loop the same day, the old one gave 3.46 ns.
+
+Pull request plan item 5, chunk storage, landed as two pull requests: the modes with reads and writes, then compaction.
+
+- **A uniform chunk's packed array is empty:** `PackedArray` gained a state with no words, which is also what a move now leaves behind. The header is 32 bytes, the budget: the array, the palette's pointer, its size and the uniform state.
+- **A palette holds as many entries as its width allows from the start**, 2, 4, 16 or 256, so adding a state allocates nothing until the width doubles. `memory_bytes` counts it with the block data: the table's figure plus 4 to 512 bytes.
+- **Compaction narrows a chunk, or changes nothing:** when the width cannot shrink, unused entries stay for `set` to reuse, since they cost no memory there.
+- **The counting pass takes about 16 µs in a 4-bit chunk, not a few microseconds.** Counted into one tally, it took 62 µs: in a run of one state, each count waits on the one before. Each word's entries go into eight tallies in turn, summed at the end.
+- **The numbers**, medians of five release runs on the reference machine, in a 4-bit chunk of layered terrain with ten states: `get` takes 0.38 ns as throughput, against a budget of 2 ns, and 4.58 ns as dependent latency; `set` without growth 3.55 ns, against 10 ns; and `set` in an 8-bit chunk of 200 states 32.2 ns. Measured back to back, the same `set` took 3.05 ns before compaction joined it in its source file: where the compiler places code moves a nanosecond-scale loop that much.
+- **Concurrent reads under ThreadSanitizer wait for RFC 0005's `linux-tsan` job**, which does not exist yet, as do item 7's pools.
