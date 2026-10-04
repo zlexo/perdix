@@ -280,4 +280,13 @@ All settled on 2026-10-02: every recommendation below was accepted.
 
 ## As built
 
-Not built yet.
+Pull request plan item 2, block files, landed as two pull requests: `Diagnostic`, toml++ and the parser, then the rules with the corpus of bad files.
+
+- **`Diagnostic`'s line and column are 0 for a problem with a whole file or line**, and `format` leaves them out: `assets/core/stone.toml: error: ...`.
+- **toml++ keeps a table in key order**, so a file's diagnostics are sorted into the file's order once it has been read, and a definition lists textures and conditions in the order the file writes them.
+- **Two more errors than the RFC lists:** a file outside `assets/<namespace>/blocks/`, and a block file without a `[textures]` table.
+- **Integer and boolean values are kept as text**, so every state has a text key such as `core:wheat[age=1]`.
+- **A guess ("did you mean") needs one near miss nearer than any other**, at one edit for every three letters and two at most: `w` is as near to `x` as to `y`, so it gets none.
+- **The rules across keys run only on tables read without a problem**, so one misspelt face does not also leave six faces without a texture.
+- **The corpus is one file per error in `tests/world/bad_blocks`**, each ending in comments that give the path it stands for and the messages it must give. With the expectations at the end, its line numbers are its own, and both example messages above come out exactly.
+- **`Opacity` lives in `block_visual.hpp`** from item 2 on; `BlockVisual` joins it with item 4.
