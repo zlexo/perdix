@@ -20,16 +20,21 @@ PackedArray::PackedArray(int bits) : log2_bits_(log2_of_width(bits)) {
     mask_ = (std::uint32_t{1} << static_cast<unsigned>(bits)) - 1;
     // Zeroed. An array of words behind one pointer, for the header's size
     // (see words_).
-    words_ = std::make_unique<std::uint64_t[]>(word_count()); // NOLINT(modernize-avoid-c-arrays)
+    // NOLINTNEXTLINE(modernize-avoid-c-arrays)
+    words_ = std::make_unique<std::uint64_t[]>(words_for(log2_bits_));
 }
 
 PackedArray PackedArray::clone() const {
+    if (empty()) {
+        return {};
+    }
     PackedArray copy(bits());
     std::copy_n(words_.get(), word_count(), copy.words_.get());
     return copy;
 }
 
 PackedArray PackedArray::repacked(int bits) const {
+    assert(!empty());
     PackedArray result(bits);
     for (int index = 0; index < chunk_volume; ++index) {
         const auto at = static_cast<std::uint16_t>(index);
