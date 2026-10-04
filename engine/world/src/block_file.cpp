@@ -50,17 +50,29 @@ std::size_t edit_distance(std::string_view from, std::string_view to) {
     return row.back();
 }
 
-// "unknown key 'opacty'; did you mean 'opacity'?", guessing only for a near
-// miss: up to one edit in three letters, and at most two.
-std::string unknown_key(std::string_view key, std::span<const std::string_view> known) {
-    std::string message = "unknown key '" + std::string(key) + "'";
-    const auto nearest = std::ranges::min_element(
-        known, {}, [key](std::string_view candidate) { return edit_distance(key, candidate); });
-    const std::size_t allowed = std::clamp<std::size_t>(key.size() / 3, 1, 2);
-    if (nearest != known.end() && edit_distance(key, *nearest) <= allowed) {
-        message += "; did you mean '" + std::string(*nearest) + "'?";
+// "; did you mean 'opacity'?" for "opacty", guessing only for a near miss,
+// up to one edit in three letters and at most two, and only when one known
+// key is nearer than all the others: "w" is as near to "x" as to "y".
+std::string guess(std::string_view key, std::span<const std::string_view> known) {
+    const auto distance_to = [key](std::string_view candidate) {
+        return edit_distance(key, candidate);
+    };
+    const auto nearest = std::ranges::min_element(known, {}, distance_to);
+    if (nearest == known.end()) {
+        return {};
     }
-    return message;
+    const std::size_t distance = distance_to(*nearest);
+    const std::size_t allowed = std::clamp<std::size_t>(key.size() / 3, 1, 2);
+    const auto equally_near = std::ranges::count_if(
+        known, [&](std::string_view candidate) { return distance_to(candidate) == distance; });
+    if (distance > allowed || equally_near > 1) {
+        return {};
+    }
+    return "; did you mean '" + std::string(*nearest) + "'?";
+}
+
+std::string unknown_key(std::string_view key, std::span<const std::string_view> known) {
+    return "unknown key '" + std::string(key) + "'" + guess(key, known);
 }
 
 // "assets/core/blocks/oak_log.toml" names "core:oak_log": the folder above
@@ -97,6 +109,41 @@ std::optional<std::string> value_text(const toml::node& node) {
     return std::nullopt;
 }
 
+// Names, properties and values use a to z, 0 to 9 and _ only, so a pack
+// loads the same on a case-insensitive file system as on Linux.
+constexpr std::string_view not_a_name = " uses characters other than a to z, 0 to 9 and _";
+
+bool is_name(std::string_view text) {
+    return !text.empty() && std::ranges::all_of(text, [](char letter) {
+        return (letter >= 'a' && letter <= 'z') || (letter >= '0' && letter <= '9') ||
+               letter == '_';
+    });
+}
+
+// "oak_log" in the block's namespace, or "ns:oak_log".
+bool is_texture_name(std::string_view text) {
+    const std::size_t colon = text.find(':');
+    if (colon == std::string_view::npos) {
+        return is_name(text);
+    }
+    return is_name(text.substr(0, colon)) && is_name(text.substr(colon + 1));
+}
+
+// The faces a block shows, and the keys that can give each a texture.
+struct FaceRule {
+    TextureFace face;
+    std::string_view name;
+    bool horizontal; // `side` covers it too
+};
+constexpr std::array<FaceRule, 6> face_rules = {{
+    {.face = TextureFace::top, .name = "top", .horizontal = false},
+    {.face = TextureFace::bottom, .name = "bottom", .horizontal = false},
+    {.face = TextureFace::north, .name = "north", .horizontal = true},
+    {.face = TextureFace::south, .name = "south", .horizontal = true},
+    {.face = TextureFace::east, .name = "east", .horizontal = true},
+    {.face = TextureFace::west, .name = "west", .horizontal = true},
+}};
+
 class Parser {
 public:
     Parser(const SourceFile& file, std::vector<Diagnostic>& diagnostics)
@@ -125,6 +172,9 @@ private:
     void read_variant(const toml::table& table, BlockDefinition& block);
     void read_when(const toml::node& node, VariantDefinition& variant);
     void read_angle(std::string_view key, const toml::node& node, std::int64_t& angle);
+    // The rules across keys, once the whole file has been read.
+    void check_faces(const BlockDefinition& block);
+    void check_conditions(const BlockDefinition& block);
 
     // toml++ iterates a table in key order, so this file's diagnostics are
     // sorted into the file's order once it has been read.
@@ -157,18 +207,39 @@ std::optional<BlockDefinition> Parser::parse() {
     BlockDefinition block;
     block.name = *std::move(name);
     block.path = file_.path;
+    const std::size_t colon = block.name.find(':');
+    if (!is_name(std::string_view(block.name).substr(0, colon))) {
+        error(SourcePlace{},
+              "namespace '" + block.name.substr(0, colon) + "'" + std::string(not_a_name));
+    }
+    if (!is_name(std::string_view(block.name).substr(colon + 1))) {
+        error(SourcePlace{},
+              "block name '" + block.name.substr(colon + 1) + "'" + std::string(not_a_name));
+    }
+    if (block.name == "core:air") {
+        error(SourcePlace{}, "core:air is built in, and no file can define it");
+    }
+    // The rules across keys run only on tables read without a problem: a
+    // misspelt face would otherwise also leave faces without textures, and a
+    // broken property table would leave every condition unknown.
     bool has_textures = false;
+    bool textures_read = false;
+    bool properties_read = true;
     for (const auto& [key, node] : result.table()) {
         const std::string_view key_name = key.str();
+        const std::size_t problems = diagnostics_.size();
         if (key_name == "opacity") {
             read_opacity(node, block);
         } else if (key_name == "cull_group") {
             read_cull_group(node, block);
         } else if (key_name == "properties") {
             read_properties(node, block);
+            properties_read = diagnostics_.size() == problems;
         } else if (key_name == "textures") {
             block.textures = read_textures(node);
+            block.textures_place = place_of(key.source());
             has_textures = true;
+            textures_read = diagnostics_.size() == problems;
         } else if (key_name == "variant") {
             read_variants(node, block);
         } else {
@@ -177,8 +248,16 @@ std::optional<BlockDefinition> Parser::parse() {
     }
     if (!has_textures) {
         error(SourcePlace{}, "a block names its textures in a [textures] table");
+    } else if (textures_read) {
+        check_faces(block);
+    }
+    if (!block.cull_group.empty() && block.opacity != Opacity::cutout) {
+        error(block.cull_group_place, "cull_group is for cutout blocks, and this block is opaque");
     }
     std::ranges::sort(block.properties, {}, &PropertyDefinition::name);
+    if (properties_read) {
+        check_conditions(block);
+    }
     sort_diagnostics();
     if (failed_) {
         return std::nullopt;
@@ -200,6 +279,10 @@ void Parser::read_opacity(const toml::node& node, BlockDefinition& block) {
 void Parser::read_cull_group(const toml::node& node, BlockDefinition& block) {
     if (const std::optional<std::string_view> group = node.value_exact<std::string_view>()) {
         block.cull_group = std::string(*group);
+        block.cull_group_place = place_of(node.source());
+        if (!is_name(*group)) {
+            error(node.source(), "cull group '" + block.cull_group + "'" + std::string(not_a_name));
+        }
     } else {
         error(node.source(), "cull_group is a name in quotes");
     }
@@ -214,6 +297,10 @@ void Parser::read_properties(const toml::node& node, BlockDefinition& block) {
     for (const auto& [key, values] : *table) {
         PropertyDefinition property{
             .name = std::string(key.str()), .values = {}, .place = place_of(key.source())};
+        if (!is_name(property.name)) {
+            error(property.place,
+                  "property name '" + property.name + "'" + std::string(not_a_name));
+        }
         const toml::array* const list = values.as_array();
         if (list == nullptr) {
             error(values.source(),
@@ -221,11 +308,24 @@ void Parser::read_properties(const toml::node& node, BlockDefinition& block) {
             continue;
         }
         for (const toml::node& value : *list) {
-            if (std::optional<std::string> text = value_text(value)) {
-                property.values.push_back(*std::move(text));
-            } else {
+            std::optional<std::string> text = value_text(value);
+            if (!text) {
                 error(value.source(), "a property's values are strings, integers or booleans");
+            } else if (std::ranges::find(property.values, *text) != property.values.end()) {
+                error(value.source(),
+                      "property '" + property.name + "' lists '" + *text + "' twice");
+            } else {
+                if (!is_name(*text)) {
+                    error(value.source(), "value '" + *text + "' of property '" + property.name +
+                                              "'" + std::string(not_a_name));
+                }
+                property.values.push_back(*std::move(text));
             }
+        }
+        if (list->size() < 2) {
+            error(property.place, "property '" + property.name + "' has " +
+                                      (list->empty() ? "no values" : "one value") +
+                                      ", and a property needs two or more");
         }
         block.properties.push_back(std::move(property));
     }
@@ -249,6 +349,10 @@ std::vector<TextureAssignment> Parser::read_textures(const toml::node& node) {
             error(value.source(), R"(a texture is named in quotes, such as "oak_log")");
             continue;
         }
+        if (!is_texture_name(*texture)) {
+            error(value.source(),
+                  "texture name '" + std::string(*texture) + "'" + std::string(not_a_name));
+        }
         textures.push_back({.face = static_cast<TextureFace>(face - face_keys.begin()),
                             .texture = std::string(*texture),
                             .place = place_of(value.source())});
@@ -271,6 +375,7 @@ void Parser::read_variants(const toml::node& node, BlockDefinition& block) {
 void Parser::read_variant(const toml::table& table, BlockDefinition& block) {
     VariantDefinition variant;
     variant.place = place_of(table.source());
+    const std::size_t problems = diagnostics_.size();
     for (const auto& [key, value] : table) {
         const std::string_view key_name = key.str();
         if (key_name == "when") {
@@ -284,6 +389,11 @@ void Parser::read_variant(const toml::table& table, BlockDefinition& block) {
         } else {
             error(key.source(), unknown_key(key_name, variant_keys));
         }
+    }
+    // Only for a variant read without a problem, which would explain it.
+    if (diagnostics_.size() == problems && variant.textures.empty() && variant.rotate_x == 0 &&
+        variant.rotate_y == 0) {
+        error(variant.place, "a variant that names no textures and no turn changes nothing");
     }
     block.variants.push_back(std::move(variant));
 }
@@ -310,6 +420,9 @@ void Parser::read_when(const toml::node& node, VariantDefinition& variant) {
         } else {
             error(value.source(), "a condition names one value or a list of them");
         }
+        if (value.is_array() && value.as_array()->empty()) {
+            error(condition.place, "the condition on '" + condition.property + "' names no values");
+        }
         variant.when.push_back(std::move(condition));
     }
     std::ranges::sort(variant.when, {}, &VariantCondition::place);
@@ -318,8 +431,57 @@ void Parser::read_when(const toml::node& node, VariantDefinition& variant) {
 void Parser::read_angle(std::string_view key, const toml::node& node, std::int64_t& angle) {
     if (const std::optional<std::int64_t> degrees = node.value_exact<std::int64_t>()) {
         angle = *degrees;
+        if (angle != 0 && angle != 90 && angle != 180 && angle != 270) {
+            error(node.source(),
+                  std::string(key) + " must be 0, 90, 180 or 270, not " + std::to_string(angle));
+        }
     } else {
         error(node.source(), std::string(key) + " is a whole number of degrees");
+    }
+}
+
+void Parser::check_faces(const BlockDefinition& block) {
+    std::array<bool, face_keys.size()> named{};
+    for (const TextureAssignment& texture : block.textures) {
+        named[static_cast<std::size_t>(texture.face)] = true;
+    }
+    const bool all = named[static_cast<std::size_t>(TextureFace::all)];
+    const bool side = named[static_cast<std::size_t>(TextureFace::side)];
+    for (const FaceRule& rule : face_rules) {
+        if (named[static_cast<std::size_t>(rule.face)] || all || (rule.horizontal && side)) {
+            continue;
+        }
+        const std::string keys = rule.horizontal ? std::string(rule.name) + ", side or all"
+                                                 : std::string(rule.name) + " or all";
+        error(block.textures_place,
+              "the " + std::string(rule.name) + " face has no texture: name " + keys);
+    }
+}
+
+void Parser::check_conditions(const BlockDefinition& block) {
+    std::vector<std::string_view> property_names;
+    property_names.reserve(block.properties.size());
+    for (const PropertyDefinition& property : block.properties) {
+        property_names.emplace_back(property.name);
+    }
+    for (const VariantDefinition& variant : block.variants) {
+        for (const VariantCondition& condition : variant.when) {
+            const auto property =
+                std::ranges::find(block.properties, condition.property, &PropertyDefinition::name);
+            if (property == block.properties.end()) {
+                error(condition.place, "the block has no property '" + condition.property + "'" +
+                                           guess(condition.property, property_names));
+                continue;
+            }
+            const std::vector<std::string_view> values(property->values.begin(),
+                                                       property->values.end());
+            for (const std::string& value : condition.values) {
+                if (std::ranges::find(property->values, value) == property->values.end()) {
+                    error(condition.place, "property '" + property->name + "' has no value '" +
+                                               value + "'" + guess(value, values));
+                }
+            }
+        }
     }
 }
 

@@ -1,0 +1,8 @@
+[properties]
+axis = ["y", "x", "z"]
+[textures]
+all = "oak_log"
+[[variant]]
+when = { axis = "x" }
+# path: assets/core/blocks/oak_log.toml
+# expect: assets/core/blocks/oak_log.toml:5:1: error: a variant that names no textures and no turn changes nothing

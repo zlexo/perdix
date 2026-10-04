@@ -1,0 +1,5 @@
+cull_group = "leaves"
+[textures]
+all = "oak_leaves"
+# path: assets/core/blocks/oak_leaves.toml
+# expect: assets/core/blocks/oak_leaves.toml:1:14: error: cull_group is for cutout blocks, and this block is opaque

@@ -1,0 +1,4 @@
+[textures]
+all = "oak_log"
+# path: assets/core/blocks/Oak_Log.toml
+# expect: assets/core/blocks/Oak_Log.toml: error: block name 'Oak_Log' uses characters other than a to z, 0 to 9 and _

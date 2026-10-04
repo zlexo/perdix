@@ -1,0 +1,4 @@
+[textures]
+all = "air"
+# path: assets/core/blocks/air.toml
+# expect: assets/core/blocks/air.toml: error: core:air is built in, and no file can define it

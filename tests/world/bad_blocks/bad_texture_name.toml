@@ -1,0 +1,4 @@
+[textures]
+all = "Stone Bricks"
+# path: assets/core/blocks/stone_bricks.toml
+# expect: assets/core/blocks/stone_bricks.toml:2:7: error: texture name 'Stone Bricks' uses characters other than a to z, 0 to 9 and _
