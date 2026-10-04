@@ -12,6 +12,14 @@
 
 namespace vx {
 
+// Where to_dense puts block (x, y, z): out[offset + x + z * row_stride +
+// y * layer_stride]. The default is a plain chunk-sized array.
+struct DenseLayout {
+    std::size_t offset = 0;
+    std::size_t row_stride = chunk_size;
+    std::size_t layer_stride = std::size_t{chunk_size} * chunk_size;
+};
+
 // from_dense's working memory (RFC 0002): a table from each state to its
 // palette entry, and each block's entry, 160 KiB on the heap. Owned by the
 // caller and reused, never shared between threads: RFC 0005 keeps one in
@@ -63,6 +71,13 @@ public:
                                                  PaletteScratch& scratch);
     // Every block, in local_index order.
     void to_dense(std::span<BlockState, chunk_volume> out) const noexcept;
+    // Every block, where `layout` puts it: the mesher fills the inside of its
+    // padded 34 by 34 by 34 array in one pass (RFC 0003).
+    void to_dense(std::span<BlockState> out, DenseLayout layout) const noexcept;
+    // The 32 by 32 blocks on one face, for a neighbor's mesher (RFC 0003), in
+    // the order of the two other axes in local_index: out[z + 32 * y] for an
+    // x face, out[x + 32 * z] for a y face, out[x + 32 * y] for a z face.
+    void copy_face(Face face, std::span<BlockState, chunk_area> out) const noexcept;
 
     // The block at `index` (local_index): a branch on the mode, then a
     // shift, a mask and, when paletted, a palette lookup.

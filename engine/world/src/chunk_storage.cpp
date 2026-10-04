@@ -154,6 +154,56 @@ void ChunkStorage::to_dense(std::span<BlockState, chunk_volume> out) const noexc
     decode_run(0, out);
 }
 
+void ChunkStorage::to_dense(std::span<BlockState> out, DenseLayout layout) const noexcept {
+    // Row by row: a row of 32 blocks along x is consecutive both here and in
+    // `out`.
+    for (int y = 0; y < chunk_size; ++y) {
+        for (int z = 0; z < chunk_size; ++z) {
+            const std::size_t row = layout.offset +
+                                    (static_cast<std::size_t>(z) * layout.row_stride) +
+                                    (static_cast<std::size_t>(y) * layout.layer_stride);
+            decode_run(local_index(0, y, z), out.subspan(row, chunk_size));
+        }
+    }
+}
+
+void ChunkStorage::copy_face(Face face, std::span<BlockState, chunk_area> out) const noexcept {
+    constexpr int last = chunk_size - 1;
+    const auto row = [&](int at) {
+        return std::span<BlockState>(out).subspan(static_cast<std::size_t>(at) * chunk_size,
+                                                  chunk_size);
+    };
+    switch (face) {
+    case Face::pos_y:
+    case Face::neg_y: {
+        const int y = face == Face::pos_y ? last : 0;
+        for (int z = 0; z < chunk_size; ++z) {
+            decode_run(local_index(0, y, z), row(z));
+        }
+        return;
+    }
+    case Face::pos_z:
+    case Face::neg_z: {
+        const int z = face == Face::pos_z ? last : 0;
+        for (int y = 0; y < chunk_size; ++y) {
+            decode_run(local_index(0, y, z), row(y));
+        }
+        return;
+    }
+    case Face::pos_x:
+    case Face::neg_x: {
+        // Neighbors along z are 32 entries apart, so block by block.
+        const int x = face == Face::pos_x ? last : 0;
+        for (int y = 0; y < chunk_size; ++y) {
+            for (int z = 0; z < chunk_size; ++z) {
+                row(y)[static_cast<std::size_t>(z)] = get(local_index(x, y, z));
+            }
+        }
+        return;
+    }
+    }
+}
+
 void ChunkStorage::decode_run(std::uint16_t first, std::span<BlockState> out) const noexcept {
     if (is_uniform()) {
         std::ranges::fill(out, uniform_);
