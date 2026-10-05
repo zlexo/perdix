@@ -1,12 +1,17 @@
 #include <vx/core/diagnostic.hpp>
 #include <vx/render/block_pack.hpp>
 #include <vx/render/block_textures.hpp>
+#include <vx/world/block_state.hpp>
+#include <vx/world/block_visual.hpp>
 
 #include <doctest/doctest.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <random>
+#include <span>
 #include <string>
 #include <system_error>
 
@@ -95,5 +100,28 @@ TEST_CASE("a pack whose block file has an error builds no textures") {
     // The block file's problems alone: no texture was looked for.
     for (const vx::Diagnostic& diagnostic : loaded.diagnostics) {
         CHECK(diagnostic.file == "assets/t/blocks/rock.toml");
+    }
+}
+
+TEST_CASE("the shipped pack loads with no errors and no warnings, and builds every layer") {
+    const vx::render::BlockPack pack = vx::render::load_block_pack(VX_SHIPPED_PACK_DIR);
+    std::string problems;
+    for (const vx::Diagnostic& diagnostic : pack.diagnostics) {
+        problems += vx::format(diagnostic) + "\n";
+    }
+    INFO(problems);
+    CHECK(pack.diagnostics.empty());
+    REQUIRE(pack.registry.has_value());
+    CHECK(pack.registry->textures().size() > 1);
+    CHECK(pack.textures.size() ==
+          pack.registry->textures().size() * vx::render::block_texture_layer_bytes);
+    // Every face of every block but air shows one of the pack's textures,
+    // never layer 0's checker.
+    const std::span<const vx::BlockVisual> visuals = pack.registry->visuals();
+    for (std::size_t state = 1; state < visuals.size(); ++state) {
+        for (const std::uint16_t layer : visuals[state].texture) {
+            INFO(pack.registry->key(static_cast<vx::BlockState>(state)));
+            CHECK(layer != 0);
+        }
     }
 }
