@@ -200,25 +200,30 @@ TEST_CASE("each texture is read once, however many turns of it there are") {
 }
 
 TEST_CASE("warnings: holes an opaque block hides, and a cutout block with no holes") {
-    std::vector<vx::Diagnostic> diagnostics;
     // leaves.png, every other texel transparent: opaque blocks use one turn,
-    // cutout blocks another, so it warns once. solid.png only cutout blocks
-    // use. Warnings stop nothing.
-    const std::vector<vx::TextureRef> textures = {{},
-                                                  ref("test:leaves", 0, false, true),
-                                                  ref("test:leaves", 1, true, false),
-                                                  ref("test:solid", 0, false, true)};
-    CHECK_FALSE(vx::render::build_block_textures(textures, assets, diagnostics).empty());
-    CHECK(formatted(diagnostics) ==
-          std::vector<std::string>{
-              path_of("leaves") +
-                  ": warning: 128 texels are transparent (alpha below 0.5), and opaque blocks "
-                  "draw them solid; cutout blocks would show the holes",
-              path_of("solid") + ": warning: only cutout blocks use this texture and no texel is "
-                                 "transparent: an opaque block would draw it faster"});
+    // cutout blocks another, so it warns once, whichever comes first.
+    // solid.png only cutout blocks use. Warnings stop nothing.
+    for (const bool opaque_first : {false, true}) {
+        INFO("opaque turn first: " << opaque_first);
+        std::vector<vx::Diagnostic> diagnostics;
+        const std::vector<vx::TextureRef> textures = {
+            {},
+            ref("test:leaves", 0, opaque_first, !opaque_first),
+            ref("test:leaves", 1, !opaque_first, opaque_first),
+            ref("test:solid", 0, false, true)};
+        CHECK_FALSE(vx::render::build_block_textures(textures, assets, diagnostics).empty());
+        CHECK(formatted(diagnostics) ==
+              std::vector<std::string>{
+                  path_of("leaves") +
+                      ": warning: 128 texels are transparent (alpha below 0.5), and opaque "
+                      "blocks draw them solid; cutout blocks would show the holes",
+                  path_of("solid") +
+                      ": warning: only cutout blocks use this texture and no texel is "
+                      "transparent: an opaque block would draw it faster"});
+    }
 
     // Used by cutout blocks alone, leaves.png is what cutout is for.
-    diagnostics.clear();
+    std::vector<vx::Diagnostic> diagnostics;
     CHECK_FALSE(vx::render::build_block_textures(
                     std::vector<vx::TextureRef>{{}, ref("test:leaves", 0, false, true)}, assets,
                     diagnostics)
