@@ -60,6 +60,16 @@ Scopes follow the source layout (`core`, `world`, `mesh`, `render`, `app`), plus
 
 Numbers come from the benchmark harness on the reference machine (an Apple M3 with 8 GB, see the vision), and the pull request says how they were measured. Shared CI runners are too noisy for timing, so CI never asserts a time budget; it only checks that benchmarks still run.
 
+The harness is `vx_bench`, every benchmark in one program, on [nanobench](https://github.com/martinus/nanobench). Run it from a release build, with nothing else busy:
+
+```sh
+cmake --preset mac-release
+cmake --build --preset mac-release
+./build/mac-release/bench/vx_bench
+```
+
+It prints a table per unit, with each benchmark's time, rate and error. On macOS it asks for a performance core. `vx_bench --quick` runs each benchmark once, which is what the test `the benchmarks run` does in every build: it checks that they still run, and times nothing.
+
 ## Profiling
 
 Tracy is compiled in when `VX_PROFILE` is on. The `mac-profile` preset is the release build with it, and debug info for Tracy's call stacks:
