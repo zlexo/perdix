@@ -1,0 +1,15 @@
+# assets/core/blocks/oak_log.toml
+[properties]
+axis = ["y", "x", "z"]        # the first value is the default
+
+[textures]                     # names in the block's namespace unless written ns:name
+side = "oak_log"
+top = "oak_log_top"
+bottom = "oak_log_top"
+
+[[variant]]
+when = { axis = "x" }
+rotate_x = 45
+# RFC 0004's oak log, turned by 45 degrees: its first example message.
+# path: assets/core/blocks/oak_log.toml
+# expect: assets/core/blocks/oak_log.toml:12:12: error: rotate_x must be 0, 90, 180 or 270, not 45

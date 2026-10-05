@@ -1,0 +1,6 @@
+[properties]
+lit = [true]
+[textures]
+all = "furnace"
+# path: assets/core/blocks/furnace.toml
+# expect: assets/core/blocks/furnace.toml:2:1: error: property 'lit' has one value, and a property needs two or more

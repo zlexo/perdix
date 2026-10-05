@@ -1,0 +1,16 @@
+[properties]
+axis = ["y", "x", "z"]
+[textures]
+side = "oak_log"
+top = "oak_log_top"
+bottom = "oak_log_top"
+[[variant]]
+when = { axis = "x" }
+rotate_y = -90
+[[variant]]
+when = { axis = "z" }
+rotate_x = 360
+# Multiples of 90 outside 0 to 270, which a check for multiples alone passes.
+# path: assets/core/blocks/oak_log.toml
+# expect: assets/core/blocks/oak_log.toml:9:12: error: rotate_y must be 0, 90, 180 or 270, not -90
+# expect: assets/core/blocks/oak_log.toml:12:12: error: rotate_x must be 0, 90, 180 or 270, not 360

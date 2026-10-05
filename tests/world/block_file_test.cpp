@@ -4,8 +4,12 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -198,4 +202,50 @@ TEST_CASE("a block file belongs at assets/<namespace>/blocks/<name>.toml and nam
     const Parsed bare = parse("assets/core/blocks/stone.toml", "opacity = \"opaque\"\n");
     CHECK(bare.messages == std::vector<std::string>{"assets/core/blocks/stone.toml: error: a block "
                                                     "names its textures in a [textures] table"});
+}
+
+TEST_CASE("a texture from another namespace is written ns:name") {
+    const Parsed parsed =
+        parse("assets/core/blocks/stone.toml", "[textures]\nall = \"other:stone\"\n");
+    REQUIRE(parsed.block.has_value());
+    CHECK(parsed.messages.empty());
+    REQUIRE(parsed.block->textures.size() == 1);
+    CHECK(parsed.block->textures[0].texture == "other:stone");
+}
+
+TEST_CASE("every file in the corpus of bad blocks gives exactly the messages it expects") {
+    // RFC 0004's test plan: at least one bad file for each error, so every
+    // check is shown to fire. Each file ends in comments that give the path
+    // it stands for and every message it must give, in order.
+    std::vector<std::filesystem::path> files;
+    for (const std::filesystem::directory_entry& entry :
+         std::filesystem::directory_iterator(VX_BAD_BLOCKS_DIR)) {
+        // Block files only: Finder's .DS_Store or an editor's swap file is
+        // not one, and would fail the test on the machine that made it.
+        if (entry.path().extension() == ".toml") {
+            files.push_back(entry.path());
+        }
+    }
+    std::ranges::sort(files);
+    REQUIRE_FALSE(files.empty());
+    for (const std::filesystem::path& file : files) {
+        INFO(file.filename().string());
+        std::ifstream stream(file);
+        std::stringstream text;
+        text << stream.rdbuf();
+        std::string path;
+        std::vector<std::string> expected;
+        std::istringstream lines(text.str());
+        for (std::string line; std::getline(lines, line);) {
+            if (line.starts_with("# path: ")) {
+                path = line.substr(8);
+            } else if (line.starts_with("# expect: ")) {
+                expected.push_back(line.substr(10));
+            }
+        }
+        const Parsed parsed = parse(path, text.str());
+        CHECK_FALSE(parsed.block.has_value());
+        CHECK(!expected.empty());
+        CHECK(parsed.messages == expected);
+    }
 }

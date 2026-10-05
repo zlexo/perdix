@@ -1,0 +1,6 @@
+[properties]
+facing = ["North", "south"]
+[textures]
+all = "furnace"
+# path: assets/core/blocks/furnace.toml
+# expect: assets/core/blocks/furnace.toml:2:11: error: value 'North' of property 'facing' uses characters other than a to z, 0 to 9 and _

@@ -1,0 +1,3 @@
+opacity = "opaque"
+# path: assets/core/blocks/stone.toml
+# expect: assets/core/blocks/stone.toml: error: a block names its textures in a [textures] table

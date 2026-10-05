@@ -1,0 +1,4 @@
+[textures]
+all = "stone"
+# path: assets/core/stone.toml
+# expect: assets/core/stone.toml: error: a block file belongs at assets/<namespace>/blocks/<name>.toml

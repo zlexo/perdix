@@ -1,0 +1,5 @@
+[textures]
+all = "Core:stone"
+# A texture from another namespace, written ns:name, is checked in both parts.
+# path: assets/core/blocks/stone.toml
+# expect: assets/core/blocks/stone.toml:2:7: error: texture name 'Core:stone' uses characters other than a to z, 0 to 9 and _

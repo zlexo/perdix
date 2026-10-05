@@ -61,16 +61,19 @@ struct BlockDefinition {
     std::string name; // from the file's path
     std::string path;
     Opacity opacity = Opacity::opaque;
-    std::string cull_group;                     // empty for none
+    std::string cull_group; // empty for none
+    SourcePlace cull_group_place;
     std::vector<PropertyDefinition> properties; // in name order
     std::vector<TextureAssignment> textures;
+    SourcePlace textures_place;
     std::vector<VariantDefinition> variants; // in file order
 };
 
-// Parses one block file, adding every problem it finds to `diagnostics` in
-// the order of the file; the definition comes back only when none of them
-// is an error. TOML tables keep no order, so a definition lists textures
-// and conditions in the order the file writes them.
+// Parses one block file and checks it against RFC 0004's rules, adding
+// every problem it finds to `diagnostics` in the order of the file; the
+// definition comes back only when none of them is an error. TOML tables
+// keep no order, so a definition lists textures and conditions in the order
+// the file writes them.
 [[nodiscard]] std::optional<BlockDefinition> parse_block_file(const SourceFile& file,
                                                               std::vector<Diagnostic>& diagnostics);
 

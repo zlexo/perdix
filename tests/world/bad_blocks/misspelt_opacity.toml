@@ -1,0 +1,7 @@
+opacty = "cutout"
+cull_group = "glass"
+[textures]
+all = "glass"
+# A misspelt opacity, which would otherwise make the cull group an error.
+# path: assets/core/blocks/glass.toml
+# expect: assets/core/blocks/glass.toml:1:1: error: unknown key 'opacty'; did you mean 'opacity'?

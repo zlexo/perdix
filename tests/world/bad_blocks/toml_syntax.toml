@@ -1,0 +1,4 @@
+[textures]
+all = "stone
+# path: assets/core/blocks/stone.toml
+# expect: assets/core/blocks/stone.toml:2:13: error: Error while parsing string: unescaped control characters other than TAB (U+0009) are explicitly prohibited

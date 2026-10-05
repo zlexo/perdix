@@ -1,0 +1,6 @@
+opacty = "cutout"
+[textures]
+all = "glass"
+# RFC 0004's second example message.
+# path: assets/core/blocks/glass.toml
+# expect: assets/core/blocks/glass.toml:1:1: error: unknown key 'opacty'; did you mean 'opacity'?

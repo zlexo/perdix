@@ -1,0 +1,6 @@
+opacity = "cutout"
+cull_group = "Leaves"
+[textures]
+all = "oak_leaves"
+# path: assets/core/blocks/oak_leaves.toml
+# expect: assets/core/blocks/oak_leaves.toml:2:14: error: cull group 'Leaves' uses characters other than a to z, 0 to 9 and _

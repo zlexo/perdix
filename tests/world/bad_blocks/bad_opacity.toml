@@ -1,0 +1,8 @@
+opacity = "cutot"
+cull_group = "glass"
+[textures]
+all = "glass"
+# An opacity that cannot be read, which would otherwise make the cull group
+# an error.
+# path: assets/core/blocks/glass.toml
+# expect: assets/core/blocks/glass.toml:1:11: error: opacity is "opaque" or "cutout"

@@ -1,0 +1,5 @@
+[texturs]
+all = "stone"
+# A misspelt [textures], which would otherwise also be missing.
+# path: assets/core/blocks/stone.toml
+# expect: assets/core/blocks/stone.toml:1:2: error: unknown key 'texturs'; did you mean 'textures'?

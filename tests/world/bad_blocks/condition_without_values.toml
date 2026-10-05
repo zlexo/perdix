@@ -1,0 +1,9 @@
+[properties]
+axis = ["y", "x", "z"]
+[textures]
+all = "oak_log"
+[[variant]]
+when = { axis = [] }
+rotate_x = 90
+# path: assets/core/blocks/oak_log.toml
+# expect: assets/core/blocks/oak_log.toml:6:10: error: the condition on 'axis' names no values
