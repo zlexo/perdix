@@ -81,6 +81,20 @@ TEST_CASE("a pack on disk loads the block files of every namespace, and nothing 
     CHECK(load.registry->find("mod:thing") == state(3));
 }
 
+TEST_CASE("a texture file that no block uses is a warning on its path, and the pack still loads") {
+    const TempPack pack;
+    pack.write("assets/core/blocks/stone.toml", "[textures]\nall = \"stone\"\n");
+    pack.write("assets/core/textures/blocks/stone.png", "a picture");
+    pack.write("assets/core/textures/blocks/moss.png", "a picture");
+    pack.write("assets/core/textures/blocks/moss.txt", "not a texture file");
+
+    const vx::BlockLoad load = vx::BlockRegistry::load(pack.root());
+    CHECK(load.registry.has_value());
+    CHECK(formatted(load.diagnostics) ==
+          std::vector<std::string>{
+              "assets/core/textures/blocks/moss.png: warning: no block uses this texture"});
+}
+
 TEST_CASE("a block file's problems are placed in it by its path within the pack") {
     const TempPack pack;
     pack.write("assets/core/blocks/glass.toml",

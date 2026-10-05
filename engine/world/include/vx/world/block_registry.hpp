@@ -51,8 +51,10 @@ public:
     // Files are taken in path order, whatever order they come in.
     [[nodiscard]] static BlockLoad load(std::span<const SourceFile> files);
     // A pack on disk: every assets/<namespace>/blocks/*.toml under `root`,
-    // loaded as the files above, their paths relative to `root`. No assets
-    // folder, or a folder or file that cannot be read, is an error.
+    // loaded as the files above, their paths relative to `root`. Each
+    // texture file no block uses, assets/<namespace>/textures/blocks/*.png,
+    // is a warning. No assets folder, or a folder or file that cannot be
+    // read, is an error.
     [[nodiscard]] static BlockLoad load(const std::filesystem::path& root);
 
     // "core:furnace[lit=true]": properties left out take their defaults.

@@ -17,6 +17,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -495,6 +496,35 @@ std::optional<std::string> read_text(const fs::path& path) {
     return text;
 }
 
+// A warning for each texture file of the pack's namespaces that no block
+// uses (RFC 0004), in path order.
+void warn_unused_textures(const fs::path& root, std::span<const fs::path> namespaces,
+                          const BlockRegistry& registry, std::vector<Diagnostic>& diagnostics) {
+    std::set<std::string_view> used;
+    for (const TextureRef& texture : registry.textures()) {
+        used.insert(texture.name);
+    }
+    for (const fs::path& space : namespaces) {
+        const fs::path folder = space / "textures" / "blocks";
+        const std::string relative = folder.lexically_relative(root).generic_string();
+        const std::optional<std::vector<fs::path>> pictures = entries(folder, file_with(".png"));
+        if (!pictures) {
+            diagnostics.push_back(pack_error(relative, "the folder cannot be read"));
+            continue;
+        }
+        for (const fs::path& picture : *pictures) {
+            const std::string name = space.filename().string() + ":" + picture.stem().string();
+            if (!used.contains(name)) {
+                diagnostics.push_back({.severity = Severity::warning,
+                                       .file = picture.lexically_relative(root).generic_string(),
+                                       .line = 0,
+                                       .column = 0,
+                                       .message = "no block uses this texture"});
+            }
+        }
+    }
+}
+
 } // namespace
 
 BlockLoad BlockRegistry::load(const fs::path& root) {
@@ -529,7 +559,11 @@ BlockLoad BlockRegistry::load(const fs::path& root) {
     if (has_errors(failed.diagnostics)) {
         return failed;
     }
-    return BlockRegistry::load(files);
+    BlockLoad load = BlockRegistry::load(files);
+    if (load.registry.has_value()) {
+        warn_unused_textures(root, *namespaces, *load.registry, load.diagnostics);
+    }
+    return load;
 }
 
 BlockLoad BlockRegistry::load(std::span<const SourceFile> files) {
