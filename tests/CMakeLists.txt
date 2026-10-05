@@ -42,6 +42,7 @@ doctest_discover_tests(vx_world_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 
 add_executable(vx_render_tests
     main.cpp
+    render/block_textures_test.cpp
     render/camera_relative_test.cpp
     render/camera_test.cpp
     render/device_report_test.cpp
