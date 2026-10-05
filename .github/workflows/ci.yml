@@ -139,8 +139,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: No GPU or window headers in world and mesh
+        # git grep exits 0 on a match, 1 on none, and above 1 when it could
+        # not search (a broken pattern, say), which must not pass as clean.
         run: |
-          if git grep -nE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"](vulkan/|volk\.h|vk_mem_alloc\.h|SDL[0-9]*/|SDL\.h|GLFW/)' -- engine/world engine/mesh; then
+          status=0
+          git grep -nE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"](vulkan/|volk\.h|vk_mem_alloc\.h|SDL[0-9]*/|SDL\.h|GLFW/)' -- engine/world engine/mesh || status=$?
+          if [ "$status" -eq 0 ]; then
             echo "::error::GPU or window headers in engine/world or engine/mesh (ADR 0003)"
+            exit 1
+          elif [ "$status" -ne 1 ]; then
+            echo "::error::git grep failed with status $status, so nothing was checked"
             exit 1
           fi
