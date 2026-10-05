@@ -34,5 +34,7 @@ int main(int argc, char* argv[]) {
         bench.epochs(1).epochIterations(1);
     }
     vx::bench::packed_array(bench);
-    return 0;
+    // No results means no benchmark ran, which --quick must not pass as a
+    // run: the test "the benchmarks run" would stay green with none.
+    return bench.results().empty() ? 1 : 0;
 }
