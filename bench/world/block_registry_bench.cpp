@@ -36,11 +36,13 @@ std::vector<SourceFile> synthetic_pack() {
 
 void block_registry(ankerl::nanobench::Bench& bench) {
     // RFC 0004's budget: under 50 ms. A pack that failed to load would time
-    // the wrong thing, so it must load, with every state, before it is timed.
+    // the wrong thing, so it must load, with every state and the faces of
+    // each, before it is timed: three textures a block, and the checker.
     const std::vector<SourceFile> files = synthetic_pack();
     const BlockLoad check = BlockRegistry::load(files);
-    if (!check.registry || check.registry->state_count() != 10'001) {
-        std::cerr << "the synthetic pack did not load with 10,000 states\n";
+    if (!check.registry || check.registry->state_count() != 10'001 ||
+        check.registry->visuals().size() != 10'001 || check.registry->textures().size() != 3'001) {
+        std::cerr << "the synthetic pack did not load with 10,000 states and 3,000 textures\n";
         std::exit(1);
     }
     bench.batch(1).unit("pack").run("block registry: load 1,000 blocks, 10,000 states", [&] {

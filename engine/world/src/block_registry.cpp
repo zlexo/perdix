@@ -3,12 +3,16 @@
 #include <vx/core/diagnostic.hpp>
 #include <vx/world/block_file.hpp>
 #include <vx/world/block_state.hpp>
+#include <vx/world/block_visual.hpp>
+#include <vx/world/coordinates.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -68,6 +72,363 @@ Diagnostic too_many_states(std::uint64_t total, std::span<const BlockDefinition>
             .message = message};
 }
 
+// A 16-bit texture layer numbers 65,536 layers, the checker among them.
+constexpr std::size_t max_layers = std::size_t{std::numeric_limits<std::uint16_t>::max()} + 1;
+// An 8-bit cull group numbers 255 groups; 0 is none.
+constexpr std::size_t max_cull_groups = std::numeric_limits<std::uint8_t>::max();
+
+// Every cull group the blocks name, in name order: group 1 is the first.
+std::vector<std::string_view> cull_groups_of(std::span<const BlockDefinition> blocks) {
+    std::vector<std::string_view> groups;
+    for (const BlockDefinition& block : blocks) {
+        if (!block.cull_group.empty()) {
+            groups.emplace_back(block.cull_group);
+        }
+    }
+    std::ranges::sort(groups);
+    const auto repeated = std::ranges::unique(groups);
+    groups.erase(repeated.begin(), repeated.end());
+    return groups;
+}
+
+// A direction along one axis. North is -z, east +x and top +y, as in
+// Minecraft (RFC 0004).
+struct Direction {
+    int x = 0;
+    int y = 0;
+    int z = 0;
+
+    friend constexpr bool operator==(const Direction&, const Direction&) = default;
+};
+
+constexpr Direction operator-(Direction d) {
+    return {.x = -d.x, .y = -d.y, .z = -d.z};
+}
+
+constexpr Direction cross(Direction a, Direction b) {
+    return {.x = (a.y * b.z) - (a.z * b.y),
+            .y = (a.z * b.x) - (a.x * b.z),
+            .z = (a.x * b.y) - (a.y * b.x)};
+}
+
+// Indexed by Face: the way each face looks out of the block...
+constexpr std::array<Direction, 6> outward = {{
+    {.x = 1, .y = 0, .z = 0},
+    {.x = -1, .y = 0, .z = 0},
+    {.x = 0, .y = 1, .z = 0},
+    {.x = 0, .y = -1, .z = 0},
+    {.x = 0, .y = 0, .z = 1},
+    {.x = 0, .y = 0, .z = -1},
+}};
+// ...and the way its image's top edge points, seen from outside: up on the
+// side faces, north on the top face, south on the bottom face (RFC 0004).
+constexpr std::array<Direction, 6> image_top = {{
+    {.x = 0, .y = 1, .z = 0},
+    {.x = 0, .y = 1, .z = 0},
+    {.x = 0, .y = 0, .z = -1},
+    {.x = 0, .y = 0, .z = 1},
+    {.x = 0, .y = 1, .z = 0},
+    {.x = 0, .y = 1, .z = 0},
+}};
+
+// One quarter of rotate_x turns the top to the north; one quarter of
+// rotate_y turns the north to the east, clockwise seen from above.
+constexpr Direction turn_x(Direction d) {
+    return {.x = d.x, .y = d.z, .z = -d.y};
+}
+constexpr Direction turn_y(Direction d) {
+    return {.x = -d.z, .y = d.y, .z = d.x};
+}
+
+// Where a face of the block ends up once the block is turned, and how many
+// clockwise quarter turns its image makes there, seen from outside.
+struct Placement {
+    Face face = Face::pos_x;
+    std::uint8_t quarter_turns = 0;
+
+    friend constexpr bool operator==(const Placement&, const Placement&) = default;
+};
+
+// For each face, indexed by Face: where x_turns quarters of rotate_x, then
+// y_turns quarters of rotate_y, put it. The image's top edge turns with the
+// face, and the number of quarter turns is wherever it then points: a
+// clockwise quarter turn moves it to the right, which is top x outward.
+constexpr std::array<Placement, 6> placements(std::size_t x_turns, std::size_t y_turns) {
+    std::array<Placement, 6> placed{};
+    for (std::size_t from = 0; from < placed.size(); ++from) {
+        Direction out = outward[from];
+        Direction top = image_top[from];
+        for (std::size_t turn = 0; turn < x_turns; ++turn) {
+            out = turn_x(out);
+            top = turn_x(top);
+        }
+        for (std::size_t turn = 0; turn < y_turns; ++turn) {
+            out = turn_y(out);
+            top = turn_y(top);
+        }
+        const auto to = static_cast<std::size_t>(std::ranges::find(outward, out) - outward.begin());
+        const Direction right = cross(image_top[to], outward[to]);
+        const std::array<Direction, 4> turned = {image_top[to], right, -image_top[to], -right};
+        placed[from] = {.face = static_cast<Face>(to),
+                        .quarter_turns = static_cast<std::uint8_t>(std::ranges::find(turned, top) -
+                                                                   turned.begin())};
+    }
+    return placed;
+}
+
+// All sixteen, indexed by 4 * x_turns + y_turns, worked out while compiling.
+constexpr std::array<std::array<Placement, 6>, 16> all_placements = [] {
+    std::array<std::array<Placement, 6>, 16> all{};
+    for (std::size_t x_turns = 0; x_turns < 4; ++x_turns) {
+        for (std::size_t y_turns = 0; y_turns < 4; ++y_turns) {
+            all[(4 * x_turns) + y_turns] = placements(x_turns, y_turns);
+        }
+    }
+    return all;
+}();
+
+// RFC 0004's oak log along x, rotate_x = 90 then rotate_y = 90: its top
+// shows on +x, upside down, and its north side lies underneath, turned once
+// so the bark runs along x.
+static_assert(all_placements[5][static_cast<std::size_t>(Face::pos_y)] ==
+              Placement{.face = Face::pos_x, .quarter_turns = 2});
+static_assert(all_placements[5][static_cast<std::size_t>(Face::neg_z)] ==
+              Placement{.face = Face::neg_y, .quarter_turns = 1});
+
+// The face a block file's key names on its own.
+constexpr Face face_named(TextureFace face) {
+    switch (face) {
+    case TextureFace::east:
+        return Face::pos_x;
+    case TextureFace::west:
+        return Face::neg_x;
+    case TextureFace::top:
+        return Face::pos_y;
+    case TextureFace::bottom:
+        return Face::neg_y;
+    case TextureFace::south:
+        return Face::pos_z;
+    case TextureFace::north:
+        return Face::neg_z;
+    case TextureFace::all:
+    case TextureFace::side:
+        break;
+    }
+    assert(false && "all and side name more than one face");
+    return Face::neg_z;
+}
+
+constexpr std::array<Face, 4> side_faces = {Face::pos_x, Face::neg_x, Face::pos_z, Face::neg_z};
+
+// The faces one [textures] table names, over what earlier tables named: a
+// single face beats `side`, which beats `all`. Each face holds its texture's
+// index in the list of every texture the block names, where this table's
+// start at `first`.
+void name_faces(std::span<const TextureAssignment> textures, std::size_t first,
+                std::array<std::size_t, 6>& faces) {
+    for (std::size_t at = 0; at < textures.size(); ++at) {
+        if (textures[at].face == TextureFace::all) {
+            faces.fill(first + at);
+        }
+    }
+    for (std::size_t at = 0; at < textures.size(); ++at) {
+        if (textures[at].face == TextureFace::side) {
+            for (const Face face : side_faces) {
+                faces[static_cast<std::size_t>(face)] = first + at;
+            }
+        }
+    }
+    for (std::size_t at = 0; at < textures.size(); ++at) {
+        const TextureFace face = textures[at].face;
+        if (face != TextureFace::all && face != TextureFace::side) {
+            faces[static_cast<std::size_t>(face_named(face))] = first + at;
+        }
+    }
+}
+
+// "oak_log" in core's block file is "core:oak_log"; "ns:oak_log" stays.
+std::string texture_name(std::string_view block, std::string_view texture) {
+    if (texture.find(':') != std::string_view::npos) {
+        return std::string(texture);
+    }
+    return std::string(block.substr(0, block.find(':') + 1)) + std::string(texture);
+}
+
+// The number of a block's cull group: 1 for the first in name order, 0 for none.
+std::uint8_t cull_group_number(std::span<const std::string_view> groups, std::string_view group) {
+    if (group.empty()) {
+        return 0;
+    }
+    return static_cast<std::uint8_t>(1 +
+                                     (std::ranges::lower_bound(groups, group) - groups.begin()));
+}
+
+// The next state's value indices: the last property varies fastest.
+void next_values(const BlockDefinition& block, std::vector<std::size_t>& values) {
+    for (std::size_t digit = values.size(); digit-- > 0;) {
+        if (++values[digit] < block.properties[digit].values.size()) {
+            return;
+        }
+        values[digit] = 0;
+    }
+}
+
+// A block's faces in any of its states (RFC 0004): its own textures, then
+// those of every variant that matches, in file order, then turned by the
+// sum of the matching variants' turns. The variants are read once, so the
+// work for each state compares indices, never text.
+class BlockFaces {
+public:
+    explicit BlockFaces(const BlockDefinition& block) {
+        std::size_t count = block.textures.size();
+        for (const VariantDefinition& variant : block.variants) {
+            count += variant.textures.size();
+        }
+        textures_.reserve(count);
+        for (const TextureAssignment& texture : block.textures) {
+            textures_.push_back(&texture);
+        }
+        rules_.reserve(block.variants.size());
+        for (const VariantDefinition& variant : block.variants) {
+            Rule rule{.when = {},
+                      .textures = variant.textures,
+                      .first = textures_.size(),
+                      .x_turns = variant.rotate_x / 90,
+                      .y_turns = variant.rotate_y / 90};
+            for (const VariantCondition& condition : variant.when) {
+                rule.when.push_back(condition_of(block, condition));
+            }
+            for (const TextureAssignment& texture : variant.textures) {
+                textures_.push_back(&texture);
+            }
+            rules_.push_back(std::move(rule));
+        }
+        name_faces(block.textures, 0, own_);
+    }
+
+    // Every texture the block names: its own, then each variant's.
+    [[nodiscard]] std::span<const TextureAssignment* const> textures() const noexcept {
+        return textures_;
+    }
+
+    struct Faces {
+        std::array<std::size_t, 6> texture{}; // by face before turning, into textures()
+        std::size_t turns = 0;                // into all_placements
+    };
+
+    // The faces of the state with these value indices.
+    [[nodiscard]] Faces of(std::span<const std::size_t> values) const {
+        Faces faces{.texture = own_, .turns = 0};
+        std::int64_t x_turns = 0;
+        std::int64_t y_turns = 0;
+        for (const Rule& rule : rules_) {
+            if (std::ranges::all_of(rule.when, [&](const Condition& condition) {
+                    return condition.matches[values[condition.property]];
+                })) {
+                name_faces(rule.textures, rule.first, faces.texture);
+                x_turns += rule.x_turns;
+                y_turns += rule.y_turns;
+            }
+        }
+        faces.turns = static_cast<std::size_t>((4 * (x_turns % 4)) + (y_turns % 4));
+        return faces;
+    }
+
+private:
+    struct Condition {
+        std::size_t property = 0;  // in name order
+        std::vector<bool> matches; // by value index
+    };
+    struct Rule {
+        std::vector<Condition> when;
+        std::span<const TextureAssignment> textures;
+        std::size_t first = 0; // its textures' place in textures_
+        std::int64_t x_turns = 0;
+        std::int64_t y_turns = 0;
+    };
+
+    // The parser has checked that every condition names a property and
+    // values the block has.
+    static Condition condition_of(const BlockDefinition& block, const VariantCondition& condition) {
+        const auto property =
+            std::ranges::find(block.properties, condition.property, &PropertyDefinition::name);
+        Condition result{.property = static_cast<std::size_t>(property - block.properties.begin()),
+                         .matches = std::vector<bool>(property->values.size(), false)};
+        for (const std::string& value : condition.values) {
+            result.matches[static_cast<std::size_t>(std::ranges::find(property->values, value) -
+                                                    property->values.begin())] = true;
+        }
+        return result;
+    }
+
+    std::vector<const TextureAssignment*> textures_;
+    std::vector<Rule> rules_;
+    std::array<std::size_t, 6> own_{};
+};
+
+// Every texture and turn a face uses (RFC 0004), numbered in name order once
+// all are known, after layer 0, the checker.
+class LayerTable {
+public:
+    struct Layer {
+        TextureRef ref;
+        std::uint16_t number = 0;
+    };
+
+    // The layer of a block's texture in some quarter turns. Map nodes stay
+    // where they are, so states can point at them until number() is called.
+    Layer& use(const BlockDefinition& block, const TextureAssignment& texture,
+               std::uint8_t quarter_turns) {
+        auto [found, added] =
+            layers_.try_emplace({texture_name(block.name, texture.texture), quarter_turns});
+        TextureRef& ref = found->second.ref;
+        if (added) {
+            ref.name = found->first.first;
+            ref.quarter_turns = quarter_turns;
+            ref.first_use = block.path + ':' + std::to_string(texture.place.line) + ':' +
+                            std::to_string(texture.place.column);
+            if (layers_.size() == max_layers && !past_limit_) {
+                past_limit_ = Diagnostic{.severity = Severity::error,
+                                         .file = block.path,
+                                         .line = texture.place.line,
+                                         .column = texture.place.column,
+                                         .message = {}};
+            }
+        }
+        (block.opacity == Opacity::cutout ? ref.used_cutout : ref.used_opaque) = true;
+        return found->second;
+    }
+
+    // More layers than a face numbers, reported where, in id order, the first
+    // texture past the limit is used.
+    [[nodiscard]] std::optional<Diagnostic> past_limit() const {
+        if (!past_limit_) {
+            return std::nullopt;
+        }
+        Diagnostic error = *past_limit_;
+        error.message = "the blocks need " + with_commas(layers_.size() + 1) +
+                        " texture layers with the checker, more than the " +
+                        with_commas(max_layers) + " a layer number holds";
+        return error;
+    }
+
+    // Gives every layer its number, and lists them by number.
+    [[nodiscard]] std::vector<TextureRef> number() {
+        std::vector<TextureRef> textures;
+        textures.reserve(layers_.size() + 1);
+        textures.emplace_back(); // the checker
+        for (auto& [key, layer] : layers_) {
+            layer.number = static_cast<std::uint16_t>(textures.size());
+            textures.push_back(layer.ref);
+        }
+        return textures;
+    }
+
+private:
+    std::map<std::pair<std::string, std::uint8_t>, Layer> layers_;
+    std::optional<Diagnostic> past_limit_;
+};
+
 } // namespace
 
 BlockLoad BlockRegistry::load(std::span<const SourceFile> files) {
@@ -109,6 +470,21 @@ BlockLoad BlockRegistry::load(std::span<const SourceFile> files) {
     if (total > max_states) {
         load.diagnostics.push_back(too_many_states(total, definitions));
     }
+    const std::vector<std::string_view> groups = cull_groups_of(definitions);
+    if (groups.size() > max_cull_groups) {
+        // Reported on the first block, in name order, of the first group past the limit.
+        const std::string_view first_past = groups[max_cull_groups];
+        const BlockDefinition& block =
+            *std::ranges::find(definitions, first_past, &BlockDefinition::cull_group);
+        load.diagnostics.push_back({.severity = Severity::error,
+                                    .file = block.path,
+                                    .line = block.cull_group_place.line,
+                                    .column = block.cull_group_place.column,
+                                    .message = "the blocks name " + with_commas(groups.size()) +
+                                               " cull groups, more than the " +
+                                               with_commas(max_cull_groups) +
+                                               " a cull group number holds"});
+    }
     if (has_errors(load.diagnostics)) {
         return load;
     }
@@ -116,14 +492,14 @@ BlockLoad BlockRegistry::load(std::span<const SourceFile> files) {
     BlockRegistry registry;
     registry.blocks_.push_back({.name = "core:air", .first = 0, .states = 1, .properties = {}});
     std::uint32_t next = 1;
-    for (BlockDefinition& definition : definitions) {
+    for (const BlockDefinition& definition : definitions) {
         Block block{.name = definition.name,
                     .first = next,
                     .states = static_cast<std::uint32_t>(states_of(definition)),
                     .properties = {}};
-        for (PropertyDefinition& property : definition.properties) {
-            block.properties.push_back(
-                {.name = std::move(property.name), .values = std::move(property.values)});
+        // Copied, not moved: the faces read the definitions next.
+        for (const PropertyDefinition& property : definition.properties) {
+            block.properties.push_back({.name = property.name, .values = property.values});
         }
         next += block.states;
         registry.blocks_.push_back(std::move(block));
@@ -133,8 +509,55 @@ BlockLoad BlockRegistry::load(std::span<const SourceFile> files) {
         registry.types_.insert(registry.types_.end(), registry.blocks_[type].states,
                                static_cast<BlockType>(type));
     }
+    if (std::optional<Diagnostic> error = registry.build_faces(definitions)) {
+        load.diagnostics.push_back(*std::move(error));
+        return load;
+    }
     load.registry = std::move(registry);
     return load;
+}
+
+std::optional<Diagnostic> BlockRegistry::build_faces(std::span<const BlockDefinition> definitions) {
+    LayerTable layers;
+    std::vector<std::array<const LayerTable::Layer*, 6>> faces(types_.size()); // air's stay null
+    const std::vector<std::string_view> groups = cull_groups_of(definitions);
+    visuals_.assign(types_.size(), BlockVisual{});
+    for (std::size_t at = 0; at < definitions.size(); ++at) {
+        const BlockDefinition& definition = definitions[at];
+        const Block& block = blocks_[at + 1];
+        const BlockFaces block_faces(definition);
+        const std::uint8_t group = cull_group_number(groups, definition.cull_group);
+        // The layer of each texture the block names, in each quarter turn.
+        std::vector<const LayerTable::Layer*> seen(block_faces.textures().size() * 4, nullptr);
+        std::vector<std::size_t> values(definition.properties.size(), 0);
+        for (std::uint32_t offset = 0; offset < block.states; ++offset) {
+            const std::size_t state = block.first + offset;
+            visuals_[state].opacity = definition.opacity;
+            visuals_[state].cull_group = group;
+            const BlockFaces::Faces named = block_faces.of(values);
+            for (std::size_t from = 0; from < 6; ++from) {
+                const Placement place = all_placements[named.turns][from];
+                const LayerTable::Layer*& layer =
+                    seen[(4 * named.texture[from]) + place.quarter_turns];
+                if (layer == nullptr) {
+                    layer = &layers.use(definition, *block_faces.textures()[named.texture[from]],
+                                        place.quarter_turns);
+                }
+                faces[state][static_cast<std::size_t>(place.face)] = layer;
+            }
+            next_values(definition, values);
+        }
+    }
+    if (std::optional<Diagnostic> error = layers.past_limit()) {
+        return error;
+    }
+    textures_ = layers.number();
+    for (std::size_t state = 1; state < faces.size(); ++state) {
+        for (std::size_t face = 0; face < 6; ++face) {
+            visuals_[state].texture[face] = faces[state][face]->number;
+        }
+    }
+    return std::nullopt;
 }
 
 std::optional<BlockState> BlockRegistry::find(std::string_view key) const {
