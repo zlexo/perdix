@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -155,6 +156,11 @@ void ChunkStorage::to_dense(std::span<BlockState, chunk_volume> out) const noexc
 }
 
 void ChunkStorage::to_dense(std::span<BlockState> out, DenseLayout layout) const noexcept {
+    // The last row must end inside `out`: subspan does not check. (Written
+    // inside the assert, so a release build has no unused variable.)
+    assert(layout.offset + ((std::size_t{chunk_size} - 1) * layout.row_stride) +
+               ((std::size_t{chunk_size} - 1) * layout.layer_stride) + std::size_t{chunk_size} <=
+           out.size());
     // Row by row: a row of 32 blocks along x is consecutive both here and in
     // `out`.
     for (int y = 0; y < chunk_size; ++y) {
