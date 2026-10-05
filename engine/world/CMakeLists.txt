@@ -9,6 +9,14 @@ FetchContent_Declare(tomlplusplus
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR sources-only)
 FetchContent_MakeAvailable(tomlplusplus)
+# Backports for malformed files that 3.4.0 cannot parse safely. Run at every
+# configure, as Tracy's are, so an existing build directory picks up a
+# changed backport; editing the script configures again.
+execute_process(COMMAND "${CMAKE_COMMAND}" -P "${PROJECT_SOURCE_DIR}/cmake/VxPatchTomlplusplus.cmake"
+    WORKING_DIRECTORY "${tomlplusplus_SOURCE_DIR}"
+    COMMAND_ERROR_IS_FATAL ANY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${PROJECT_SOURCE_DIR}/cmake/VxPatchTomlplusplus.cmake")
 
 add_library(vx_tomlplusplus STATIC src/tomlplusplus.cpp)
 target_include_directories(vx_tomlplusplus SYSTEM PUBLIC "${tomlplusplus_SOURCE_DIR}/include")

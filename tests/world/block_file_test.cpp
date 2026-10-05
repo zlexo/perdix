@@ -4,6 +4,7 @@
 
 #include <doctest/doctest.h>
 
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <vector>
@@ -153,6 +154,35 @@ rotate_x = "90"
             "assets/core/blocks/furnace.toml:6:16: error: a condition names one value or a list of "
             "them",
             "assets/core/blocks/furnace.toml:7:12: error: rotate_x is a whole number of degrees"});
+}
+
+TEST_CASE("files that toml++ 3.4.0 could not parse safely are errors, not crashes") {
+    // Each stopped a debug build on one of toml++'s assertions, or overflowed
+    // the stack, before cmake/VxPatchTomlplusplus.cmake's backports.
+    std::string deep = "a";
+    for (int part = 0; part < 20'000; ++part) {
+        deep += ".a";
+    }
+    for (const std::string& text :
+         {std::string("[\n"), std::string("[properties]\naxis = [\"y\", \"x\", }\n"),
+          std::string("[textures]\nall = \"stone\"\n[[variant]]\nrotate_x = 90\xC2\xB0\n"),
+          deep + " = 1\n"}) {
+        INFO(text.substr(0, 40));
+        const Parsed parsed = parse("assets/core/blocks/stone.toml", text);
+        CHECK_FALSE(parsed.block.has_value());
+        REQUIRE(parsed.messages.size() == 1);
+        CHECK(parsed.messages[0].starts_with("assets/core/blocks/stone.toml:"));
+        CHECK(parsed.messages[0].find(": error: ") != std::string::npos);
+    }
+}
+
+TEST_CASE("variants that are not tables are an error") {
+    const Parsed parsed =
+        parse("assets/core/blocks/stone.toml", "variant = [1]\n[textures]\nall = \"stone\"\n");
+    CHECK_FALSE(parsed.block.has_value());
+    CHECK(parsed.messages ==
+          std::vector<std::string>{"assets/core/blocks/stone.toml:1:11: error: variants are "
+                                   "tables, each written [[variant]]"});
 }
 
 TEST_CASE("a block file belongs at assets/<namespace>/blocks/<name>.toml and names its textures") {
