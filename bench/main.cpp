@@ -23,6 +23,14 @@ int main(int argc, char* argv[]) {
         }
         quick = true;
     }
+#ifndef NDEBUG
+    // nanobench warns about a debug build only when DEBUG is defined, which
+    // CMake's Debug configuration does not define.
+    if (!quick) {
+        std::cerr << "warning: a debug build, whose timings say nothing about the engine's; "
+                     "measure a release build (mac-release)\n";
+    }
+#endif
 #ifdef __APPLE__
     // On a performance core: an efficiency core times everything slower.
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
