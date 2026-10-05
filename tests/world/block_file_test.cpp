@@ -217,8 +217,15 @@ TEST_CASE("every file in the corpus of bad blocks gives exactly the messages it 
     // RFC 0004's test plan: at least one bad file for each error, so every
     // check is shown to fire. Each file ends in comments that give the path
     // it stands for and every message it must give, in order.
-    std::vector<std::filesystem::path> files(std::filesystem::directory_iterator(VX_BAD_BLOCKS_DIR),
-                                             {});
+    std::vector<std::filesystem::path> files;
+    for (const std::filesystem::directory_entry& entry :
+         std::filesystem::directory_iterator(VX_BAD_BLOCKS_DIR)) {
+        // Block files only: Finder's .DS_Store or an editor's swap file is
+        // not one, and would fail the test on the machine that made it.
+        if (entry.path().extension() == ".toml") {
+            files.push_back(entry.path());
+        }
+    }
     std::ranges::sort(files);
     REQUIRE_FALSE(files.empty());
     for (const std::filesystem::path& file : files) {
