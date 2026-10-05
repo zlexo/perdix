@@ -40,6 +40,10 @@ struct RendererDesc {
     // The ImGui context the overlay is built in, by the app, which keeps it
     // alive longer than the renderer; null when there is no overlay.
     ImGuiContext* overlay = nullptr;
+    // RFC 0004's block texture array: every layer at every level, as
+    // build_block_textures lays them out, such as a BlockPack's textures.
+    // Uploaded at startup; empty binds an array of one layer, the checker.
+    std::span<const std::byte> block_textures;
 };
 
 // A color in linear RGB, with alpha. The target's sRGB format encodes it.
@@ -146,7 +150,7 @@ private:
              Image depth, TextureTable textures, Image block_textures, Cube cube,
              Extent framebuffer, PresentMode present_mode);
     [[nodiscard]] Result<void> create_frame_objects();
-    [[nodiscard]] Result<void> upload_at_startup();
+    [[nodiscard]] Result<void> upload_at_startup(std::span<const std::byte> block_textures);
     [[nodiscard]] Result<void> add_rendered_semaphores();
     [[nodiscard]] Result<void> recreate_target();
     [[nodiscard]] Result<void> start_overlay(ImGuiContext* overlay);

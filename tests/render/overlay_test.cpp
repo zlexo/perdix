@@ -46,7 +46,8 @@ vx::Result<vx::render::Renderer> overlay_renderer(ImGuiContext* overlay) {
                                          .framebuffer = image_size,
                                          .validation = true,
                                          .present_mode = vx::render::PresentMode::fifo,
-                                         .overlay = overlay});
+                                         .overlay = overlay,
+                                         .block_textures = {}});
 }
 
 // One cube in the middle of the image, two blocks away.
