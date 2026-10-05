@@ -4,12 +4,16 @@
 #include "transition.hpp"
 #include "vk_result.hpp"
 
+#include <vx/core/diagnostic.hpp>
+#include <vx/render/block_texture_array.hpp>
+#include <vx/render/block_textures.hpp>
 #include <vx/render/buffer.hpp>
 #include <vx/render/camera_relative.hpp>
 #include <vx/render/gpu_timer.hpp>
 #include <vx/render/texture_table.hpp>
 #include <vx/render/upload.hpp>
 #include <vx/shaders/cube.hpp>
+#include <vx/world/block_registry.hpp>
 
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
@@ -596,6 +600,10 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     if (!checker.has_value()) {
         return checker.error();
     }
+    Result<Image> block_textures = create_block_texture_array(context.value().device(), 1);
+    if (!block_textures.has_value()) {
+        return block_textures.error();
+    }
     Result<Buffer> vertices = Buffer::create(context.value().device(), sizeof(cube_vertices),
                                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -606,6 +614,7 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
 
     Renderer renderer(std::move(context).value(), std::move(swapchain), std::move(offscreen),
                       std::move(depth).value(), std::move(textures).value(),
+                      std::move(block_textures).value(),
                       {.pipeline = std::move(pipeline).value(),
                        .vertices = std::move(vertices).value(),
                        .checker = std::move(checker).value()},
@@ -613,7 +622,7 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     if (const Result<void> made = renderer.create_frame_objects(); !made.has_value()) {
         return made.error();
     }
-    if (const Result<void> uploaded = renderer.upload_cube(); !uploaded.has_value()) {
+    if (const Result<void> uploaded = renderer.upload_at_startup(); !uploaded.has_value()) {
         return uploaded.error();
     }
     if (desc.overlay != nullptr) {
@@ -627,20 +636,21 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
 }
 
 Renderer::Renderer(Context context, std::optional<Swapchain> swapchain,
-                   std::optional<Image> offscreen, Image depth, TextureTable textures, Cube cube,
-                   Extent framebuffer, PresentMode present_mode)
+                   std::optional<Image> offscreen, Image depth, TextureTable textures,
+                   Image block_textures, Cube cube, Extent framebuffer, PresentMode present_mode)
     : context_(std::move(context)), swapchain_(std::move(swapchain)),
       offscreen_(std::move(offscreen)), depth_(std::move(depth)), textures_(std::move(textures)),
-      cube_(std::move(cube)), framebuffer_(framebuffer), target_framebuffer_(framebuffer),
-      present_mode_(present_mode) {}
+      block_textures_(std::move(block_textures)), cube_(std::move(cube)), framebuffer_(framebuffer),
+      target_framebuffer_(framebuffer), present_mode_(present_mode) {}
 
 Renderer::Renderer(Renderer&& other) noexcept
     : context_(std::move(other.context_)), swapchain_(std::move(other.swapchain_)),
       offscreen_(std::move(other.offscreen_)), depth_(std::move(other.depth_)),
-      textures_(std::move(other.textures_)), cube_(std::move(other.cube_)),
-      framebuffer_(other.framebuffer_), target_framebuffer_(other.target_framebuffer_),
-      present_mode_(other.present_mode_), swapchain_stale_(other.swapchain_stale_),
-      slots_(std::exchange(other.slots_, {})), origins_(std::move(other.origins_)),
+      textures_(std::move(other.textures_)), block_textures_(std::move(other.block_textures_)),
+      cube_(std::move(other.cube_)), framebuffer_(other.framebuffer_),
+      target_framebuffer_(other.target_framebuffer_), present_mode_(other.present_mode_),
+      swapchain_stale_(other.swapchain_stale_), slots_(std::exchange(other.slots_, {})),
+      origins_(std::move(other.origins_)),
       image_rendered_(std::exchange(other.image_rendered_, {})),
       frames_done_(std::exchange(other.frames_done_, VK_NULL_HANDLE)), frame_(other.frame_),
       gpu_timer_(std::move(other.gpu_timer_)), times_(other.times_),
@@ -738,11 +748,12 @@ Result<void> Renderer::add_rendered_semaphores() {
     return {};
 }
 
-// On unified memory the vertices go through their buffer's mapping and
-// nothing is recorded. Elsewhere the staged copy is submitted, and waited for
-// before its staging buffer goes away with `uploads`.
-Result<void> Renderer::upload_cube() {
-    ZoneScopedN("Upload cube");
+// The cube's vertices and checker, and the block texture array. On unified
+// memory the vertices go through their buffer's mapping and nothing is
+// recorded for them. The images always stage: the copies are submitted, and
+// waited for before their staging buffers go away with `uploads`.
+Result<void> Renderer::upload_at_startup() {
+    ZoneScopedN("Upload at startup");
     const Device& device = context_.device();
     UploadContext uploads(device);
     VkCommandBuffer commands = slots_[0].command_buffer;
@@ -752,13 +763,18 @@ Result<void> Renderer::upload_cube() {
     if (uploaded.has_value()) {
         uploaded = upload_image(uploads, commands, cube_.checker, make_checker());
     }
+    if (uploaded.has_value()) {
+        // Layer 0 alone, the checker: it reads no file.
+        const std::array<TextureRef, 1> checker_only{};
+        std::vector<Diagnostic> diagnostics;
+        uploaded = upload_image(uploads, commands, block_textures_,
+                                build_block_textures(checker_only, {}, diagnostics));
+    }
     uploads.finish(commands);
     vkEndCommandBuffer(commands);
     if (!uploaded.has_value()) {
         return uploaded.error();
     }
-    // The checker always stages, so there is always a copy to wait for before
-    // its staging buffer goes away with `uploads`.
     if (const Result<void> submitted = submit(device.queue(), commands, {}, {});
         !submitted.has_value()) {
         return submitted.error();
@@ -770,6 +786,7 @@ Result<void> Renderer::upload_cube() {
         return slot.error();
     }
     cube_.checker_slot = slot.value();
+    textures_.set_block_textures(block_textures_.view());
     return {};
 }
 
