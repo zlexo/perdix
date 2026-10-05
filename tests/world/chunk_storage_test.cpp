@@ -207,6 +207,11 @@ TEST_CASE("compaction narrows a chunk once overwritten states are gone") {
     CHECK(chunk.bits_per_block() == 1);
     CHECK(chunk.memory_bytes() == 4'096 + 4);
     CHECK(blocks_differing(chunk, expected) == 0);
+    // A write after narrowing finds the palette's new size: a third state
+    // needs a third entry, which a palette still sized for 17 would misplace.
+    chunk.set(0, state(99));
+    expected[0] = state(99);
+    CHECK(blocks_differing(chunk, expected) == 0);
 }
 
 TEST_CASE("compaction makes a chunk of one state uniform, from a palette or from direct mode") {
@@ -249,6 +254,34 @@ TEST_CASE("compaction takes a direct chunk back to a palette once 256 states or 
     chunk.compact(); // air and 20 more
     CHECK(chunk.bits_per_block() == 8);
     CHECK(blocks_differing(chunk, expected) == 0);
+    // A write after leaving direct mode adds an entry after the 21, rather
+    // than overwriting entry 0 as a palette sized 0 would.
+    chunk.set(1, state(999));
+    expected[1] = state(999);
+    CHECK(blocks_differing(chunk, expected) == 0);
+}
+
+TEST_CASE("compaction's cutoff is 256 states: 256 take a palette, 257 stay direct") {
+    for (const auto& [states, bits] : {std::pair{256, 8}, std::pair{257, 16}}) {
+        INFO(states, " states");
+        // 301 states make a direct chunk; overwriting all but air and
+        // states - 1 more leaves `states` states.
+        vx::ChunkStorage chunk;
+        std::vector<vx::BlockState> expected(vx::chunk_volume, vx::BlockState::air);
+        for (int id = 1; id <= 300; ++id) {
+            const auto at = static_cast<std::uint16_t>(id * 3);
+            chunk.set(at, state(id));
+            expected[at] = state(id);
+        }
+        for (int id = states; id <= 300; ++id) {
+            const auto at = static_cast<std::uint16_t>(id * 3);
+            chunk.set(at, vx::BlockState::air);
+            expected[at] = vx::BlockState::air;
+        }
+        chunk.compact();
+        CHECK(chunk.bits_per_block() == bits);
+        CHECK(blocks_differing(chunk, expected) == 0);
+    }
 }
 
 TEST_CASE("compaction leaves a chunk alone when it cannot narrow, and set reuses the entry") {
