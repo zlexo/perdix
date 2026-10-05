@@ -30,6 +30,7 @@ add_executable(vx_app
     src/fly_controls.cpp
     src/main.cpp
     src/overlay.cpp
+    src/pack.cpp
     src/window.cpp)
 target_link_libraries(vx_app PRIVATE vx::core vx::render vx_imgui_sdl3 SDL3::SDL3-static)
 set_target_properties(vx_app PROPERTIES OUTPUT_NAME perdix)
