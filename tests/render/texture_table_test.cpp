@@ -2,17 +2,26 @@
 // Linux CI runs these on Mesa's lavapipe; on macOS, source the Vulkan SDK's
 // setup-env.sh first.
 
+#include "one_shot.hpp"
+
+#include <vx/render/block_texture_array.hpp>
+#include <vx/render/block_textures.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/image.hpp>
 #include <vx/render/pipeline.hpp>
 #include <vx/render/texture_table.hpp>
+#include <vx/render/upload.hpp>
 #include <vx/shaders/triangle.hpp>
 
 #include <doctest/doctest.h>
 
+#include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -73,6 +82,44 @@ TEST_CASE("a full texture table says so, rather than writing past its end") {
     CHECK(beyond.error().message ==
           "the texture table is full, at " + std::to_string(capacity) + " textures");
     CHECK(created.value().instance().validation_counts().errors == 0);
+}
+
+TEST_CASE("the block texture array goes into binding 2, and a new array takes its place") {
+    vx::Result<vx::render::Context> created = create_context();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    const vx::render::Device& device = created.value().device();
+    vx::Result<vx::render::TextureTable> table = vx::render::TextureTable::create(device);
+    REQUIRE(table.has_value());
+    // The array counts against the stage's sampled images, beside the slots.
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(device.physical_device(), &properties);
+    CHECK(table.value().capacity() + 1 <= properties.limits.maxPerStageDescriptorSampledImages);
+
+    // Two arrays, of one layer and of three, in the layout shaders read.
+    std::vector<vx::render::Image> arrays;
+    vx::render::UploadContext uploads(device);
+    vx::test::OneShot shot(device);
+    for (const std::uint32_t layers : {1U, 3U}) {
+        vx::Result<vx::render::Image> array =
+            vx::render::create_block_texture_array(device, layers);
+        REQUIRE(array.has_value());
+        const std::vector<std::byte> bytes(layers * vx::render::block_texture_layer_bytes);
+        REQUIRE(
+            vx::render::upload_image(uploads, shot.commands(), array.value(), bytes).has_value());
+        arrays.push_back(std::move(array).value());
+    }
+    shot.submit_and_wait();
+    table.value().set_block_textures(arrays[0].view());
+    table.value().set_block_textures(arrays[1].view());
+    // The slots of binding 0 are untouched by it.
+    vx::Result<vx::render::Image> image = texture(device);
+    REQUIRE(image.has_value());
+    const vx::Result<std::uint32_t> slot = table.value().add(image.value().view());
+    REQUIRE(slot.has_value());
+    CHECK(slot.value() == 0);
+    CHECK(created.value().instance().validation_counts().errors == 0);
+    CHECK(created.value().instance().validation_counts().warnings == 0);
 }
 
 TEST_CASE("a pipeline takes the texture table as its set 0") {

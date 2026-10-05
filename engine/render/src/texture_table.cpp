@@ -16,6 +16,7 @@ constexpr std::uint32_t wanted_capacity = 1024;
 // The set, its layout and pool, and the sampler in it, as validation
 // messages and GPU captures name them.
 constexpr std::string_view debug_name = "texture table";
+constexpr std::string_view block_sampler_name = "block texture sampler";
 
 } // namespace
 
@@ -25,13 +26,13 @@ Result<TextureTable> TextureTable::create(const Device& device) {
 
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(device.physical_device(), &properties);
-    // Each texture counts against the fragment stage's resources, and so does
-    // each color attachment the stage draws to: one, in every pipeline so far.
-    // Samplers do not count.
+    // Each texture counts against the fragment stage's resources, and so do
+    // the block texture array and each color attachment the stage draws to:
+    // one, in every pipeline so far. Samplers do not count.
     table.capacity_ =
-        std::min({wanted_capacity, properties.limits.maxPerStageDescriptorSampledImages,
-                  properties.limits.maxDescriptorSetSampledImages,
-                  properties.limits.maxPerStageResources - 1});
+        std::min({wanted_capacity, properties.limits.maxPerStageDescriptorSampledImages - 1,
+                  properties.limits.maxDescriptorSetSampledImages - 1,
+                  properties.limits.maxPerStageResources - 2});
 
     // Nearest filtering and repeating coordinates, for pixel art; how block
     // textures filter and mip is RFC 0004's.
@@ -62,6 +63,20 @@ Result<TextureTable> TextureTable::create(const Device& device) {
     }
     set_debug_name(table.device_, table.sampler_, debug_name);
 
+    // RFC 0004's block textures: linear filtering between texels and between
+    // mip levels, repeating, as merged quads repeat a texture. Anisotropic
+    // filtering and the sharpened coordinate come with item 8.
+    VkSamplerCreateInfo block_sampler_info = sampler_info;
+    block_sampler_info.magFilter = VK_FILTER_LINEAR;
+    block_sampler_info.minFilter = VK_FILTER_LINEAR;
+    block_sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    if (const VkResult result =
+            vkCreateSampler(table.device_, &block_sampler_info, nullptr, &table.block_sampler_);
+        result != VK_SUCCESS) {
+        return Error{"vkCreateSampler failed: " + vk_result_name(result)};
+    }
+    set_debug_name(table.device_, table.block_sampler_, block_sampler_name);
+
     const std::array bindings = {
         VkDescriptorSetLayoutBinding{
             .binding = 0,
@@ -77,10 +92,24 @@ Result<TextureTable> TextureTable::create(const Device& device) {
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
             .pImmutableSamplers = &table.sampler_,
         },
+        VkDescriptorSetLayoutBinding{
+            .binding = 2,
+            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .pImmutableSamplers = nullptr,
+        },
+        VkDescriptorSetLayoutBinding{
+            .binding = 3,
+            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .pImmutableSamplers = &table.block_sampler_,
+        },
     };
     // Slots no shader reads need not hold an image.
-    const std::array<VkDescriptorBindingFlags, 2> binding_flags = {
-        VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, 0};
+    const std::array<VkDescriptorBindingFlags, 4> binding_flags = {
+        VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, 0, 0, 0};
     const VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
         .pNext = nullptr,
@@ -103,8 +132,8 @@ Result<TextureTable> TextureTable::create(const Device& device) {
 
     const std::array pool_sizes = {
         VkDescriptorPoolSize{.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                             .descriptorCount = table.capacity_},
-        VkDescriptorPoolSize{.type = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 1},
+                             .descriptorCount = table.capacity_ + 1},
+        VkDescriptorPoolSize{.type = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 2},
     };
     const VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -160,9 +189,31 @@ Result<std::uint32_t> TextureTable::add(VkImageView view) {
     return size_++;
 }
 
+void TextureTable::set_block_textures(VkImageView view) {
+    const VkDescriptorImageInfo image = {
+        .sampler = VK_NULL_HANDLE,
+        .imageView = view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    const VkWriteDescriptorSet write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .pNext = nullptr,
+        .dstSet = set_,
+        .dstBinding = 2,
+        .dstArrayElement = 0,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .pImageInfo = &image,
+        .pBufferInfo = nullptr,
+        .pTexelBufferView = nullptr,
+    };
+    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+}
+
 TextureTable::TextureTable(TextureTable&& other) noexcept
     : device_(std::exchange(other.device_, VK_NULL_HANDLE)),
       sampler_(std::exchange(other.sampler_, VK_NULL_HANDLE)),
+      block_sampler_(std::exchange(other.block_sampler_, VK_NULL_HANDLE)),
       layout_(std::exchange(other.layout_, VK_NULL_HANDLE)),
       pool_(std::exchange(other.pool_, VK_NULL_HANDLE)),
       set_(std::exchange(other.set_, VK_NULL_HANDLE)), size_(std::exchange(other.size_, 0)),
@@ -173,6 +224,7 @@ TextureTable& TextureTable::operator=(TextureTable&& other) noexcept {
         destroy();
         device_ = std::exchange(other.device_, VK_NULL_HANDLE);
         sampler_ = std::exchange(other.sampler_, VK_NULL_HANDLE);
+        block_sampler_ = std::exchange(other.block_sampler_, VK_NULL_HANDLE);
         layout_ = std::exchange(other.layout_, VK_NULL_HANDLE);
         pool_ = std::exchange(other.pool_, VK_NULL_HANDLE);
         set_ = std::exchange(other.set_, VK_NULL_HANDLE);
@@ -199,6 +251,10 @@ void TextureTable::destroy() noexcept {
     if (sampler_ != VK_NULL_HANDLE) {
         vkDestroySampler(device_, sampler_, nullptr);
         sampler_ = VK_NULL_HANDLE;
+    }
+    if (block_sampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(device_, block_sampler_, nullptr);
+        block_sampler_ = VK_NULL_HANDLE;
     }
 }
 
