@@ -180,9 +180,8 @@ TEST_CASE("a missing or bad texture file is an error, every one reported, and no
     const std::vector<std::string> lines = formatted(diagnostics);
     REQUIRE(lines.size() == 3);
     // In name order.
-    CHECK(lines[0] == path_of("gone") +
-                          ": error: no such file, for the texture test:gone (first used at "
-                          "assets/test/blocks/x.toml:3:7)");
+    CHECK(lines[0] == path_of("gone") + ": error: no such file, for the texture test:gone (used at "
+                                        "assets/test/blocks/x.toml:3:7)");
     CHECK(
         lines[1].starts_with(path_of("not_png") + ": error: not a PNG file stb_image can read: "));
     CHECK(lines[2] == path_of("wide") + ": error: 17 by 16 pixels; block textures are 16 by 16");

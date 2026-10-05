@@ -328,7 +328,9 @@ std::size_t transparent_texels(const BlockImage& image) {
 struct Source {
     bool used_opaque = false;
     bool used_cutout = false;
-    std::string first_use;
+    // Where its least-turned layer is first used: a place to look, though
+    // not always the earliest, since each turn keeps its own first use.
+    std::string use;
 };
 
 // Reads every texture the layers name, in name order, and reports each
@@ -341,8 +343,8 @@ read_sources(std::span<const TextureRef> textures, const std::filesystem::path& 
         Source& source = sources[texture.name];
         source.used_opaque = source.used_opaque || texture.used_opaque;
         source.used_cutout = source.used_cutout || texture.used_cutout;
-        if (source.first_use.empty()) {
-            source.first_use = texture.first_use;
+        if (source.use.empty()) {
+            source.use = texture.first_use;
         }
     }
     std::map<std::string, BlockImage> images;
@@ -359,8 +361,8 @@ read_sources(std::span<const TextureRef> textures, const std::filesystem::path& 
         const std::optional<std::vector<std::byte>> bytes = read_file(path);
         if (!bytes) {
             failed = true;
-            report(Severity::error, "no such file, for the texture " + name + " (first used at " +
-                                        source.first_use + ")");
+            report(Severity::error,
+                   "no such file, for the texture " + name + " (used at " + source.use + ")");
             continue;
         }
         Result<BlockImage> image = decode_block_texture(*bytes);
