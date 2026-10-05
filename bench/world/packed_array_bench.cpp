@@ -53,13 +53,15 @@ void packed_array(ankerl::nanobench::Bench& bench) {
     });
 
     // Latency: each read's place depends on the one before, so none overlap.
+    // The random part of each place comes from the index list, so only the
+    // read and an add stand between one read and the next: a multiply there
+    // would be timed as part of the read.
     bench.batch(indices.size())
         .unit("get")
         .run("packed array, 4 bits: get, dependent latency", [&] {
             std::uint32_t at = 0;
-            for (std::size_t step = 0; step < indices.size(); ++step) {
-                at = (at * 2'654'435'761U +
-                      fixture.array.get(static_cast<std::uint16_t>(at & 0x7FFFU)) + 1U) &
+            for (const std::uint16_t offset : indices) {
+                at = (std::uint32_t{offset} + fixture.array.get(static_cast<std::uint16_t>(at))) &
                      0x7FFFU;
             }
             ankerl::nanobench::doNotOptimizeAway(at);
