@@ -34,7 +34,14 @@ FetchContent_Declare(imgui
     GIT_TAG v1.92.9b
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR sources-only)
-FetchContent_MakeAvailable(vulkan_headers volk vma glm imgui)
+# stb_image, for block textures (RFC 0004). stb publishes no releases, so
+# its one header is fetched at a commit (the last to change it, version
+# 2.30) and checked against its hash: no clone of the whole repository.
+FetchContent_Declare(stb_image
+    URL https://raw.githubusercontent.com/nothings/stb/013ac3beddff3dbffafd5177e7972067cd2b5083/stb_image.h
+    URL_HASH SHA256=594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3
+    DOWNLOAD_NO_EXTRACT TRUE)
+FetchContent_MakeAvailable(vulkan_headers volk vma glm imgui stb_image)
 
 # volk loads the Vulkan loader at run time and every entry point from it, so
 # nothing links the loader. Built without our warnings: it is not our code.
@@ -68,6 +75,14 @@ add_library(vx_imgui_vulkan STATIC "${imgui_SOURCE_DIR}/backends/imgui_impl_vulk
 target_include_directories(vx_imgui_vulkan SYSTEM PUBLIC "${imgui_SOURCE_DIR}/backends")
 target_compile_definitions(vx_imgui_vulkan PUBLIC IMGUI_IMPL_VULKAN_USE_VOLK)
 target_link_libraries(vx_imgui_vulkan PUBLIC vx_imgui vx_volk)
+
+# stb_image, PNG only, built without our warnings: it is not our code. The
+# defines that change its header are public, so every includer sees the
+# same declarations.
+add_library(vx_stb_image STATIC src/stb_image.cpp)
+target_include_directories(vx_stb_image SYSTEM PUBLIC "${stb_image_SOURCE_DIR}")
+target_compile_definitions(vx_stb_image PUBLIC STBI_NO_STDIO STBI_NO_LINEAR STBI_NO_HDR)
+target_compile_definitions(vx_stb_image PRIVATE STB_IMAGE_IMPLEMENTATION STBI_ONLY_PNG)
 
 # Vulkan's depth range runs from 0 to 1, not from -1 to 1 as OpenGL's does.
 add_library(vx_glm INTERFACE)
