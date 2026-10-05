@@ -11,11 +11,26 @@ namespace vx::render {
 Result<Image> Image::create(const Device& device, VkExtent2D extent, VkFormat format,
                             VkImageUsageFlags usage, VkImageAspectFlags aspect,
                             std::string_view name) {
+    return make(device, extent, format, usage, aspect, name, 1, 1, VK_IMAGE_VIEW_TYPE_2D);
+}
+
+Result<Image> Image::create_array(const Device& device, VkExtent2D extent, VkFormat format,
+                                  std::uint32_t levels, std::uint32_t layers,
+                                  VkImageUsageFlags usage, std::string_view name) {
+    return make(device, extent, format, usage, VK_IMAGE_ASPECT_COLOR_BIT, name, levels, layers,
+                VK_IMAGE_VIEW_TYPE_2D_ARRAY);
+}
+
+Result<Image> Image::make(const Device& device, VkExtent2D extent, VkFormat format,
+                          VkImageUsageFlags usage, VkImageAspectFlags aspect, std::string_view name,
+                          std::uint32_t levels, std::uint32_t layers, VkImageViewType view_type) {
     Image image;
     image.device_ = device.handle();
     image.allocator_ = device.allocator();
     image.extent_ = extent;
     image.format_ = format;
+    image.levels_ = levels;
+    image.layers_ = layers;
 
     const VkImageCreateInfo image_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -24,8 +39,8 @@ Result<Image> Image::create(const Device& device, VkExtent2D extent, VkFormat fo
         .imageType = VK_IMAGE_TYPE_2D,
         .format = format,
         .extent = {.width = extent.width, .height = extent.height, .depth = 1},
-        .mipLevels = 1,
-        .arrayLayers = 1,
+        .mipLevels = levels,
+        .arrayLayers = layers,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
         .usage = usage,
@@ -49,16 +64,16 @@ Result<Image> Image::create(const Device& device, VkExtent2D extent, VkFormat fo
         .pNext = nullptr,
         .flags = 0,
         .image = image.image_,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .viewType = view_type,
         .format = format,
         .components = {},
         .subresourceRange =
             {
                 .aspectMask = aspect,
                 .baseMipLevel = 0,
-                .levelCount = 1,
+                .levelCount = levels,
                 .baseArrayLayer = 0,
-                .layerCount = 1,
+                .layerCount = layers,
             },
     };
     if (const VkResult result = vkCreateImageView(image.device_, &view_info, nullptr, &image.view_);
@@ -76,7 +91,7 @@ Image::Image(Image&& other) noexcept
       image_(std::exchange(other.image_, VK_NULL_HANDLE)),
       allocation_(std::exchange(other.allocation_, VK_NULL_HANDLE)),
       view_(std::exchange(other.view_, VK_NULL_HANDLE)), extent_(other.extent_),
-      format_(other.format_) {}
+      format_(other.format_), levels_(other.levels_), layers_(other.layers_) {}
 
 Image& Image::operator=(Image&& other) noexcept {
     if (this != &other) {
@@ -88,6 +103,8 @@ Image& Image::operator=(Image&& other) noexcept {
         view_ = std::exchange(other.view_, VK_NULL_HANDLE);
         extent_ = other.extent_;
         format_ = other.format_;
+        levels_ = other.levels_;
+        layers_ = other.layers_;
     }
     return *this;
 }

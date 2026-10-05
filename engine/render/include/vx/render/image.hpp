@@ -6,6 +6,7 @@
 #include <vk_mem_alloc.h>
 #include <volk.h>
 
+#include <cstdint>
 #include <string_view>
 
 namespace vx::render {
@@ -18,9 +19,17 @@ namespace vx::render {
 // messages and GPU captures show (RFC 0001), and errors too.
 class Image {
 public:
+    // One mip level and one layer.
     [[nodiscard]] static Result<Image> create(const Device& device, VkExtent2D extent,
                                               VkFormat format, VkImageUsageFlags usage,
                                               VkImageAspectFlags aspect, std::string_view name);
+    // A color image of `levels` mip levels, each half the one before, and
+    // `layers` layers, whose view shaders sample as an array of 2D images,
+    // even with one layer: RFC 0004's block texture array.
+    [[nodiscard]] static Result<Image> create_array(const Device& device, VkExtent2D extent,
+                                                    VkFormat format, std::uint32_t levels,
+                                                    std::uint32_t layers, VkImageUsageFlags usage,
+                                                    std::string_view name);
 
     Image(Image&& other) noexcept;
     Image& operator=(Image&& other) noexcept;
@@ -32,9 +41,16 @@ public:
     [[nodiscard]] VkImageView view() const noexcept { return view_; }
     [[nodiscard]] VkExtent2D extent() const noexcept { return extent_; }
     [[nodiscard]] VkFormat format() const noexcept { return format_; }
+    [[nodiscard]] std::uint32_t levels() const noexcept { return levels_; }
+    [[nodiscard]] std::uint32_t layers() const noexcept { return layers_; }
 
 private:
     Image() = default;
+    [[nodiscard]] static Result<Image> make(const Device& device, VkExtent2D extent,
+                                            VkFormat format, VkImageUsageFlags usage,
+                                            VkImageAspectFlags aspect, std::string_view name,
+                                            std::uint32_t levels, std::uint32_t layers,
+                                            VkImageViewType view_type);
     void destroy() noexcept;
 
     VkDevice device_ = VK_NULL_HANDLE;
@@ -44,6 +60,8 @@ private:
     VkImageView view_ = VK_NULL_HANDLE;
     VkExtent2D extent_{};
     VkFormat format_ = VK_FORMAT_UNDEFINED;
+    std::uint32_t levels_ = 1;
+    std::uint32_t layers_ = 1;
 };
 
 } // namespace vx::render
