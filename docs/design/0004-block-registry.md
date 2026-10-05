@@ -321,3 +321,11 @@ Pull request plan item 5, the textures on the CPU:
 - **A missing or unreadable file is reported on the PNG's path**, naming the texture and a place that uses it: where its least-turned layer is first used, which is not always the earliest use, since each turn keeps its own. The warning for texture files no block uses comes with reading a pack from disk (item 7), which lists the folder.
 - **The layout is level by level**: every layer of level 0, then every layer of level 1, and so on, for one copy with a region per level. The checker is squares of 8 texels.
 - **Building the array for 1,000 textures takes 23.2 ms**, the median of five release runs on the reference machine, against a budget of 50. That includes reading 1,000 files, which the budget does not count; opening them takes about a third of the time.
+
+Pull request plan item 6, the GPU array, landed as two pull requests: the array image and its upload, then set 0's binding with the sampler.
+
+- **`Image` takes mip levels and array layers** through `create_array`, whose view is an array even with one layer, as a shader that declares an array expects.
+- **`upload_image` fills every level and layer in one copy**, a region per level, from bytes laid out level by level: the copy described above, made general, so the cube's checker and the block array upload the same way.
+- **Exactly `maxImageArrayLayers` layers are allowed.** One more is refused with both numbers before Vulkan sees the request; without the check, that request aborts the program.
+- **The array can be copied out of** as well as into, for the readback test and for tools.
+- **The readback test also runs on both of the reference Mac's drivers**, KosmicKrisp and MoltenVK, chosen with `VK_DRIVER_FILES`.
