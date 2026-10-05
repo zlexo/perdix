@@ -23,6 +23,14 @@ target_link_libraries(vx_core_tests PRIVATE vx::core doctest::doctest)
 vx_target_warnings(vx_core_tests)
 doctest_discover_tests(vx_core_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 
+add_executable(vx_world_tests
+    main.cpp
+    world/block_state_test.cpp
+    world/coordinates_test.cpp)
+target_link_libraries(vx_world_tests PRIVATE vx::world doctest::doctest)
+vx_target_warnings(vx_world_tests)
+doctest_discover_tests(vx_world_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
+
 add_executable(vx_render_tests
     main.cpp
     render/camera_relative_test.cpp

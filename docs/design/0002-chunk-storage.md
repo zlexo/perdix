@@ -248,4 +248,9 @@ All settled on 2026-10-02: every recommendation below was accepted.
 
 ## As built
 
-Not built yet.
+Pull request plan item 2, the world layer:
+
+- **`LocalPos` and `block_at` join the sketch**, which only went from blocks to chunks: the test plan's round trips need the way back. The coordinate types compare with a defaulted `==`, for the tests and later for maps keyed by position.
+- **The layer is headers only, an interface library, until item 3** brings its first source and makes it the static library RFC 0000 describes.
+- **`engine/world` is the third layer, not the second:** the renderer landed first, in milestone 1, without the layering control. It is proven here instead: a world header that includes `<vx/render/renderer.hpp>` fails to compile with `'vx/render/renderer.hpp' file not found`, since only targets that link `vx::render` see its headers.
+- **A CI job, `Layering` (#28),** fails when a file under `engine/world` or `engine/mesh` includes a Vulkan, volk, VMA, SDL or GLFW header: include paths fence off the engine's own headers, not system ones.
