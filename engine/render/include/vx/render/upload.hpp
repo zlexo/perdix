@@ -53,12 +53,15 @@ private:
                                   const Buffer& dst, VkDeviceSize dst_offset,
                                   std::span<const std::byte> bytes);
 
-// Copies `pixels`, rows of texels with nothing between them, into all of
-// `image`, a color image of four bytes a texel. Images always go through a
-// staging buffer: their memory is laid out for the GPU, so the CPU cannot
-// write it through a mapping. Records the image's move from undefined to a
-// copy destination, which waits for every earlier command and discards what
-// the image held, then the copy, then its move to the layout shaders read.
+// Copies `pixels` into all of `image`, a color image of four bytes a texel:
+// level by level, every layer of a level before the next level, each layer
+// rows of texels with nothing between them, as build_block_textures lays out
+// RFC 0004's array. One copy, with a region per level. Images always go
+// through a staging buffer: their memory is laid out for the GPU, so the CPU
+// cannot write it through a mapping. Records the image's move from undefined
+// to a copy destination, which waits for every earlier command and discards
+// what the image held, then the copy, then its move to the layout shaders
+// read, each over every level and layer.
 [[nodiscard]] Result<void> upload_image(UploadContext& context, VkCommandBuffer commands,
                                         const Image& image, std::span<const std::byte> pixels);
 

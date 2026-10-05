@@ -5,7 +5,7 @@ namespace vx::render {
 void transition(VkCommandBuffer commands, VkImage image, VkPipelineStageFlags2 src_stage,
                 VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage,
                 VkAccessFlags2 dst_access, VkImageLayout from, VkImageLayout to,
-                VkImageAspectFlags aspect) {
+                VkImageAspectFlags aspect, std::uint32_t levels, std::uint32_t layers) {
     const VkImageMemoryBarrier2 barrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext = nullptr,
@@ -22,9 +22,9 @@ void transition(VkCommandBuffer commands, VkImage image, VkPipelineStageFlags2 s
             {
                 .aspectMask = aspect,
                 .baseMipLevel = 0,
-                .levelCount = 1,
+                .levelCount = levels,
                 .baseArrayLayer = 0,
-                .layerCount = 1,
+                .layerCount = layers,
             },
     };
     const VkDependencyInfo dependency = {

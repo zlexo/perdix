@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
@@ -68,8 +69,9 @@ void record_readback(VkCommandBuffer commands, const vx::render::Buffer& source,
 }
 
 // Records a copy of all of `image`, which shaders could read, into
-// `readback`, and the barriers around it, so the host can read the copy once
-// the queue is idle.
+// `readback`, laid out as upload_image takes it (level by level, every layer
+// of a level before the next), and the barriers around it, so the host can
+// read the copy once the queue is idle.
 void record_image_readback(VkCommandBuffer commands, const vx::render::Image& image,
                            const vx::render::Buffer& readback) {
     const VkImageMemoryBarrier2 to_copy = {
@@ -86,9 +88,9 @@ void record_image_readback(VkCommandBuffer commands, const vx::render::Image& im
         .image = image.image(),
         .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                              .baseMipLevel = 0,
-                             .levelCount = 1,
+                             .levelCount = image.levels(),
                              .baseArrayLayer = 0,
-                             .layerCount = 1},
+                             .layerCount = image.layers()},
     };
     const VkDependencyInfo before = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -102,27 +104,34 @@ void record_image_readback(VkCommandBuffer commands, const vx::render::Image& im
         .pImageMemoryBarriers = &to_copy,
     };
     vkCmdPipelineBarrier2(commands, &before);
-    const VkBufferImageCopy2 region = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-        .pNext = nullptr,
-        .bufferOffset = 0,
-        .bufferRowLength = 0,
-        .bufferImageHeight = 0,
-        .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                             .mipLevel = 0,
-                             .baseArrayLayer = 0,
-                             .layerCount = 1},
-        .imageOffset = {.x = 0, .y = 0, .z = 0},
-        .imageExtent = {.width = image.extent().width, .height = image.extent().height, .depth = 1},
-    };
+    std::vector<VkBufferImageCopy2> regions;
+    VkDeviceSize offset = 0;
+    for (std::uint32_t level = 0; level < image.levels(); ++level) {
+        const std::uint32_t width = std::max(image.extent().width >> level, 1U);
+        const std::uint32_t height = std::max(image.extent().height >> level, 1U);
+        regions.push_back({
+            .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+            .pNext = nullptr,
+            .bufferOffset = offset,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                 .mipLevel = level,
+                                 .baseArrayLayer = 0,
+                                 .layerCount = image.layers()},
+            .imageOffset = {.x = 0, .y = 0, .z = 0},
+            .imageExtent = {.width = width, .height = height, .depth = 1},
+        });
+        offset += VkDeviceSize{width} * height * 4 * image.layers();
+    }
     const VkCopyImageToBufferInfo2 copy = {
         .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2,
         .pNext = nullptr,
         .srcImage = image.image(),
         .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         .dstBuffer = readback.handle(),
-        .regionCount = 1,
-        .pRegions = &region,
+        .regionCount = static_cast<std::uint32_t>(regions.size()),
+        .pRegions = regions.data(),
     };
     vkCmdCopyImageToBuffer2(commands, &copy);
     const VkMemoryBarrier2 to_host = {
@@ -286,6 +295,45 @@ TEST_CASE("an image takes its pixels through a staging copy and gives back the s
     CHECK(created.value().instance().validation_counts().warnings == 0);
 }
 
+TEST_CASE("an image of several levels and layers takes them in one copy, level by level") {
+    vx::Result<vx::render::Context> created = create_context();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    const vx::render::Device& device = created.value().device();
+
+    // 8 by 4, 4 by 2, 2 by 1 and 1 by 1, the last level's height held at 1,
+    // in three layers: 43 texels a layer.
+    vx::Result<vx::render::Image> image = vx::render::Image::create_array(
+        device, {.width = 8, .height = 4}, VK_FORMAT_R8G8B8A8_UNORM, 4, 3,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        "uploaded array");
+    constexpr std::size_t bytes = std::size_t{43} * 3 * 4;
+    vx::Result<vx::render::Buffer> readback =
+        vx::render::Buffer::create(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                   vx::render::BufferMemory::readback, "readback buffer");
+    REQUIRE(image.has_value());
+    REQUIRE(readback.has_value());
+    CHECK(image.value().levels() == 4);
+    CHECK(image.value().layers() == 3);
+
+    const std::vector<std::byte> pixels = pattern(bytes, std::byte{0x30});
+    vx::render::UploadContext uploads(device);
+    vx::test::OneShot shot(device);
+    const vx::Result<void> uploaded =
+        vx::render::upload_image(uploads, shot.commands(), image.value(), pixels);
+    INFO((uploaded.has_value() ? std::string() : uploaded.error().message));
+    REQUIRE(uploaded.has_value());
+    record_image_readback(shot.commands(), image.value(), readback.value());
+    shot.submit_and_wait();
+    vmaInvalidateAllocation(device.allocator(), readback.value().allocation(), 0, VK_WHOLE_SIZE);
+
+    CHECK(uploads.staged_bytes() == bytes);
+    CHECK(std::ranges::equal(readback.value().mapping(), pixels));
+    CHECK(created.value().instance().validation_counts().errors == 0);
+    CHECK(created.value().instance().validation_counts().warnings == 0);
+}
+
 TEST_CASE("pixels of the wrong size for an image are an error, and nothing is staged") {
     vx::Result<vx::render::Context> created = create_context();
     INFO((created.has_value() ? std::string() : created.error().message));
@@ -304,6 +352,19 @@ TEST_CASE("pixels of the wrong size for an image are an error, and nothing is st
         vx::render::upload_image(uploads, VK_NULL_HANDLE, image.value(), pixels);
     REQUIRE_FALSE(uploaded.has_value());
     CHECK(uploaded.error().message == "an image of 8 by 4 takes 128 bytes of pixels, not 127");
+    CHECK(uploads.staged_bytes() == 0);
+
+    vx::Result<vx::render::Image> array = vx::render::Image::create_array(
+        device, {.width = 8, .height = 4}, VK_FORMAT_R8G8B8A8_UNORM, 4, 3,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, "uneven array");
+    REQUIRE(array.has_value());
+    // Every level of one layer's worth: 43 texels, not 129.
+    const std::vector<std::byte> one_layer = pattern(std::size_t{43} * 4, std::byte{0});
+    const vx::Result<void> short_array =
+        vx::render::upload_image(uploads, VK_NULL_HANDLE, array.value(), one_layer);
+    REQUIRE_FALSE(short_array.has_value());
+    CHECK(short_array.error().message ==
+          "an image of 8 by 4, 4 levels and 3 layers, takes 516 bytes of pixels, not 172");
     CHECK(uploads.staged_bytes() == 0);
     CHECK(created.value().instance().validation_counts().errors == 0);
 }
