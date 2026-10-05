@@ -40,6 +40,14 @@ TEST_CASE("a block's chunk and its place in it give the block back, at the ends 
     CHECK(vx::chunk_of({.x = highest, .y = 0, .z = 0}).x == highest / 32);
 }
 
+TEST_CASE("each axis keeps its own value through chunk_of, local_of and block_at") {
+    // Different values on each axis, so reading one axis for another shows.
+    const vx::BlockPos block = {.x = 35, .y = -27, .z = -57};
+    CHECK(vx::chunk_of(block) == vx::ChunkPos{.x = 1, .y = -1, .z = -2});
+    CHECK(vx::local_of(block) == vx::LocalPos{.x = 3, .y = 5, .z = 7});
+    CHECK(vx::block_at({.x = 1, .y = -1, .z = -2}, {.x = 3, .y = 5, .z = 7}) == block);
+}
+
 TEST_CASE("in a chunk's arrays, x neighbors are 1 apart, z neighbors 32 and y neighbors 1,024") {
     CHECK(vx::local_index(0, 0, 0) == 0);
     CHECK(vx::local_index(1, 0, 0) - vx::local_index(0, 0, 0) == 1);
