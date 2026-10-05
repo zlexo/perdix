@@ -47,10 +47,12 @@ std::vector<std::vector<vx::BlockState>> one_of_each_mode() {
 TEST_CASE("a plain chunk survives from_dense then to_dense at every width, through one scratch") {
     // Every round draws on the same ids, so an entry that from_dense left in
     // the table would make a state look numbered already in the next round.
+    // The last round follows two direct ones, which must leave it clean too.
     vx::PaletteScratch scratch;
     for (const auto& [states, bits] :
          {std::pair{1, 0}, std::pair{2, 1}, std::pair{3, 2}, std::pair{4, 2}, std::pair{16, 4},
-          std::pair{17, 8}, std::pair{256, 8}, std::pair{257, 16}, std::pair{3'000, 16}}) {
+          std::pair{17, 8}, std::pair{256, 8}, std::pair{257, 16}, std::pair{3'000, 16},
+          std::pair{10, 4}}) {
         INFO(states, " states");
         const std::vector<vx::BlockState> blocks =
             random_blocks(states, 1, static_cast<std::uint32_t>(states));
