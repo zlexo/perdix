@@ -17,6 +17,7 @@ set(VX_DOCTEST_PROPERTIES FAIL_REGULAR_EXPRESSION "test cases: +0 [|]")
 
 add_executable(vx_core_tests
     main.cpp
+    core/diagnostic_test.cpp
     core/result_test.cpp
     core/version_test.cpp)
 target_link_libraries(vx_core_tests PRIVATE vx::core doctest::doctest)
@@ -26,6 +27,7 @@ doctest_discover_tests(vx_core_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 add_executable(vx_world_tests
     main.cpp
     world/block_data_pool_test.cpp
+    world/block_file_test.cpp
     world/block_state_test.cpp
     world/chunk_conversion_test.cpp
     world/chunk_storage_test.cpp
