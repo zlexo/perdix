@@ -31,12 +31,15 @@ std::string with_commas(std::uint64_t number) {
     return digits;
 }
 
-// The product of the property value counts, stopping at max_states + 1 so a
-// block of many properties cannot overflow it.
+// The product of the property value counts. It saturates instead of
+// overflowing, so a block of many properties cannot wrap it, and short of
+// that the error for too many states gives every count as it is.
 std::uint64_t states_of(const BlockDefinition& block) {
+    constexpr std::uint64_t most = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t states = 1;
     for (const PropertyDefinition& property : block.properties) {
-        states = std::min(states * property.values.size(), max_states + 1);
+        const std::uint64_t values = property.values.size();
+        states = values != 0 && states > most / values ? most : states * values;
     }
     return states;
 }
@@ -99,7 +102,9 @@ BlockLoad BlockRegistry::load(std::span<const SourceFile> files) {
     }
     std::uint64_t total = 1; // air
     for (const BlockDefinition& definition : definitions) {
-        total = std::min(total + states_of(definition), max_states + 1);
+        const std::uint64_t states = states_of(definition);
+        constexpr std::uint64_t most = std::numeric_limits<std::uint64_t>::max();
+        total = states > most - total ? most : total + states;
     }
     if (total > max_states) {
         load.diagnostics.push_back(too_many_states(total, definitions));

@@ -195,6 +195,17 @@ TEST_CASE("a pack with more states than ids fails, naming its largest blocks") {
           "state id "
           "numbers; the largest: test:a (16,384), test:b (16,384), test:c (16,384)");
 
+    // Blocks of different sizes, far over: the true total and counts, the
+    // largest first, on the largest block's file.
+    const vx::BlockLoad far = vx::BlockRegistry::load(
+        std::vector<vx::SourceFile>{test_block("a", {2}), test_block("b", {300, 300}),
+                                    test_block("c", {16, 16}), test_block("d", {100, 1'000})});
+    CHECK_FALSE(far.registry.has_value());
+    REQUIRE(far.diagnostics.size() == 1);
+    CHECK(vx::format(far.diagnostics[0]) ==
+          "assets/test/blocks/d.toml: error: the blocks have 190,259 states, more than the 65,536 "
+          "a state id numbers; the largest: test:d (100,000), test:b (90,000), test:c (256)");
+
     // With 3 x 43 x 127 = 16,383 states in the last block, they fill every
     // id exactly.
     files.back() = test_block("d", {3, 43, 127});
