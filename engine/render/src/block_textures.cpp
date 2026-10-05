@@ -393,6 +393,11 @@ read_sources(std::span<const TextureRef> textures, const std::filesystem::path& 
 std::vector<std::byte> build_block_textures(std::span<const TextureRef> textures,
                                             const std::filesystem::path& assets,
                                             std::vector<Diagnostic>& diagnostics) {
+    // The registry always lists the checker as layer 0; without it there
+    // are no layers, so no bytes.
+    if (textures.empty()) {
+        return {};
+    }
     const std::optional<std::map<std::string, BlockImage>> images =
         read_sources(textures, assets, diagnostics);
     if (!images) {

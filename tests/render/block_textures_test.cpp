@@ -241,6 +241,12 @@ TEST_CASE("a pack of no textures is the checker alone") {
     CHECK(diagnostics.empty());
 }
 
+TEST_CASE("an empty texture list, without even the checker, gives no bytes") {
+    std::vector<vx::Diagnostic> diagnostics;
+    CHECK(vx::render::build_block_textures({}, assets, diagnostics).empty());
+    CHECK(diagnostics.empty());
+}
+
 TEST_CASE("a quarter turn moves the image's top edge to its right") {
     const BlockImage image = asymmetric();
     const BlockImage once = vx::render::turned(image, 1);
