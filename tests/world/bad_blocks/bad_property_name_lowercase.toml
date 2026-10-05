@@ -1,0 +1,7 @@
+[properties]
+is-lit = [true, false]
+[textures]
+all = "lamp"
+# No capitals, and still a character a name cannot use.
+# path: assets/core/blocks/lamp.toml
+# expect: assets/core/blocks/lamp.toml:2:1: error: property name 'is-lit' uses characters other than a to z, 0 to 9 and _

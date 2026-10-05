@@ -1,0 +1,6 @@
+[textures]
+side = "oak_log"
+# Both faces that side does not cover, each reported.
+# path: assets/core/blocks/oak_log.toml
+# expect: assets/core/blocks/oak_log.toml:1:2: error: the top face has no texture: name top or all
+# expect: assets/core/blocks/oak_log.toml:1:2: error: the bottom face has no texture: name bottom or all

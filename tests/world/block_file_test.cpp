@@ -204,6 +204,15 @@ TEST_CASE("a block file belongs at assets/<namespace>/blocks/<name>.toml and nam
                                                     "names its textures in a [textures] table"});
 }
 
+TEST_CASE("a texture from another namespace is written ns:name") {
+    const Parsed parsed =
+        parse("assets/core/blocks/stone.toml", "[textures]\nall = \"other:stone\"\n");
+    REQUIRE(parsed.block.has_value());
+    CHECK(parsed.messages.empty());
+    REQUIRE(parsed.block->textures.size() == 1);
+    CHECK(parsed.block->textures[0].texture == "other:stone");
+}
+
 TEST_CASE("every file in the corpus of bad blocks gives exactly the messages it expects") {
     // RFC 0004's test plan: at least one bad file for each error, so every
     // check is shown to fire. Each file ends in comments that give the path
