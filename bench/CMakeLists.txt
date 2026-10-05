@@ -17,6 +17,7 @@ target_compile_features(vx_nanobench PUBLIC cxx_std_20)
 # every build's with --quick, which checks they still run and times nothing.
 add_executable(vx_bench
     main.cpp
+    world/chunk_storage_bench.cpp
     world/packed_array_bench.cpp)
 target_link_libraries(vx_bench PRIVATE vx::world vx_nanobench)
 vx_target_warnings(vx_bench)

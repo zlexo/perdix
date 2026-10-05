@@ -1,6 +1,7 @@
 # The world layer (RFC 0002): blocks, chunks and their coordinates. It has no
 # GPU or window code (ADR 0003).
 add_library(vx_world STATIC
+    src/chunk_storage.cpp
     src/packed_array.cpp)
 add_library(vx::world ALIAS vx_world)
 

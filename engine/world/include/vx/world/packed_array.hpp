@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <utility>
 
 namespace vx {
 
@@ -17,11 +18,20 @@ namespace vx {
 // is a shift and a mask, with no branch.
 class PackedArray {
 public:
+    // No entries and no memory: a uniform chunk's, and what a move leaves.
+    PackedArray() noexcept = default;
     // Every entry 0, `bits` wide: 1, 2, 4, 8 or 16.
     explicit PackedArray(int bits);
 
-    PackedArray(PackedArray&& other) noexcept = default;
-    PackedArray& operator=(PackedArray&& other) noexcept = default;
+    PackedArray(PackedArray&& other) noexcept
+        : words_(std::move(other.words_)), mask_(std::exchange(other.mask_, 0U)),
+          log2_bits_(std::exchange(other.log2_bits_, std::uint8_t{0})) {}
+    PackedArray& operator=(PackedArray&& other) noexcept {
+        words_ = std::move(other.words_);
+        mask_ = std::exchange(other.mask_, 0U);
+        log2_bits_ = std::exchange(other.log2_bits_, std::uint8_t{0});
+        return *this;
+    }
     // Copies are explicit, through clone(): copying a chunk's blocks is
     // copy on write (RFC 0005), never a side effect.
     PackedArray(const PackedArray&) = delete;
@@ -31,13 +41,14 @@ public:
     [[nodiscard]] PackedArray clone() const;
 
     [[nodiscard]] std::uint32_t get(std::uint16_t index) const noexcept {
+        assert(!empty());
         const std::uint32_t bit = std::uint32_t{index} << log2_bits_;
         return static_cast<std::uint32_t>(words_[bit >> 6U] >> (bit & 63U)) & mask_;
     }
 
     // `value` must fit the width.
     void set(std::uint16_t index, std::uint32_t value) noexcept {
-        assert(value <= mask_);
+        assert(!empty() && value <= mask_);
         const std::uint32_t bit = std::uint32_t{index} << log2_bits_;
         const std::uint32_t shift = bit & 63U;
         std::uint64_t& word = words_[bit >> 6U];
@@ -48,19 +59,25 @@ public:
     // palette, or narrower once every entry fits.
     [[nodiscard]] PackedArray repacked(int bits) const;
 
-    [[nodiscard]] int bits() const noexcept { return 1 << log2_bits_; }
+    [[nodiscard]] bool empty() const noexcept { return words_ == nullptr; }
+    // 0 when empty.
+    [[nodiscard]] int bits() const noexcept { return empty() ? 0 : 1 << log2_bits_; }
     [[nodiscard]] std::span<const std::uint64_t> words() const noexcept {
         return {words_.get(), word_count()};
     }
     // The words' size: chunk_volume entries at the width, 4 KiB at 1 bit to
-    // 64 KiB at 16.
+    // 64 KiB at 16, and none when empty.
     [[nodiscard]] std::size_t memory_bytes() const noexcept {
         return word_count() * sizeof(std::uint64_t);
     }
 
 private:
+    // The words that hold chunk_volume entries, 2^log2_bits bits each.
+    [[nodiscard]] static constexpr std::size_t words_for(std::uint8_t log2_bits) noexcept {
+        return (std::size_t{chunk_volume} << log2_bits) / 64;
+    }
     [[nodiscard]] std::size_t word_count() const noexcept {
-        return (std::size_t{chunk_volume} << log2_bits_) / 64;
+        return empty() ? 0 : words_for(log2_bits_);
     }
 
     // A pointer and two small fields, so the array adds 16 bytes to a chunk's

@@ -30,6 +30,29 @@ TEST_CASE("a packed array adds 16 bytes to a chunk's header") {
     CHECK(sizeof(vx::PackedArray) == 16);
 }
 
+TEST_CASE("an empty packed array has no entries and no memory, and a move leaves one") {
+    const vx::PackedArray empty;
+    CHECK(empty.empty());
+    CHECK(empty.bits() == 0);
+    CHECK(empty.memory_bytes() == 0);
+    CHECK(empty.words().empty());
+    CHECK(empty.clone().empty());
+
+    // Reads what each move leaves behind, on purpose: not a stale width
+    // over words it gave away.
+    vx::PackedArray array(4);
+    array.set(3, 9);
+    vx::PackedArray moved = std::move(array);
+    CHECK(moved.bits() == 4);
+    CHECK(moved.get(3) == 9);
+    CHECK(array.empty()); // NOLINT(bugprone-use-after-move)
+    CHECK(array.bits() == 0);
+    CHECK(array.memory_bytes() == 0);
+    array = std::move(moved);
+    CHECK(array.get(3) == 9);
+    CHECK(moved.empty()); // NOLINT(bugprone-use-after-move)
+}
+
 TEST_CASE("a new packed array is all zeros, and its size follows its width") {
     for (const auto& [bits, bytes] :
          {std::pair{1, 4'096}, std::pair{2, 8'192}, std::pair{4, 16'384}, std::pair{8, 32'768},
