@@ -332,3 +332,10 @@ Pull request plan item 6, the GPU array, landed as two pull requests: the array 
 - **Set 0's binding 2 is the array and binding 3 its sampler**, fixed in the layout: linear between texels and between levels, and repeating. The array counts against the fragment stage's sampled images, so the texture table holds one texture fewer where that limit binds: 255 on MoltenVK.
 - **Until the core pack, the renderer binds an array of one layer**, the checker, made and uploaded at startup, so binding 2 always holds an image.
 - **A probe shader in the tests samples the array through set 0** at chosen points, layers and levels, and tells the sampler's filtering and addressing apart: a texel's edge reads half its neighbor's light, a point between two levels half of each, and a point past the edge the texel at the other side. `vx_add_shaders` gained what calling it from the tests' directory needed.
+
+Pull request plan item 7, the core pack, lands as two pull requests: reading a pack from disk with the warning for texture files no block uses, then the pack itself, its license and the shipped-pack test, with the app loading it.
+
+- **`load(root)` reads every `assets/<namespace>/blocks/*.toml` under the root**, and nothing else in those folders, with each path relative to the root, so the diagnostics name files as the tests do. Engine code builds without exceptions, so every file system call takes an error code.
+- **No assets folder, an empty one, or a folder or file that cannot be read is an error.**
+- **A texture file that no block uses is a warning on its path**, checked once the registry is built: a pack with errors does not get to it.
+- **The pack's 16 by 16 art is drawn by the owner in a tool of its own**, outside this repository, which previews each texture through this engine's own `build_block_textures` (decided 2026-10-05). Its license is the repository's: all rights reserved.
