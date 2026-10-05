@@ -310,3 +310,14 @@ Pull request plan item 4, the faces:
 - **Two more errors than the RFC lists:** more than 65,536 layers, the checker among them, which a face's 16 bits cannot number, reported where the first texture past the limit is used; and more than 255 cull groups, which a state's 8 bits cannot number, reported where the first group past the limit is named.
 - **Each block's variants are read once**, into value masks and indices, so the work for each state compares numbers, never text.
 - **Loading the synthetic pack now takes 6.6 ms**, the median of five release runs on the reference machine, against 5.5 ms without the faces (measured again the same day): about 110 ns a state, against a budget of 50 ms for the whole load.
+
+Pull request plan item 5, the textures on the CPU:
+
+- **stb_image is one file fetched by URL at a commit and checked against its hash**, not a clone: commit `013ac3b`, the last to change `stb_image.h` (2.30). It is built without stb's file, float and HDR loaders; the engine reads files itself.
+- **One scale cannot keep coverage: ties can't be split.** Castaño scales every alpha by one factor, but pixel art is full of texels of equal alpha, which cross the test together: on hard-edged leaves, a single factor missed level 0's coverage by up to six texels of 64. The factor now puts the k-th most opaque texel exactly at the test, and ties there are broken by an ordered-dither (Bayer) rank, moving those texels one step of 255 to their side. The count is exact, and the texels that pass are spread out rather than taken row by row. A box with no covered texel at all stays a hole.
+- **The alpha test passes at 0.5 or more**, an 8-bit alpha of 128; "transparent" in the warnings means below it.
+- **Filling spreads a ring at a time** through the four neighbors, wrapping, each texel taking the average of its filled neighbors in linear light. A texture with nothing visible is left as it is.
+- **Light is stored back as sRGB by a binary search** over the 255 points where the curve reaches each half step, which rounds as the curve does. Over 20 million points between 0 and 1 it agrees with the formula everywhere but on exact rounding ties.
+- **A missing or unreadable file is reported on the PNG's path**, naming the texture and a place that uses it: where its least-turned layer is first used, which is not always the earliest use, since each turn keeps its own. The warning for texture files no block uses comes with reading a pack from disk (item 7), which lists the folder.
+- **The layout is level by level**: every layer of level 0, then every layer of level 1, and so on, for one copy with a region per level. The checker is squares of 8 texels.
+- **Building the array for 1,000 textures takes 23.2 ms**, the median of five release runs on the reference machine, against a budget of 50. That includes reading 1,000 files, which the budget does not count; opening them takes about a third of the time.

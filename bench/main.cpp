@@ -44,6 +44,7 @@ int main(int argc, char* argv[]) {
     vx::bench::packed_array(bench);
     vx::bench::chunk_storage(bench);
     vx::bench::block_registry(bench);
+    vx::bench::block_textures(bench);
     // No results means no benchmark ran, which --quick must not pass as a
     // run: the test "the benchmarks run" would stay green with none.
     return bench.results().empty() ? 1 : 0;
