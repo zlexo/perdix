@@ -8,6 +8,7 @@ namespace vx {
 // height: they exist wherever generation puts them, up and down.
 inline constexpr int chunk_bits = 5;
 inline constexpr int chunk_size = 1 << chunk_bits;                        // 32
+inline constexpr int chunk_area = chunk_size * chunk_size;                // 1,024 on a face
 inline constexpr int chunk_volume = chunk_size * chunk_size * chunk_size; // 32,768
 
 // World block coordinates: about 2.1 billion blocks either way on each axis.

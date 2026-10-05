@@ -26,6 +26,7 @@ doctest_discover_tests(vx_core_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 add_executable(vx_world_tests
     main.cpp
     world/block_state_test.cpp
+    world/chunk_conversion_test.cpp
     world/chunk_storage_test.cpp
     world/coordinates_test.cpp
     world/packed_array_test.cpp)

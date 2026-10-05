@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <random>
+#include <span>
 #include <vector>
 
 namespace vx::bench {
@@ -115,6 +116,45 @@ void chunk_storage(ankerl::nanobench::Bench& bench) {
     bench.batch(1).unit("chunk").run("chunk, 4 bits: compact, nothing to narrow", [&] {
         terrain.compact();
         ankerl::nanobench::doNotOptimizeAway(terrain);
+    });
+
+    // Bulk conversion, of a terrain chunk no benchmark above wrote to.
+    // RFC 0002's budget: to_dense under 30 us a chunk, from_dense under 100.
+    const ChunkStorage layered = terrain_chunk(generator);
+    std::vector<BlockState> dense(chunk_volume);
+    const std::span<BlockState, chunk_volume> plain(dense.data(), chunk_volume);
+    layered.to_dense(plain);
+    bench.batch(1).unit("chunk").run("chunk, 4 bits: to_dense", [&] {
+        layered.to_dense(plain);
+        ankerl::nanobench::doNotOptimizeAway(dense);
+    });
+
+    // Into RFC 0003's padded array, 34 blocks a side, the chunk at 1 to 32.
+    constexpr std::size_t side = 34;
+    std::vector<BlockState> padded(side * side * side);
+    const DenseLayout inside{
+        .offset = 1 + side + (side * side), .row_stride = side, .layer_stride = side * side};
+    bench.batch(1).unit("chunk").run("chunk, 4 bits: to_dense, into a padded array", [&] {
+        layered.to_dense(padded, inside);
+        ankerl::nanobench::doNotOptimizeAway(padded);
+    });
+
+    PaletteScratch scratch;
+    bench.batch(1).unit("chunk").run("chunk, 4 bits: from_dense", [&] {
+        ChunkStorage chunk = ChunkStorage::from_dense(plain, scratch);
+        ankerl::nanobench::doNotOptimizeAway(chunk);
+    });
+
+    // A y face is 32 runs of 32 blocks; an x face, 1,024 blocks 32 apart.
+    std::vector<BlockState> face(chunk_area);
+    const std::span<BlockState, chunk_area> face_out(face.data(), chunk_area);
+    bench.batch(1).unit("face").run("chunk, 4 bits: copy_face, a y face", [&] {
+        layered.copy_face(Face::pos_y, face_out);
+        ankerl::nanobench::doNotOptimizeAway(face);
+    });
+    bench.batch(1).unit("face").run("chunk, 4 bits: copy_face, an x face", [&] {
+        layered.copy_face(Face::pos_x, face_out);
+        ankerl::nanobench::doNotOptimizeAway(face);
     });
 }
 

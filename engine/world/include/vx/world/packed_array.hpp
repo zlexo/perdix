@@ -62,9 +62,12 @@ public:
     [[nodiscard]] bool empty() const noexcept { return words_ == nullptr; }
     // 0 when empty.
     [[nodiscard]] int bits() const noexcept { return empty() ? 0 : 1 << log2_bits_; }
+    // The words themselves: entry i holds bits i * width up, lowest bits
+    // first. Writable for bulk conversion, a word at a time.
     [[nodiscard]] std::span<const std::uint64_t> words() const noexcept {
         return {words_.get(), word_count()};
     }
+    [[nodiscard]] std::span<std::uint64_t> words() noexcept { return {words_.get(), word_count()}; }
     // The words' size: chunk_volume entries at the width, 4 KiB at 1 bit to
     // 64 KiB at 16, and none when empty.
     [[nodiscard]] std::size_t memory_bytes() const noexcept {

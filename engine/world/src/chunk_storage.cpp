@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -28,7 +29,52 @@ int width_for(std::uint32_t states) {
     return bits;
 }
 
+// A packed array `bits` wide holding value(i) for every block i, filled a
+// word at a time.
+template <typename Value> PackedArray pack(int bits, Value value) {
+    PackedArray array(bits);
+    const auto width = static_cast<unsigned>(bits);
+    const std::size_t per_word = 64 / width;
+    std::size_t at = 0;
+    for (std::uint64_t& word : array.words()) {
+        std::uint64_t packed = 0;
+        for (std::size_t entry = 0; entry < per_word; ++entry) {
+            packed |= std::uint64_t{value(at++)} << (entry * width);
+        }
+        word = packed;
+    }
+    return array;
+}
+
+// The entries from `first` on, `bits` wide, each looked up and written to
+// `out` until it is full: a word at a time, shifting entries out of it.
+template <typename Lookup>
+void decode(std::span<const std::uint64_t> words, unsigned bits, std::size_t first,
+            std::span<BlockState> out, Lookup lookup) {
+    const std::uint64_t mask = (std::uint64_t{1} << bits) - 1;
+    std::size_t bit = first * bits;
+    std::size_t done = 0;
+    while (done < out.size()) {
+        std::uint64_t word = words[bit / 64] >> (bit % 64);
+        const std::size_t run = std::min((64 - (bit % 64)) / bits, out.size() - done);
+        for (std::size_t entry = 0; entry < run; ++entry) {
+            out[done + entry] = lookup(word & mask);
+            word >>= bits;
+        }
+        done += run;
+        bit += run * bits;
+    }
+}
+
 } // namespace
+
+PaletteScratch::PaletteScratch()
+    // NOLINTNEXTLINE(modernize-avoid-c-arrays)
+    : entry_of_(std::make_unique<std::uint16_t[]>(std::size_t{1} << 16U)),
+      // NOLINTNEXTLINE(modernize-avoid-c-arrays)
+      entries_(std::make_unique<std::uint8_t[]>(chunk_volume)) {
+    std::fill_n(entry_of_.get(), std::size_t{1} << 16U, none);
+}
 
 ChunkStorage ChunkStorage::uniform(BlockState state) noexcept {
     ChunkStorage chunk;
@@ -59,6 +105,125 @@ ChunkStorage ChunkStorage::clone() const {
     copy.palette_size_ = palette_size_;
     copy.uniform_ = uniform_;
     return copy;
+}
+
+ChunkStorage ChunkStorage::from_dense(std::span<const BlockState, chunk_volume> blocks,
+                                      PaletteScratch& scratch) {
+    // Each state's entry, numbered as the states first appear, until a
+    // 257th means direct mode.
+    std::uint16_t* const entry_of = scratch.entry_of_.get();
+    std::uint8_t* const entries = scratch.entries_.get();
+    std::array<BlockState, 256> states{};
+    std::size_t count = 0;
+    bool direct = false;
+    for (std::size_t at = 0; at < blocks.size(); ++at) {
+        const auto value = static_cast<std::uint16_t>(blocks[at]);
+        if (entry_of[value] == PaletteScratch::none) {
+            if (count == states.size()) {
+                direct = true;
+                break;
+            }
+            entry_of[value] = static_cast<std::uint16_t>(count);
+            states[count++] = blocks[at];
+        }
+        entries[at] = static_cast<std::uint8_t>(entry_of[value]);
+    }
+    // The table goes back as it came, `none` throughout, touching only the
+    // entries this call set.
+    for (std::size_t entry = 0; entry < count; ++entry) {
+        entry_of[static_cast<std::uint16_t>(states[entry])] = PaletteScratch::none;
+    }
+
+    ChunkStorage chunk;
+    if (direct) {
+        chunk.indices_ =
+            pack(16, [&](std::size_t at) { return static_cast<std::uint16_t>(blocks[at]); });
+        return chunk;
+    }
+    if (count == 1) {
+        return uniform(states[0]);
+    }
+    const int bits = width_for(static_cast<std::uint32_t>(count));
+    chunk.indices_ = pack(bits, [&](std::size_t at) { return entries[at]; });
+    chunk.palette_ = make_palette(bits);
+    std::copy_n(states.begin(), count, chunk.palette_.get());
+    chunk.palette_size_ = static_cast<std::uint16_t>(count);
+    return chunk;
+}
+
+void ChunkStorage::to_dense(std::span<BlockState, chunk_volume> out) const noexcept {
+    decode_run(0, out);
+}
+
+void ChunkStorage::to_dense(std::span<BlockState> out, DenseLayout layout) const noexcept {
+    // The last row must end inside `out`: subspan does not check. (Written
+    // inside the assert, so a release build has no unused variable.)
+    assert(layout.offset + ((std::size_t{chunk_size} - 1) * layout.row_stride) +
+               ((std::size_t{chunk_size} - 1) * layout.layer_stride) + std::size_t{chunk_size} <=
+           out.size());
+    // Row by row: a row of 32 blocks along x is consecutive both here and in
+    // `out`.
+    for (int y = 0; y < chunk_size; ++y) {
+        for (int z = 0; z < chunk_size; ++z) {
+            const std::size_t row = layout.offset +
+                                    (static_cast<std::size_t>(z) * layout.row_stride) +
+                                    (static_cast<std::size_t>(y) * layout.layer_stride);
+            decode_run(local_index(0, y, z), out.subspan(row, chunk_size));
+        }
+    }
+}
+
+void ChunkStorage::copy_face(Face face, std::span<BlockState, chunk_area> out) const noexcept {
+    constexpr int last = chunk_size - 1;
+    const auto row = [&](int at) {
+        return std::span<BlockState>(out).subspan(static_cast<std::size_t>(at) * chunk_size,
+                                                  chunk_size);
+    };
+    switch (face) {
+    case Face::pos_y:
+    case Face::neg_y: {
+        const int y = face == Face::pos_y ? last : 0;
+        for (int z = 0; z < chunk_size; ++z) {
+            decode_run(local_index(0, y, z), row(z));
+        }
+        return;
+    }
+    case Face::pos_z:
+    case Face::neg_z: {
+        const int z = face == Face::pos_z ? last : 0;
+        for (int y = 0; y < chunk_size; ++y) {
+            decode_run(local_index(0, y, z), row(y));
+        }
+        return;
+    }
+    case Face::pos_x:
+    case Face::neg_x: {
+        // Neighbors along z are 32 entries apart, so block by block.
+        const int x = face == Face::pos_x ? last : 0;
+        for (int y = 0; y < chunk_size; ++y) {
+            for (int z = 0; z < chunk_size; ++z) {
+                row(y)[static_cast<std::size_t>(z)] = get(local_index(x, y, z));
+            }
+        }
+        return;
+    }
+    }
+}
+
+void ChunkStorage::decode_run(std::uint16_t first, std::span<BlockState> out) const noexcept {
+    if (is_uniform()) {
+        std::ranges::fill(out, uniform_);
+        return;
+    }
+    const auto bits = static_cast<unsigned>(indices_.bits());
+    if (palette_ == nullptr) {
+        decode(indices_.words(), bits, first, out,
+               [](std::uint64_t state) { return static_cast<BlockState>(state); });
+        return;
+    }
+    const BlockState* const palette = palette_.get();
+    decode(indices_.words(), bits, first, out,
+           [palette](std::uint64_t entry) { return palette[entry]; });
 }
 
 void ChunkStorage::set(std::uint16_t index, BlockState state) {
