@@ -1,12 +1,25 @@
 #include <vx/render/block_textures.hpp>
 
+#include <vx/core/diagnostic.hpp>
+#include <vx/core/result.hpp>
+#include <vx/world/block_registry.hpp>
+
+#include <stb_image.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <map>
 #include <optional>
+#include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -253,6 +266,152 @@ BlockImage checker() noexcept {
         }
     }
     return image;
+}
+
+Result<BlockImage> decode_block_texture(std::span<const std::byte> png) {
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc* const pixels =
+        stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(png.data()),
+                              static_cast<int>(png.size()), &width, &height, &channels, 4);
+    if (pixels == nullptr) {
+        return Error{std::string("not a PNG file stb_image can read: ") + stbi_failure_reason()};
+    }
+    if (width != block_texture_size || height != block_texture_size) {
+        stbi_image_free(pixels);
+        return Error{std::to_string(width) + " by " + std::to_string(height) +
+                     " pixels; block textures are 16 by 16"};
+    }
+    BlockImage image{};
+    std::memcpy(image.data(), pixels, sizeof(image));
+    stbi_image_free(pixels);
+    return image;
+}
+
+namespace {
+
+// "core:oak_log" is <assets>/core/textures/blocks/oak_log.png.
+std::filesystem::path file_of(const std::filesystem::path& assets, const std::string& name) {
+    const std::size_t colon = name.find(':');
+    return assets / name.substr(0, colon) / "textures" / "blocks" /
+           (name.substr(colon + 1) + ".png");
+}
+
+std::optional<std::vector<std::byte>> read_file(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return std::nullopt;
+    }
+    const std::vector<char> bytes{std::istreambuf_iterator<char>(file),
+                                  std::istreambuf_iterator<char>()};
+    std::vector<std::byte> result(bytes.size());
+    std::memcpy(result.data(), bytes.data(), bytes.size());
+    return result;
+}
+
+// The texels the alpha test discards: alpha below 0.5.
+std::size_t transparent_texels(const BlockImage& image) {
+    return static_cast<std::size_t>(std::ranges::count_if(
+        image, [](const Texel& texel) { return texel.a < passes_alpha_test; }));
+}
+
+// One texture file, read and checked once for every layer that turns it.
+struct Source {
+    bool used_opaque = false;
+    bool used_cutout = false;
+    std::string first_use;
+};
+
+// Reads every texture the layers name, in name order, and reports each
+// problem once per file: the images, or none after any error.
+std::optional<std::map<std::string, BlockImage>>
+read_sources(std::span<const TextureRef> textures, const std::filesystem::path& assets,
+             std::vector<Diagnostic>& diagnostics) {
+    std::map<std::string, Source> sources;
+    for (const TextureRef& texture : textures.subspan(1)) { // layer 0 is the checker
+        Source& source = sources[texture.name];
+        source.used_opaque = source.used_opaque || texture.used_opaque;
+        source.used_cutout = source.used_cutout || texture.used_cutout;
+        if (source.first_use.empty()) {
+            source.first_use = texture.first_use;
+        }
+    }
+    std::map<std::string, BlockImage> images;
+    bool failed = false;
+    for (const auto& [name, source] : sources) {
+        const std::filesystem::path path = file_of(assets, name);
+        const auto report = [&](Severity severity, std::string message) {
+            diagnostics.push_back({.severity = severity,
+                                   .file = path.generic_string(),
+                                   .line = 0,
+                                   .column = 0,
+                                   .message = std::move(message)});
+        };
+        const std::optional<std::vector<std::byte>> bytes = read_file(path);
+        if (!bytes) {
+            failed = true;
+            report(Severity::error, "no such file, for the texture " + name + " (first used at " +
+                                        source.first_use + ")");
+            continue;
+        }
+        Result<BlockImage> image = decode_block_texture(*bytes);
+        if (!image) {
+            failed = true;
+            report(Severity::error, image.error().message);
+            continue;
+        }
+        const std::size_t transparent = transparent_texels(image.value());
+        images.emplace(name, std::move(image).value());
+        if (transparent > 0 && source.used_opaque) {
+            report(Severity::warning,
+                   std::to_string(transparent) +
+                       " texels are transparent (alpha below 0.5), and opaque blocks draw them "
+                       "solid; cutout blocks would show the holes");
+        }
+        if (transparent == 0 && !source.used_opaque && source.used_cutout) {
+            report(Severity::warning, "only cutout blocks use this texture and no texel is "
+                                      "transparent: an opaque block would draw it faster");
+        }
+    }
+    if (failed) {
+        return std::nullopt;
+    }
+    return images;
+}
+
+} // namespace
+
+std::vector<std::byte> build_block_textures(std::span<const TextureRef> textures,
+                                            const std::filesystem::path& assets,
+                                            std::vector<Diagnostic>& diagnostics) {
+    const std::optional<std::map<std::string, BlockImage>> images =
+        read_sources(textures, assets, diagnostics);
+    if (!images) {
+        return {};
+    }
+
+    const std::size_t layers = textures.size();
+    std::vector<std::byte> bytes(layers * block_texture_layer_bytes);
+    for (std::size_t layer = 0; layer < layers; ++layer) {
+        BlockImage image = checker();
+        if (layer > 0) {
+            image = turned(images->at(textures[layer].name), textures[layer].quarter_turns);
+            fill_transparent(image);
+        }
+        const BlockMips mips = mipmaps(image);
+        // Level by level: each level holds every layer, one after another.
+        for (std::size_t level = 0; level < block_texture_levels; ++level) {
+            const std::size_t start = block_texture_level_start[level];
+            const std::size_t texels =
+                (level + 1 < block_texture_levels ? block_texture_level_start[level + 1]
+                                                  : block_texture_texels) -
+                start;
+            const std::size_t offset = 4 * ((layers * start) + (layer * texels));
+            std::memcpy(&bytes[offset], &mips[start], 4 * texels);
+        }
+    }
+    return bytes;
 }
 
 } // namespace vx::render

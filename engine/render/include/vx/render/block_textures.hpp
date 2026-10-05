@@ -1,8 +1,15 @@
 #pragma once
 
+#include <vx/core/diagnostic.hpp>
+#include <vx/core/result.hpp>
+#include <vx/world/block_registry.hpp>
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <span>
+#include <vector>
 
 namespace vx::render {
 
@@ -45,10 +52,26 @@ void fill_transparent(BlockImage& image);
 // light, weighted by alpha (a plain average where every texel is fully
 // transparent). When the alpha test can discard texels, each level's alpha
 // is then scaled so the share of texels that pass matches level 0's
-// (Castaño), so leaves keep their density at a distance.
+// (Castaño), with ties at the test broken in an ordered-dither order, so
+// leaves keep their density at a distance.
 [[nodiscard]] BlockMips mipmaps(const BlockImage& image);
 
 // Layer 0: magenta and black squares, so a missing texture is visibly wrong.
 [[nodiscard]] BlockImage checker() noexcept;
+
+// A PNG file's bytes as a block image, RGBA8 whatever the file stores, or
+// why not: not a PNG, or not 16 by 16.
+[[nodiscard]] Result<BlockImage> decode_block_texture(std::span<const std::byte> png);
+
+// Every layer the block registry lists, at every level, on the CPU (RFC
+// 0004): each texture decoded once, then for each layer turned, filled and
+// mipmapped. The texture core:oak_log is the file
+// <assets>/core/textures/blocks/oak_log.png. Laid out for one buffer to
+// image copy with a region per level: every layer of level 0, then every
+// layer of level 1, and so on. Problems are added to `diagnostics`; after
+// an error nothing comes back.
+[[nodiscard]] std::vector<std::byte> build_block_textures(std::span<const TextureRef> textures,
+                                                          const std::filesystem::path& assets,
+                                                          std::vector<Diagnostic>& diagnostics);
 
 } // namespace vx::render
