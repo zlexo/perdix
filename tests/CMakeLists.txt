@@ -69,6 +69,7 @@ set(VX_VULKAN_DOCTEST_PROPERTIES
     SKIP_REGULAR_EXPRESSION "MESSAGE: skipped: ")
 add_executable(vx_render_vulkan_tests
     main.cpp
+    render/block_texture_array_test.cpp
     render/buffer_test.cpp
     render/context_test.cpp
     render/gpu_timer_test.cpp
@@ -81,6 +82,8 @@ add_executable(vx_render_vulkan_tests
     render/texture_table_test.cpp
     render/upload_test.cpp)
 target_link_libraries(vx_render_vulkan_tests PRIVATE vx::render doctest::doctest)
+# The block texture test files, for the array's readback test.
+target_compile_definitions(vx_render_vulkan_tests PRIVATE VX_BLOCK_TEXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/render/block_textures")
 vx_target_warnings(vx_render_vulkan_tests)
 doctest_discover_tests(vx_render_vulkan_tests PROPERTIES ${VX_VULKAN_DOCTEST_PROPERTIES})
 
