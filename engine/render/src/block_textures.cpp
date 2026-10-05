@@ -52,10 +52,19 @@ std::uint8_t to_byte(double unit) noexcept {
     return static_cast<std::uint8_t>(std::lround(std::clamp(unit, 0.0, 1.0) * 255.0));
 }
 
-std::uint8_t srgb_of(double linear) noexcept {
-    linear = std::clamp(linear, 0.0, 1.0);
-    return to_byte(linear <= 0.0031308 ? linear * 12.92
-                                       : (1.055 * std::pow(linear, 1.0 / 2.4)) - 0.055);
+// Linear light to the nearest 8-bit sRGB value. Byte b + 1 starts where the
+// sRGB curve reaches b + 0.5, so the byte is the number of those starts at
+// or below the light: a binary search, rounding as the curve would.
+std::uint8_t srgb_of(double linear) {
+    static const std::array<double, 255> starts = [] {
+        std::array<double, 255> start{};
+        for (std::size_t value = 0; value < start.size(); ++value) {
+            const double c = (static_cast<double>(value) + 0.5) / 255.0;
+            start[value] = c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+        }
+        return start;
+    }();
+    return static_cast<std::uint8_t>(std::ranges::upper_bound(starts, linear) - starts.begin());
 }
 
 // A color in linear light, with alpha from 0 to 1.
@@ -66,7 +75,7 @@ struct Linear {
     double a = 0;
 };
 
-Texel texel_of(const Linear& color) noexcept {
+Texel texel_of(const Linear& color) {
     return {
         .r = srgb_of(color.r), .g = srgb_of(color.g), .b = srgb_of(color.b), .a = to_byte(color.a)};
 }
@@ -96,17 +105,16 @@ std::vector<std::uint8_t> keep_coverage(const std::vector<double>& alpha, std::s
                                         double coverage) {
     const auto k =
         static_cast<std::size_t>(std::lround(coverage * static_cast<double>(alpha.size())));
-    std::vector<std::size_t> order(alpha.size());
-    for (std::size_t texel = 0; texel < order.size(); ++texel) {
-        order[texel] = texel;
+    // Most opaque first, then by Bayer rank.
+    std::vector<std::pair<double, std::size_t>> keys(alpha.size());
+    for (std::size_t texel = 0; texel < keys.size(); ++texel) {
+        keys[texel] = {-alpha[texel], (bayer_rank(texel % side, texel / side, side) << 16) | texel};
     }
-    std::ranges::sort(order, [&](std::size_t one, std::size_t other) {
-        if (alpha[one] != alpha[other]) {
-            return alpha[one] > alpha[other];
-        }
-        return bayer_rank(one % side, one / side, side) <
-               bayer_rank(other % side, other / side, side);
-    });
+    std::ranges::sort(keys);
+    std::vector<std::size_t> order(keys.size());
+    for (std::size_t rank = 0; rank < keys.size(); ++rank) {
+        order[rank] = keys[rank].second & 0xffff;
+    }
     // The texel that should be the last to pass sits at 0.5, or, when none
     // should, the most opaque one does.
     const double pivot = alpha[order[k == 0 ? 0 : k - 1]];

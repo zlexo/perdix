@@ -313,6 +313,22 @@ TEST_CASE("level 1 of a one-texel black and white checker is sRGB 188, not 128")
     }
 }
 
+TEST_CASE("a texture of one color keeps it exactly at every level, for every 8-bit value") {
+    // Averaging in linear light and storing back as sRGB must give back the
+    // byte it started from.
+    for (int value = 0; value < 256; ++value) {
+        const Texel color{.r = static_cast<std::uint8_t>(value),
+                          .g = static_cast<std::uint8_t>(255 - value),
+                          .b = static_cast<std::uint8_t>(value / 2),
+                          .a = 255};
+        BlockImage image{};
+        image.fill(color);
+        const BlockMips mips = vx::render::mipmaps(image);
+        INFO("value " << value);
+        CHECK(std::ranges::all_of(mips, [&](const Texel& texel) { return texel == color; }));
+    }
+}
+
 TEST_CASE("mipmaps weight color by alpha, so transparent texels add no color") {
     // One opaque red texel in each 2 by 2 block, three fully transparent
     // green ones.
