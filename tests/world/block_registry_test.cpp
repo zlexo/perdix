@@ -448,6 +448,78 @@ rotate_y = 270
     CHECK(faces_of(registry, "test:die[a=true,b=true]")[0] == "test:b/0");
 }
 
+TEST_CASE("a variant applies where all its conditions hold, and a list matches any of its values") {
+    const vx::BlockRegistry registry = loaded({
+        {.path = "assets/test/blocks/die.toml", .text = R"([properties]
+a = [false, true]
+b = [false, true]
+[textures]
+east = "e"
+west = "w"
+top = "t"
+bottom = "b"
+south = "s"
+north = "n"
+[[variant]]
+when = { a = true }
+rotate_x = 270
+rotate_y = 90
+[[variant]]
+when = { a = false, b = false }
+rotate_x = 90
+rotate_y = 270
+)"},
+        // The die turned as the first variant alone turns it, under one
+        // condition, which "all hold" and "any holds" read alike.
+        {.path = "assets/test/blocks/die_turned.toml", .text = R"([properties]
+turned = [true, false]
+[textures]
+east = "e"
+west = "w"
+top = "t"
+bottom = "b"
+south = "s"
+north = "n"
+[[variant]]
+when = { turned = true }
+rotate_x = 270
+rotate_y = 90
+)"},
+        {.path = "assets/test/blocks/log.toml", .text = R"([properties]
+axis = ["y", "x", "z"]
+[textures]
+side = "bark"
+top = "rings"
+bottom = "rings"
+[[variant]]
+when = { axis = ["x", "z"] }
+rotate_x = 90
+)"},
+    });
+    // b is false but a is not, so only the first variant applies.
+    CHECK(faces_of(registry, "test:die[a=true,b=false]") ==
+          faces_of(registry, "test:die_turned[turned=true]"));
+    // Both listed values turn the log; the value not listed does not.
+    CHECK(faces_of(registry, "test:log[axis=z]") == faces_of(registry, "test:log[axis=x]"));
+    CHECK(faces_of(registry, "test:log[axis=x]") != faces_of(registry, "test:log[axis=y]"));
+}
+
+TEST_CASE("a variant's all covers every face") {
+    const vx::BlockRegistry registry = loaded({
+        {.path = "assets/test/blocks/sponge.toml", .text = R"([properties]
+wet = [false, true]
+[textures]
+all = "dry"
+[[variant]]
+when = { wet = true }
+textures = { all = "wet" }
+)"},
+    });
+    CHECK(faces_of(registry, "test:sponge[wet=false]") ==
+          std::vector<std::string>(6, "test:dry/0"));
+    CHECK(faces_of(registry, "test:sponge[wet=true]") == std::vector<std::string>(6, "test:wet/0"));
+}
+
 TEST_CASE("the golden texture table: every layer, in name order, then by turns") {
     const vx::BlockRegistry registry = loaded(example_pack());
     std::vector<std::string> layers;
@@ -473,6 +545,8 @@ TEST_CASE("the golden texture table: every layer, in name order, then by turns")
     // Where each is first used, in id order, for the texture messages.
     CHECK(registry.textures()[1].first_use == "assets/core/blocks/furnace.toml:6:9");
     CHECK(registry.textures()[2].first_use == "assets/core/blocks/furnace.toml:11:22");
+    // furnace_top/0 is on the top face and the bottom one: the top is first.
+    CHECK(registry.textures()[4].first_use == "assets/core/blocks/furnace.toml:7:7");
     CHECK(registry.textures()[13].first_use == "assets/core/blocks/oak_log.toml:5:7");
 }
 
