@@ -26,6 +26,10 @@ struct BlockLoad;
 // last varying fastest. Built once at startup and never changed, so the
 // generator and mesher threads share it without locks.
 class BlockRegistry {
+    // Only load makes one, so every registry has air at 0 and its blocks
+    // after it: an empty one would leave find and default_state nothing.
+    BlockRegistry() = default;
+
 public:
     // Block files given in memory: tests, and the loader that reads a pack.
     // Files are taken in path order, whatever order they come in.

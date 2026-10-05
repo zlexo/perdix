@@ -219,6 +219,7 @@ BlockType BlockRegistry::type_of(BlockState state) const noexcept {
 }
 
 BlockState BlockRegistry::default_state(BlockType type) const noexcept {
+    assert(static_cast<std::size_t>(type) < blocks_.size());
     return static_cast<BlockState>(blocks_[static_cast<std::size_t>(type)].first);
 }
 
