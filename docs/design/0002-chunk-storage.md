@@ -282,5 +282,6 @@ Pull request plan item 6, bulk conversion:
 - **`PaletteScratch` keeps its two tables on the heap**, 160 KiB, so the object itself is 16 bytes wherever the caller keeps it. `from_dense` resets only the table entries it set, so the table never needs a full clear between chunks.
 - **`copy_face`'s order**, which RFC 0003 left open: the other two axes in `local_index`'s order, `x + 32 * z` for a y face, `z + 32 * y` for an x face and `x + 32 * y` for a z face. An x face reads block by block, since its blocks lie 32 apart; the other faces decode runs of 32.
 - **`chunk_area`**, 1,024, names a face's blocks beside `chunk_volume`.
+- **`DenseLayout`'s members default to a plain chunk-sized array**, so `to_dense(out, {})` writes what `to_dense(out)` does; a test holds the two together.
 - **Conversion packs and decodes a word at a time**, through one helper each way.
 - **The numbers**, medians of five release runs on the reference machine, on a 4-bit terrain chunk: `to_dense` takes 7.4 µs, against a budget of 30 and the prototype's 5.4; into the padded array 8.6 µs; `from_dense` 16.1 µs, against 100 and the prototype's 14.3; `copy_face` 0.27 µs for a y face and 0.36 µs for an x face.

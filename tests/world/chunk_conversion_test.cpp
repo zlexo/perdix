@@ -121,6 +121,19 @@ TEST_CASE("to_dense with a layout fills the inside of a padded array and leaves 
     }
 }
 
+TEST_CASE("a default DenseLayout is a plain chunk-sized array") {
+    vx::PaletteScratch scratch;
+    for (const std::vector<vx::BlockState>& blocks : one_of_each_mode()) {
+        const vx::ChunkStorage chunk = vx::ChunkStorage::from_dense(whole(blocks), scratch);
+        INFO(chunk.bits_per_block(), " bits");
+        std::vector<vx::BlockState> plain(vx::chunk_volume);
+        chunk.to_dense(std::span<vx::BlockState, vx::chunk_volume>(plain.data(), vx::chunk_volume));
+        std::vector<vx::BlockState> laid_out(vx::chunk_volume);
+        chunk.to_dense(laid_out, vx::DenseLayout{});
+        CHECK(laid_out == plain);
+    }
+}
+
 TEST_CASE("copy_face gives a face's blocks in local_index order of the other two axes") {
     vx::PaletteScratch scratch;
     for (const std::vector<vx::BlockState>& blocks : one_of_each_mode()) {
