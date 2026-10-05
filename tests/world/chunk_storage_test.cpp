@@ -110,11 +110,30 @@ TEST_CASE("a full palette takes an entry that no block uses any more, instead of
     CHECK(single.get(6) == dirt);
 }
 
+TEST_CASE("a full palette reuses a dead entry past the first two before it grows") {
+    // Stone, dirt, grass and a fourth state fill a 2-bit palette. Grass has
+    // one block, so overwriting it with a fifth state leaves entry 2 with
+    // none, and the fifth state takes it instead of the chunk growing.
+    vx::ChunkStorage chunk = vx::ChunkStorage::uniform(stone);
+    chunk.set(1, dirt);
+    chunk.set(2, grass);
+    chunk.set(3, state(4));
+    REQUIRE(chunk.bits_per_block() == 2);
+    chunk.set(2, state(5));
+    CHECK(chunk.bits_per_block() == 2);
+    CHECK(chunk.get(0) == stone);
+    CHECK(chunk.get(1) == dirt);
+    CHECK(chunk.get(2) == state(5));
+    CHECK(chunk.get(3) == state(4));
+}
+
 TEST_CASE("a clone is an equal copy, and writes to either leave the other alone") {
     for (const int states : {1, 10, 300}) { // uniform, paletted, direct
         INFO(states, " states");
-        vx::ChunkStorage chunk;
-        std::vector<vx::BlockState> expected(vx::chunk_volume, vx::BlockState::air);
+        // Stone, not air: a clone that dropped the uniform state would read
+        // air, which an all-air chunk cannot tell from a copy.
+        vx::ChunkStorage chunk = vx::ChunkStorage::uniform(stone);
+        std::vector<vx::BlockState> expected(vx::chunk_volume, stone);
         for (int id = 1; id < states; ++id) {
             const auto at = static_cast<std::uint16_t>(id * 3);
             chunk.set(at, state(id));
@@ -164,5 +183,6 @@ TEST_CASE("a moved-from chunk is uniform air") {
     CHECK(chunk.memory_bytes() == 0);
     chunk = std::move(moved);
     CHECK(chunk.get(7) == dirt);
-    CHECK(moved.is_uniform()); // NOLINT(bugprone-use-after-move)
+    CHECK(moved.is_uniform());                  // NOLINT(bugprone-use-after-move)
+    CHECK(moved.get(7) == vx::BlockState::air); // NOLINT(bugprone-use-after-move)
 }
