@@ -11,6 +11,9 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <optional>
@@ -429,7 +432,105 @@ private:
     std::optional<Diagnostic> past_limit_;
 };
 
+// Reading a pack from disk. Engine code builds without exceptions (RFC
+// 0000), so every file system call takes an error code.
+namespace fs = std::filesystem;
+
+Diagnostic pack_error(std::string file, std::string message) {
+    return {.severity = Severity::error,
+            .file = std::move(file),
+            .line = 0,
+            .column = 0,
+            .message = std::move(message)};
+}
+
+// The entries of `folder` that `wanted` keeps, in path order; an empty list
+// when the folder does not exist, and nothing when it cannot be read.
+template <typename Wanted>
+std::optional<std::vector<fs::path>> entries(const fs::path& folder, Wanted wanted) {
+    std::error_code error;
+    const fs::file_type type = fs::status(folder, error).type();
+    if (type == fs::file_type::not_found) {
+        return std::vector<fs::path>{};
+    }
+    fs::directory_iterator entry(folder, error);
+    if (error || type != fs::file_type::directory) {
+        return std::nullopt;
+    }
+    std::vector<fs::path> kept;
+    for (const fs::directory_iterator end; entry != end; entry.increment(error)) {
+        if (wanted(*entry)) {
+            kept.push_back(entry->path());
+        }
+    }
+    if (error) {
+        return std::nullopt;
+    }
+    std::ranges::sort(kept);
+    return kept;
+}
+
+bool is_folder(const fs::directory_entry& entry) {
+    std::error_code error;
+    return entry.is_directory(error);
+}
+
+// A regular file named *<extension>, such as a block file, not .DS_Store.
+auto file_with(std::string_view extension) {
+    return [extension](const fs::directory_entry& entry) {
+        std::error_code error;
+        return entry.is_regular_file(error) && entry.path().extension() == extension;
+    };
+}
+
+std::optional<std::string> read_text(const fs::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return std::nullopt;
+    }
+    std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    if (file.bad()) {
+        return std::nullopt;
+    }
+    return text;
+}
+
 } // namespace
+
+BlockLoad BlockRegistry::load(const fs::path& root) {
+    BlockLoad failed;
+    const fs::path assets = root / "assets";
+    const std::optional<std::vector<fs::path>> namespaces = entries(assets, is_folder);
+    if (!namespaces || namespaces->empty()) {
+        failed.diagnostics.push_back(pack_error(
+            assets.generic_string(),
+            namespaces ? "no such folder, or it holds no namespace" : "the folder cannot be read"));
+        return failed;
+    }
+    std::vector<SourceFile> files;
+    for (const fs::path& space : *namespaces) {
+        const fs::path folder = space / "blocks";
+        const std::optional<std::vector<fs::path>> found = entries(folder, file_with(".toml"));
+        if (!found) {
+            failed.diagnostics.push_back(pack_error(
+                folder.lexically_relative(root).generic_string(), "the folder cannot be read"));
+            continue;
+        }
+        for (const fs::path& path : *found) {
+            const std::string relative = path.lexically_relative(root).generic_string();
+            std::optional<std::string> text = read_text(path);
+            if (!text) {
+                failed.diagnostics.push_back(pack_error(relative, "the file cannot be read"));
+                continue;
+            }
+            files.push_back({.path = relative, .text = *std::move(text)});
+        }
+    }
+    if (has_errors(failed.diagnostics)) {
+        return failed;
+    }
+    return BlockRegistry::load(files);
+}
 
 BlockLoad BlockRegistry::load(std::span<const SourceFile> files) {
     // In path order, so the diagnostics come out the same whatever order the
