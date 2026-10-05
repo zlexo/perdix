@@ -290,6 +290,7 @@ Pull request plan item 7, the pools and memory accounting:
 
 - **One pool for the process, never destroyed**, so a chunk freed during static destruction still finds it. Freed blocks stay cached for the life of the process.
 - **The free list lives in the freed blocks**, each one's first word holding the next one's address, so freeing never allocates and cannot fail. A block is zeroed when it is handed out.
+- **Under AddressSanitizer a cached block is poisoned** until it is handed out again, all but its first word, so a use after free of block data still reports in the `Linux (ASan + UBSan)` job, though the memory never goes back to the heap. The first word is the free-list link, which LeakSanitizer must read to reach the blocks behind it: it does not follow pointers kept in poisoned memory, and reported every cached block past the first as leaked when the link was poisoned too. Freeing a block twice stops at an assert, which finds it poisoned already. Guard Malloc, the local check on macOS, cannot see inside the pool.
 - **`PackedArray` owns its words through a plain pointer:** a `unique_ptr` with the pool's deleter would need the width beside it, and the array must stay 16 bytes.
 - **Palettes stay on the heap**, 4 to 512 bytes each, too small for classes of their own.
 - **Memory accounting is `block_data::stats()`**, each class's blocks in use and cached, beside each chunk's `memory_bytes`; the overlay shows it once streaming (RFC 0006) fills the world.

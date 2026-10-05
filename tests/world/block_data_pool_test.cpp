@@ -11,6 +11,19 @@
 #include <thread>
 #include <vector>
 
+// VX_ADDRESS_SANITIZER: AddressSanitizer instruments this file. GCC says so
+// with __SANITIZE_ADDRESS__, Clang through __has_feature.
+#ifdef __SANITIZE_ADDRESS__
+#define VX_ADDRESS_SANITIZER
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define VX_ADDRESS_SANITIZER
+#endif
+#endif
+#ifdef VX_ADDRESS_SANITIZER
+#include <sanitizer/asan_interface.h>
+#endif
+
 namespace {
 
 std::size_t words_of(int log2_bits) {
@@ -43,6 +56,27 @@ TEST_CASE("a block comes zeroed, and a freed one is handed out again") {
     CHECK(after[2].in_use == before[2].in_use);
     CHECK(after[2].cached == std::max<std::size_t>(before[2].cached, 1));
 }
+
+#ifdef VX_ADDRESS_SANITIZER
+// Only where AddressSanitizer runs (Linux CI): it hangs at startup on macOS.
+TEST_CASE("under AddressSanitizer a cached block is poisoned until it is handed out again") {
+    std::uint64_t* const words = vx::block_data::allocate(0);
+    std::uint64_t* const last = words + words_of(0) - 1;
+    CHECK(__asan_address_is_poisoned(words + 1) == 0);
+    CHECK(__asan_address_is_poisoned(last) == 0);
+    vx::block_data::deallocate(words, 0);
+    // Reading or writing past the first word would now report. The first
+    // word, the free-list link, stays readable for LeakSanitizer.
+    CHECK(__asan_address_is_poisoned(words + 1) == 1);
+    CHECK(__asan_address_is_poisoned(last) == 1);
+    CHECK(__asan_address_is_poisoned(words) == 0);
+    std::uint64_t* const again = vx::block_data::allocate(0);
+    REQUIRE(again == words);
+    CHECK(__asan_address_is_poisoned(again + 1) == 0);
+    CHECK(__asan_address_is_poisoned(last) == 0);
+    vx::block_data::deallocate(again, 0);
+}
+#endif
 
 TEST_CASE("threads allocating and freeing at once never share a block, and every count returns") {
     // Each thread marks its blocks as its own before freeing them: a block
