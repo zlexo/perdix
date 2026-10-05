@@ -287,6 +287,6 @@ Pull request plan item 2, block files, landed as two pull requests: `Diagnostic`
 - **Two more errors than the RFC lists:** a file outside `assets/<namespace>/blocks/`, and a block file without a `[textures]` table.
 - **Integer and boolean values are kept as text**, so every state has a text key such as `core:wheat[age=1]`.
 - **A guess ("did you mean") needs one near miss nearer than any other**, at one edit for every three letters and two at most: `w` is as near to `x` as to `y`, so it gets none.
-- **The rules across keys run only on tables read without a problem**, so one misspelt face does not also leave six faces without a texture.
+- **The rules across keys run only on tables read without a problem**, so one misspelt face does not also leave six faces without a texture. A misspelt key with a clear guess counts as that key read with a problem, and so does an opacity that cannot be read: `[propertes]` does not also leave every condition naming an unknown property, a misspelt `[textures]` is not also missing, and a misspelt or unreadable `opacity` does not turn a cull group into an error.
 - **The corpus is one file per error in `tests/world/bad_blocks`**, each ending in comments that give the path it stands for and the messages it must give. With the expectations at the end, its line numbers are its own, and both example messages above come out exactly.
 - **`Opacity` lives in `block_visual.hpp`** from item 2 on; `BlockVisual` joins it with item 4.

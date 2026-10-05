@@ -50,25 +50,32 @@ std::size_t edit_distance(std::string_view from, std::string_view to) {
     return row.back();
 }
 
-// "; did you mean 'opacity'?" for "opacty", guessing only for a near miss,
-// up to one edit in three letters and at most two, and only when one known
-// key is nearer than all the others: "w" is as near to "x" as to "y".
-std::string guess(std::string_view key, std::span<const std::string_view> known) {
+// The known key that "opacty" is a near miss of, "opacity": up to one edit
+// in three letters and at most two, and only when one known key is nearer
+// than all the others ("w" is as near to "x" as to "y").
+std::optional<std::string_view> near_miss(std::string_view key,
+                                          std::span<const std::string_view> known) {
     const auto distance_to = [key](std::string_view candidate) {
         return edit_distance(key, candidate);
     };
     const auto nearest = std::ranges::min_element(known, {}, distance_to);
     if (nearest == known.end()) {
-        return {};
+        return std::nullopt;
     }
     const std::size_t distance = distance_to(*nearest);
     const std::size_t allowed = std::clamp<std::size_t>(key.size() / 3, 1, 2);
     const auto equally_near = std::ranges::count_if(
         known, [&](std::string_view candidate) { return distance_to(candidate) == distance; });
     if (distance > allowed || equally_near > 1) {
-        return {};
+        return std::nullopt;
     }
-    return "; did you mean '" + std::string(*nearest) + "'?";
+    return *nearest;
+}
+
+// "; did you mean 'opacity'?" for "opacty", or nothing without a near miss.
+std::string guess(std::string_view key, std::span<const std::string_view> known) {
+    const std::optional<std::string_view> meant = near_miss(key, known);
+    return meant ? "; did you mean '" + std::string(*meant) + "'?" : std::string{};
 }
 
 std::string unknown_key(std::string_view key, std::span<const std::string_view> known) {
@@ -219,17 +226,22 @@ std::optional<BlockDefinition> Parser::parse() {
     if (block.name == "core:air") {
         error(SourcePlace{}, "core:air is built in, and no file can define it");
     }
-    // The rules across keys run only on tables read without a problem: a
+    // The rules across keys run only on keys read without a problem: a
     // misspelt face would otherwise also leave faces without textures, and a
-    // broken property table would leave every condition unknown.
+    // broken property table would leave every condition unknown. A misspelt
+    // key that is a near miss of one counts as that key read with a problem,
+    // so "[propertes]" does not also leave every condition unknown.
     bool has_textures = false;
     bool textures_read = false;
+    bool textures_misspelt = false;
     bool properties_read = true;
+    bool opacity_read = true;
     for (const auto& [key, node] : result.table()) {
         const std::string_view key_name = key.str();
         const std::size_t problems = diagnostics_.size();
         if (key_name == "opacity") {
             read_opacity(node, block);
+            opacity_read = diagnostics_.size() == problems;
         } else if (key_name == "cull_group") {
             read_cull_group(node, block);
         } else if (key_name == "properties") {
@@ -244,14 +256,20 @@ std::optional<BlockDefinition> Parser::parse() {
             read_variants(node, block);
         } else {
             error(key.source(), unknown_key(key_name, block_keys));
+            const std::optional<std::string_view> meant = near_miss(key_name, block_keys);
+            textures_misspelt = textures_misspelt || meant == "textures";
+            properties_read = properties_read && meant != "properties";
+            opacity_read = opacity_read && meant != "opacity";
         }
     }
     if (!has_textures) {
-        error(SourcePlace{}, "a block names its textures in a [textures] table");
+        if (!textures_misspelt) {
+            error(SourcePlace{}, "a block names its textures in a [textures] table");
+        }
     } else if (textures_read) {
         check_faces(block);
     }
-    if (!block.cull_group.empty() && block.opacity != Opacity::cutout) {
+    if (!block.cull_group.empty() && block.opacity != Opacity::cutout && opacity_read) {
         error(block.cull_group_place, "cull_group is for cutout blocks, and this block is opaque");
     }
     std::ranges::sort(block.properties, {}, &PropertyDefinition::name);
