@@ -76,13 +76,16 @@ void chunk_storage(ankerl::nanobench::Bench& bench) {
         ankerl::nanobench::doNotOptimizeAway(sum);
     });
 
-    // Latency: each read's place depends on the one before.
+    // Latency: each read's place depends on the one before. The random part
+    // of each place comes from the index list, so only the read and an add
+    // stand between one read and the next: a multiply there would be timed
+    // as part of the read.
     bench.batch(indices.size()).unit("get").run("chunk, 4 bits: get, dependent latency", [&] {
         std::uint32_t at = 0;
-        for (std::size_t step = 0; step < indices.size(); ++step) {
+        for (const std::uint16_t offset : indices) {
             const auto read =
                 static_cast<std::uint32_t>(terrain.get(static_cast<std::uint16_t>(at)));
-            at = (at * 2'654'435'761U + read + 1U) & 0x7FFFU;
+            at = (std::uint32_t{offset} + read) & 0x7FFFU;
         }
         ankerl::nanobench::doNotOptimizeAway(at);
     });
