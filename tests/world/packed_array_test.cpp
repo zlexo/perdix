@@ -1,8 +1,10 @@
+#include <vx/world/block_data_pool.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/packed_array.hpp>
 
 #include <doctest/doctest.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -130,4 +132,38 @@ TEST_CASE("repacking keeps every entry, wider or narrower, and a clone is a sepa
     vx::PackedArray copy = array.clone();
     copy.set(0, 1 - array.get(0));
     CHECK(copy.get(0) != array.get(0));
+}
+
+TEST_CASE("packed arrays take their words from the pool and give them back") {
+    // The pool is the process's, so the counts are compared with before.
+    using Counts = std::array<vx::BlockDataClass, vx::block_data::classes>;
+    const Counts before = vx::block_data::stats();
+    {
+        const vx::PackedArray one(1);
+        const vx::PackedArray four(4);
+        const vx::PackedArray sixteen(16);
+        const Counts during = vx::block_data::stats();
+        CHECK(during[0].in_use == before[0].in_use + 1);
+        CHECK(during[2].in_use == before[2].in_use + 1);
+        CHECK(during[4].in_use == before[4].in_use + 1);
+    }
+    Counts after = vx::block_data::stats();
+    for (std::size_t size_class = 0; size_class < after.size(); ++size_class) {
+        INFO("class ", size_class);
+        CHECK(after[size_class].in_use == before[size_class].in_use);
+    }
+
+    // A move hands the words over, and a move assignment gives the target's
+    // own back first.
+    {
+        vx::PackedArray four(4);
+        vx::PackedArray moved = std::move(four);
+        CHECK(vx::block_data::stats()[2].in_use == before[2].in_use + 1);
+        vx::PackedArray eight(8);
+        moved = std::move(eight);
+        after = vx::block_data::stats();
+        CHECK(after[2].in_use == before[2].in_use);
+        CHECK(after[3].in_use == before[3].in_use + 1);
+    }
+    CHECK(vx::block_data::stats()[3].in_use == before[3].in_use);
 }
