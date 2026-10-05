@@ -174,10 +174,19 @@ TEST_CASE("find refuses keys that name no state") {
     for (const char* const key :
          {"core:gold", "stone", "core:stone[]", "core:furnace[", "core:furnace[lit]",
           "core:furnace[lit=maybe]", "core:furnace[heat=1]", "core:furnace[lit=true,lit=false]",
-          "core:furnace[lit=true,]", "core:stone[lit=true]"}) {
+          "core:furnace[lit=true,]", "core:stone[lit=true]", "core:furnace[lit=truex"}) {
         INFO(key);
         CHECK_FALSE(registry.find(key).has_value());
     }
+}
+
+TEST_CASE("files are taken in path order whatever order they come in, and so are diagnostics") {
+    const vx::BlockLoad load = vx::BlockRegistry::load(std::vector<vx::SourceFile>{
+        {.path = "assets/test/blocks/b.toml", .text = "flavour = 1\n[textures]\nall = \"b\"\n"},
+        {.path = "assets/test/blocks/a.toml", .text = "flavour = 1\n[textures]\nall = \"a\"\n"}});
+    REQUIRE(load.diagnostics.size() == 2);
+    CHECK(load.diagnostics[0].file == "assets/test/blocks/a.toml");
+    CHECK(load.diagnostics[1].file == "assets/test/blocks/b.toml");
 }
 
 TEST_CASE("a pack with more states than ids fails, naming its largest blocks") {
