@@ -109,6 +109,13 @@ void chunk_storage(ankerl::nanobench::Bench& bench) {
         }
         ankerl::nanobench::doNotOptimizeAway(mixed);
     });
+
+    // Compaction's counting pass, which a full palette's set also pays: the
+    // terrain chunk's ten states keep their 4 bits, so nothing else is done.
+    bench.batch(1).unit("chunk").run("chunk, 4 bits: compact, nothing to narrow", [&] {
+        terrain.compact();
+        ankerl::nanobench::doNotOptimizeAway(terrain);
+    });
 }
 
 } // namespace vx::bench

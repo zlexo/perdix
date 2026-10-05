@@ -186,3 +186,138 @@ TEST_CASE("a moved-from chunk is uniform air") {
     CHECK(moved.is_uniform());                  // NOLINT(bugprone-use-after-move)
     CHECK(moved.get(7) == vx::BlockState::air); // NOLINT(bugprone-use-after-move)
 }
+
+TEST_CASE("compaction narrows a chunk once overwritten states are gone") {
+    // 17 states make 8 bits; then all but air and one more are overwritten.
+    vx::ChunkStorage chunk;
+    std::vector<vx::BlockState> expected(vx::chunk_volume, vx::BlockState::air);
+    for (int id = 1; id <= 16; ++id) {
+        const auto at = static_cast<std::uint16_t>(id * 5);
+        chunk.set(at, state(id));
+        expected[at] = state(id);
+    }
+    REQUIRE(chunk.bits_per_block() == 8);
+    for (int id = 2; id <= 16; ++id) {
+        const auto at = static_cast<std::uint16_t>(id * 5);
+        chunk.set(at, vx::BlockState::air);
+        expected[at] = vx::BlockState::air;
+    }
+    CHECK(chunk.bits_per_block() == 8); // set never narrows
+    chunk.compact();
+    CHECK(chunk.bits_per_block() == 1);
+    CHECK(chunk.memory_bytes() == 4'096 + 4);
+    CHECK(blocks_differing(chunk, expected) == 0);
+    // A write after narrowing finds the palette's new size: a third state
+    // needs a third entry, which a palette still sized for 17 would misplace.
+    chunk.set(0, state(99));
+    expected[0] = state(99);
+    CHECK(blocks_differing(chunk, expected) == 0);
+}
+
+TEST_CASE("compaction makes a chunk of one state uniform, from a palette or from direct mode") {
+    vx::ChunkStorage paletted = vx::ChunkStorage::uniform(stone);
+    paletted.set(40, dirt);
+    paletted.set(40, stone);
+    paletted.compact();
+    CHECK(paletted.is_uniform());
+    CHECK(paletted.memory_bytes() == 0);
+    CHECK(paletted.get(40) == stone);
+
+    vx::ChunkStorage direct;
+    for (int id = 1; id <= 300; ++id) {
+        direct.set(static_cast<std::uint16_t>(id), state(id));
+    }
+    REQUIRE(direct.bits_per_block() == 16);
+    for (int at = 0; at < vx::chunk_volume; ++at) {
+        direct.set(static_cast<std::uint16_t>(at), grass);
+    }
+    direct.compact();
+    CHECK(direct.is_uniform());
+    CHECK(direct.get(150) == grass);
+}
+
+TEST_CASE("compaction takes a direct chunk back to a palette once 256 states or fewer are left") {
+    vx::ChunkStorage chunk;
+    std::vector<vx::BlockState> expected(vx::chunk_volume, vx::BlockState::air);
+    for (int id = 1; id <= 300; ++id) {
+        const auto at = static_cast<std::uint16_t>(id * 3);
+        chunk.set(at, state(id));
+        expected[at] = state(id);
+    }
+    chunk.compact(); // 301 states: still direct
+    CHECK(chunk.bits_per_block() == 16);
+    for (int id = 21; id <= 300; ++id) {
+        const auto at = static_cast<std::uint16_t>(id * 3);
+        chunk.set(at, vx::BlockState::air);
+        expected[at] = vx::BlockState::air;
+    }
+    chunk.compact(); // air and 20 more
+    CHECK(chunk.bits_per_block() == 8);
+    CHECK(blocks_differing(chunk, expected) == 0);
+    // A write after leaving direct mode adds an entry after the 21, rather
+    // than overwriting entry 0 as a palette sized 0 would.
+    chunk.set(1, state(999));
+    expected[1] = state(999);
+    CHECK(blocks_differing(chunk, expected) == 0);
+}
+
+TEST_CASE("compaction's cutoff is 256 states: 256 take a palette, 257 stay direct") {
+    for (const auto& [states, bits] : {std::pair{256, 8}, std::pair{257, 16}}) {
+        INFO(states, " states");
+        // 301 states make a direct chunk; overwriting all but air and
+        // states - 1 more leaves `states` states.
+        vx::ChunkStorage chunk;
+        std::vector<vx::BlockState> expected(vx::chunk_volume, vx::BlockState::air);
+        for (int id = 1; id <= 300; ++id) {
+            const auto at = static_cast<std::uint16_t>(id * 3);
+            chunk.set(at, state(id));
+            expected[at] = state(id);
+        }
+        for (int id = states; id <= 300; ++id) {
+            const auto at = static_cast<std::uint16_t>(id * 3);
+            chunk.set(at, vx::BlockState::air);
+            expected[at] = vx::BlockState::air;
+        }
+        chunk.compact();
+        CHECK(chunk.bits_per_block() == bits);
+        CHECK(blocks_differing(chunk, expected) == 0);
+    }
+}
+
+TEST_CASE("compaction leaves a chunk alone when it cannot narrow, and set reuses the entry") {
+    vx::ChunkStorage chunk = vx::ChunkStorage::uniform(stone);
+    chunk.set(1, dirt);
+    chunk.set(2, grass);
+    chunk.set(3, state(4)); // 4 states: 2 bits
+    chunk.set(3, stone);    // 3 left, which still take 2 bits
+    chunk.compact();
+    CHECK(chunk.bits_per_block() == 2);
+    chunk.set(4, state(5)); // into the entry state 4 left
+    CHECK(chunk.bits_per_block() == 2);
+    CHECK(chunk.get(1) == dirt);
+    CHECK(chunk.get(2) == grass);
+    CHECK(chunk.get(3) == stone);
+    CHECK(chunk.get(4) == state(5));
+}
+
+TEST_CASE("after random rewrites and compaction, a chunk is as narrow as its states allow") {
+    // Each round rewrites every block from a smaller set of states, so the
+    // chunk goes from direct mode down through every width to uniform.
+    // Seeded, so a failure reproduces.
+    std::mt19937 generator(1003);
+    vx::ChunkStorage chunk;
+    std::vector<vx::BlockState> expected(vx::chunk_volume, vx::BlockState::air);
+    for (const auto& [states, bits] : {std::pair{300, 16}, std::pair{100, 8}, std::pair{10, 4},
+                                       std::pair{3, 2}, std::pair{2, 1}, std::pair{1, 0}}) {
+        std::uniform_int_distribution<int> pick(0, states - 1);
+        for (int at = 0; at < vx::chunk_volume; ++at) {
+            const vx::BlockState written = state(pick(generator));
+            chunk.set(static_cast<std::uint16_t>(at), written);
+            expected[static_cast<std::size_t>(at)] = written;
+        }
+        chunk.compact();
+        INFO(states, " states");
+        CHECK(chunk.bits_per_block() == bits);
+        CHECK(blocks_differing(chunk, expected) == 0);
+    }
+}
