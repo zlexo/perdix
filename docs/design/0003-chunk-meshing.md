@@ -244,3 +244,10 @@ Pull request plan item 2, the layer and the quad:
 - **The quad's two words are built apart**, by `quad_geometry` and `quad_material`: the material word, texture and occlusion, is what merging compares (item 6), so the mesher builds it once per face and writes it into the quad as it is. `encode_quad` and `decode_quad` go between a quad and its fields, `QuadFields`, and are what the tests use.
 - **`face_axes` and `quad_corner` give, on the CPU, what the vertex shader computes**: the axes a face's width and height run along, and where each corner lies, 0 to 32 on each axis. The decoding shader (item 7) is tested against them.
 - **The bit layout is pinned by a test** on hand-computed words, since a change made alike in the encoder and the decoder passes every round trip but not the shader.
+
+Pull request plan item 3, the padded chunk:
+
+- **`PaddedChunk` is 34 by 34 by 34 states, 78,608 bytes**, in a chunk's order (x fastest, then z, then y), the chunk's own blocks at 1 to 32. Too large for a worker's stack, so its owner reuses one (RFC 0005's scratch).
+- **`ChunkNeighborhood` holds the middle chunk by reference and its 26 neighbors by pointer**, each found by its offset; a null neighbor reads as air.
+- **`assemble_padded` fills the middle in one pass of `to_dense`**, each face neighbor's touching layer through `copy_face` into a 32 by 32 layer, copied a row at a time for y and z faces and a block at a time for x faces, whose blocks lie 34 apart, and the 12 edges and 8 corners through `get`, 392 reads.
+- **Assembling from the 27 chunks of rolling terrain around the origin's takes 11.7 µs**, the median of five release runs on the reference machine, of which the middle's `to_dense` is about 8.6 µs (RFC 0002): the 26 neighbors' border costs about 3 µs.
