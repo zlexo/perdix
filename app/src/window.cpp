@@ -60,9 +60,9 @@ bool Window::handle_events(Overlay& overlay) {
         if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == id) {
             return false;
         }
-        // A captured mouse flies the camera, so only a free one reaches the
-        // overlay.
-        const bool overlay_took = !mouse_captured() && overlay.take_event(event);
+        // The overlay decides what reaches it: while the mouse flies the
+        // camera, only releases (Overlay::take_event).
+        const bool overlay_took = overlay.take_event(event, mouse_captured());
         if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F3 && !event.key.repeat) {
             overlay.toggle();
         }
