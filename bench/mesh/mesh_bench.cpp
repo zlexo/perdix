@@ -81,10 +81,17 @@ void mesh(ankerl::nanobench::Bench& bench) {
         const std::unique_ptr<PaddedChunk> chunk = padded(test.world);
         // RFC 0003 budgets the output too: under 32 KiB for typical terrain.
         const std::size_t quads = mesh_chunk(*chunk, visuals, scratch).all().size();
-        std::cout << "mesh, " << test.name << ": " << quads << " quads, " << quads * sizeof(Quad)
-                  << " bytes\n";
+        const std::size_t faces =
+            mesh_chunk(*chunk, visuals, scratch, {.merge = false}).all().size();
+        std::cout << "mesh, " << test.name << ": " << faces << " faces, " << quads << " quads, "
+                  << quads * sizeof(Quad) << " bytes\n";
         bench.batch(1).unit("chunk").run(std::string("mesh: ") + test.name, [&] {
             const ChunkMesh mesh = mesh_chunk(*chunk, visuals, scratch);
+            ankerl::nanobench::doNotOptimizeAway(mesh.all().size());
+        });
+        // What merging costs: the same chunk, a quad a face.
+        bench.batch(1).unit("chunk").run(std::string("mesh: ") + test.name + ", unmerged", [&] {
+            const ChunkMesh mesh = mesh_chunk(*chunk, visuals, scratch, {.merge = false});
             ankerl::nanobench::doNotOptimizeAway(mesh.all().size());
         });
     }
