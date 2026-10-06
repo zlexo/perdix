@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <optional>
@@ -436,74 +437,139 @@ private:
 // 0000), so every file system call takes an error code.
 namespace fs = std::filesystem;
 
-Diagnostic pack_error(std::string file, std::string message) {
-    return {.severity = Severity::error,
-            .file = std::move(file),
-            .line = 0,
-            .column = 0,
-            .message = std::move(message)};
-}
+// One entry of a folder: its name exactly as the folder lists it, and what
+// it is, following links. A link to nothing is not_found.
+struct Entry {
+    fs::path path;
+    std::string name;
+    fs::file_type type = fs::file_type::none;
+};
 
-// The entries of `folder` that `wanted` keeps, in path order; an empty list
-// when the folder does not exist, and nothing when it cannot be read.
-template <typename Wanted>
-std::optional<std::vector<fs::path>> entries(const fs::path& folder, Wanted wanted) {
+// What `folder` holds, in name order; nothing when it cannot be read.
+std::optional<std::vector<Entry>> list(const fs::path& folder) {
     std::error_code error;
-    const fs::file_type type = fs::status(folder, error).type();
-    if (type == fs::file_type::not_found) {
-        return std::vector<fs::path>{};
-    }
     fs::directory_iterator entry(folder, error);
-    if (error || type != fs::file_type::directory) {
+    if (error) {
         return std::nullopt;
     }
-    std::vector<fs::path> kept;
+    std::vector<Entry> entries;
     for (const fs::directory_iterator end; entry != end; entry.increment(error)) {
-        if (wanted(*entry)) {
-            kept.push_back(entry->path());
-        }
+        std::error_code ignored; // a link to nothing has no status, which is what not_found says
+        entries.push_back({.path = entry->path(),
+                           .name = entry->path().filename().string(),
+                           .type = entry->status(ignored).type()});
     }
     if (error) {
         return std::nullopt;
     }
-    std::ranges::sort(kept);
-    return kept;
+    std::ranges::sort(entries, {}, &Entry::name);
+    return entries;
 }
 
-bool is_folder(const fs::directory_entry& entry) {
-    std::error_code error;
-    return entry.is_directory(error);
-}
-
-// A regular file named *<extension>, such as a block file, not .DS_Store.
-auto file_with(std::string_view extension) {
-    return [extension](const fs::directory_entry& entry) {
-        std::error_code error;
-        return entry.is_regular_file(error) && entry.path().extension() == extension;
+// Whether two names differ in the case of their letters alone.
+bool same_but_case(std::string_view one, std::string_view other) {
+    const auto lower = [](char letter) {
+        return letter >= 'A' && letter <= 'Z' ? static_cast<char>(letter - 'A' + 'a') : letter;
     };
+    return one != other && std::ranges::equal(one, other, {}, lower, lower);
 }
 
-// A warning for each texture file of the pack's namespaces that no block
-// uses (RFC 0004), in path order.
-void warn_unused_textures(const fs::path& root, std::span<const fs::path> namespaces,
+// Names whose files a pack skips: .DS_Store, the ._ files macOS leaves on
+// other file systems, editors' swap files.
+bool hidden(const Entry& entry) {
+    return entry.name.starts_with('.');
+}
+
+// Walks a pack's folders, collecting the problems it finds on the way.
+// Names in a pack match exactly, as on Linux: the Mac's file system would
+// find "Blocks" under the name "blocks", and a pack must load the same on
+// both (RFC 0004), so the walk reads every folder's listing rather than
+// asking for a path by name.
+class PackWalk {
+public:
+    explicit PackWalk(const fs::path& root) : root_(root) {}
+
+    [[nodiscard]] std::string relative(const fs::path& path) const {
+        return path.lexically_relative(root_).generic_string();
+    }
+    void error(std::string file, std::string message) {
+        diagnostics_.push_back({.severity = Severity::error,
+                                .file = std::move(file),
+                                .line = 0,
+                                .column = 0,
+                                .message = std::move(message)});
+    }
+    [[nodiscard]] std::vector<Diagnostic>& diagnostics() { return diagnostics_; }
+
+    // The listing of `folder`, or an error on it.
+    std::optional<std::vector<Entry>> listing(const fs::path& folder) {
+        std::optional<std::vector<Entry>> entries = list(folder);
+        if (!entries) {
+            error(relative(folder), "the folder cannot be read");
+        }
+        return entries;
+    }
+
+    // The folder named exactly `name` in a listing, if there is one. One
+    // whose name differs only in case is an error, and so is a file of
+    // that name.
+    std::optional<fs::path> folder(const std::vector<Entry>& entries, std::string_view name) {
+        for (const Entry& entry : entries) {
+            if (same_but_case(entry.name, name)) {
+                error(relative(entry.path), "'" + entry.name + "' must be named '" +
+                                                std::string(name) +
+                                                "': names in a pack match exactly, as on Linux");
+            } else if (entry.name == name) {
+                if (entry.type != fs::file_type::directory) {
+                    error(relative(entry.path), "not a folder");
+                    return std::nullopt;
+                }
+                return entry.path;
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Whether a file's name ends in `extension` exactly; an ending that
+    // differs only in case is an error.
+    bool ends_in(const Entry& entry, std::string_view extension, std::string_view kind) {
+        const std::string_view name = entry.name;
+        if (name.size() <= extension.size()) {
+            return false;
+        }
+        const std::string_view ending = name.substr(name.size() - extension.size());
+        if (same_but_case(ending, extension)) {
+            error(relative(entry.path),
+                  std::string(kind) + " files end in '" + std::string(extension) + "'");
+        }
+        return ending == extension;
+    }
+
+private:
+    const fs::path& root_;
+    std::vector<Diagnostic> diagnostics_;
+};
+
+// The texture files of one namespace: assets/<namespace>/textures/blocks.
+struct TextureFiles {
+    std::string space;
+    std::vector<Entry> files;
+};
+
+// A warning for each texture file no block uses (RFC 0004), in path order.
+void warn_unused_textures(const PackWalk& walk, std::span<const TextureFiles> textures,
                           const BlockRegistry& registry, std::vector<Diagnostic>& diagnostics) {
     std::set<std::string_view> used;
     for (const TextureRef& texture : registry.textures()) {
         used.insert(texture.name);
     }
-    for (const fs::path& space : namespaces) {
-        const fs::path folder = space / "textures" / "blocks";
-        const std::string relative = folder.lexically_relative(root).generic_string();
-        const std::optional<std::vector<fs::path>> pictures = entries(folder, file_with(".png"));
-        if (!pictures) {
-            diagnostics.push_back(pack_error(relative, "the folder cannot be read"));
-            continue;
-        }
-        for (const fs::path& picture : *pictures) {
-            const std::string name = space.filename().string() + ":" + picture.stem().string();
-            if (!used.contains(name)) {
+    for (const TextureFiles& space : textures) {
+        for (const Entry& file : space.files) {
+            const std::string_view stem = std::string_view(file.name).substr(
+                0, file.name.size() - std::string_view(".png").size());
+            if (!used.contains(space.space + ":" + std::string(stem))) {
                 diagnostics.push_back({.severity = Severity::warning,
-                                       .file = picture.lexically_relative(root).generic_string(),
+                                       .file = walk.relative(file.path),
                                        .line = 0,
                                        .column = 0,
                                        .message = "no block uses this texture"});
@@ -512,45 +578,114 @@ void warn_unused_textures(const fs::path& root, std::span<const fs::path> namesp
     }
 }
 
+// The pack's namespaces: the folders in root/assets, or none, with an
+// error, when there is no such folder or it holds no folder.
+std::vector<Entry> pack_namespaces(PackWalk& walk, const fs::path& root) {
+    const std::optional<std::vector<Entry>> top = list(root);
+    if (!top) {
+        walk.error(root.generic_string(), "the folder cannot be read");
+        return {};
+    }
+    std::vector<Entry> namespaces;
+    if (const std::optional<fs::path> assets = walk.folder(*top, "assets")) {
+        if (const std::optional<std::vector<Entry>> spaces = walk.listing(*assets)) {
+            std::ranges::copy_if(*spaces, std::back_inserter(namespaces), [](const Entry& entry) {
+                return entry.type == fs::file_type::directory && !hidden(entry);
+            });
+        }
+    }
+    if (namespaces.empty() && !has_errors(walk.diagnostics())) {
+        walk.error((root / "assets").generic_string(), "no such folder, or it holds no namespace");
+    }
+    return namespaces;
+}
+
+// Reads the block files of a namespace's blocks folder into `files`.
+void read_block_files(PackWalk& walk, const fs::path& folder, std::vector<SourceFile>& files) {
+    for (const Entry& entry : walk.listing(folder).value_or(std::vector<Entry>{})) {
+        // Not a block file unless named *.toml; a folder of that name is not
+        // one either.
+        if (hidden(entry) || !walk.ends_in(entry, ".toml", "block") ||
+            entry.type == fs::file_type::directory) {
+            continue;
+        }
+        std::optional<std::string> text =
+            entry.type == fs::file_type::regular ? read_file(entry.path) : std::nullopt;
+        if (!text) {
+            walk.error(walk.relative(entry.path), "the file cannot be read");
+            continue;
+        }
+        files.push_back({.path = walk.relative(entry.path), .text = *std::move(text)});
+    }
+}
+
+// The texture files of a namespace, whose folder lists `inside`:
+// textures/blocks/*.png. Nothing when it has no such folder.
+std::optional<TextureFiles> list_texture_files(PackWalk& walk, const Entry& space,
+                                               const std::vector<Entry>& inside) {
+    const std::optional<fs::path> textures = walk.folder(inside, "textures");
+    const std::optional<std::vector<Entry>> kinds =
+        textures ? walk.listing(*textures) : std::nullopt;
+    const std::optional<fs::path> pictures = kinds ? walk.folder(*kinds, "blocks") : std::nullopt;
+    if (!pictures) {
+        return std::nullopt;
+    }
+    TextureFiles found{.space = space.name, .files = {}};
+    for (const Entry& entry : walk.listing(*pictures).value_or(std::vector<Entry>{})) {
+        if (!hidden(entry) && walk.ends_in(entry, ".png", "texture") &&
+            entry.type == fs::file_type::regular) {
+            found.files.push_back(entry);
+        }
+    }
+    return found;
+}
+
 } // namespace
 
 BlockLoad BlockRegistry::load(const fs::path& root) {
-    BlockLoad failed;
-    const fs::path assets = root / "assets";
-    const std::optional<std::vector<fs::path>> namespaces = entries(assets, is_folder);
-    if (!namespaces || namespaces->empty()) {
-        failed.diagnostics.push_back(pack_error(
-            assets.generic_string(),
-            namespaces ? "no such folder, or it holds no namespace" : "the folder cannot be read"));
-        return failed;
+    PackWalk walk(root);
+    const auto finish = [&](BlockLoad load) {
+        load.diagnostics.insert(load.diagnostics.begin(), walk.diagnostics().begin(),
+                                walk.diagnostics().end());
+        return load;
+    };
+    const std::vector<Entry> namespaces = pack_namespaces(walk, root);
+    if (namespaces.empty()) {
+        return finish({});
     }
     std::vector<SourceFile> files;
-    for (const fs::path& space : *namespaces) {
-        const fs::path folder = space / "blocks";
-        const std::optional<std::vector<fs::path>> found = entries(folder, file_with(".toml"));
-        if (!found) {
-            failed.diagnostics.push_back(pack_error(
-                folder.lexically_relative(root).generic_string(), "the folder cannot be read"));
+    std::vector<TextureFiles> textures;
+    for (const Entry& space : namespaces) {
+        const std::optional<std::vector<Entry>> inside = walk.listing(space.path);
+        if (!inside) {
             continue;
         }
-        for (const fs::path& path : *found) {
-            const std::string relative = path.lexically_relative(root).generic_string();
-            std::optional<std::string> text = read_file(path);
-            if (!text) {
-                failed.diagnostics.push_back(pack_error(relative, "the file cannot be read"));
-                continue;
-            }
-            files.push_back({.path = relative, .text = *std::move(text)});
+        if (const std::optional<fs::path> blocks = walk.folder(*inside, "blocks")) {
+            read_block_files(walk, *blocks, files);
+        }
+        // The texture files are listed now, before the registry exists, so a
+        // folder that cannot be read leaves no registry behind.
+        if (std::optional<TextureFiles> found = list_texture_files(walk, space, *inside)) {
+            textures.push_back(*std::move(found));
         }
     }
-    if (has_errors(failed.diagnostics)) {
-        return failed;
+    if (files.empty() && !has_errors(walk.diagnostics())) {
+        walk.error((root / "assets").generic_string(),
+                   "no block files: a block is assets/<namespace>/blocks/<name>.toml");
+        return finish({});
     }
+
+    // Every file read is loaded, so a file that could not be read does not
+    // hide the problems of the others; any problem on the walk then leaves
+    // no registry.
     BlockLoad load = BlockRegistry::load(files);
-    if (load.registry.has_value()) {
-        warn_unused_textures(root, *namespaces, *load.registry, load.diagnostics);
+    if (has_errors(walk.diagnostics())) {
+        load.registry.reset();
     }
-    return load;
+    if (load.registry.has_value()) {
+        warn_unused_textures(walk, textures, *load.registry, load.diagnostics);
+    }
+    return finish(std::move(load));
 }
 
 BlockLoad BlockRegistry::load(std::span<const SourceFile> files) {

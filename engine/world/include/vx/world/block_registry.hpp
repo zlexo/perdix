@@ -53,8 +53,11 @@ public:
     // A pack on disk: every assets/<namespace>/blocks/*.toml under `root`,
     // loaded as the files above, their paths relative to `root`. Each
     // texture file no block uses, assets/<namespace>/textures/blocks/*.png,
-    // is a warning. No assets folder, or a folder or file that cannot be
-    // read, is an error.
+    // is a warning. Names match exactly, as on Linux, whatever the file
+    // system: one that differs only in case is an error. So are no assets
+    // folder, no block file, and a folder or file that cannot be read; any
+    // error leaves no registry. Files whose names start with a dot are
+    // skipped.
     [[nodiscard]] static BlockLoad load(const std::filesystem::path& root);
 
     // "core:furnace[lit=true]": properties left out take their defaults.
