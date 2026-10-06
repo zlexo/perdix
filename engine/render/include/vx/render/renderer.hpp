@@ -16,6 +16,7 @@
 #include <glm/ext/vector_int3_sized.hpp>
 #include <volk.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -158,6 +159,13 @@ public:
     // How the chunk's textures are filtered, from the next frame.
     void set_block_filter(BlockFilter filter) noexcept { block_filter_ = filter; }
     [[nodiscard]] BlockFilter block_filter() const noexcept { return block_filter_; }
+    // How much ambient occlusion darkens the chunk's corners: from 0, not at
+    // all, to 1, as Minecraft's smooth lighting does, the default (RFC 0003,
+    // open question 1: chosen by eye on the overlay's slider).
+    void set_occlusion_strength(float strength) noexcept {
+        occlusion_strength_ = std::clamp(strength, 0.0F, 1.0F);
+    }
+    [[nodiscard]] float occlusion_strength() const noexcept { return occlusion_strength_; }
     // Null when headless.
     [[nodiscard]] const Swapchain* swapchain() const noexcept {
         return swapchain_.has_value() ? &swapchain_.value() : nullptr;
@@ -211,6 +219,7 @@ private:
     ChunkDrawing chunk_drawing_;
     std::optional<UploadedChunk> chunk_;
     BlockFilter block_filter_ = BlockFilter::sharpened;
+    float occlusion_strength_ = 1.0F;
     Extent framebuffer_;
     Extent target_framebuffer_; // the size the target was made for
     PresentMode present_mode_;

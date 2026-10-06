@@ -216,7 +216,8 @@ static_assert(sizeof(ChunkPush) == 112 && offsetof(ChunkPush, origin) == 80 &&
 // `extent`. The chunk's lowest corner is subtracted from the camera's block
 // in 64-bit integers, as cubes are, so the GPU only sees small numbers.
 ChunkPush make_chunk_push(const Camera& camera, const BlockAndFraction& split, VkExtent2D extent,
-                          VkDeviceAddress quads, ChunkPos position, BlockFilter filter) {
+                          VkDeviceAddress quads, ChunkPos position, BlockFilter filter,
+                          float occlusion_strength) {
     const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
     const glm::i64vec3 lowest =
         glm::i64vec3(position.x, position.y, position.z) * static_cast<std::int64_t>(chunk_size);
@@ -224,7 +225,7 @@ ChunkPush make_chunk_push(const Camera& camera, const BlockAndFraction& split, V
             .quads = quads,
             .padding_a = 0,
             .origin = relative_origin(lowest, split.block),
-            .occlusion_strength = 1.0F,
+            .occlusion_strength = occlusion_strength,
             .camera_fraction = split.fraction,
             .filter = static_cast<std::uint32_t>(filter)};
 }
@@ -822,9 +823,10 @@ Renderer::Renderer(Renderer&& other) noexcept
       textures_(std::move(other.textures_)), block_textures_(std::move(other.block_textures_)),
       cube_(std::move(other.cube_)), chunk_drawing_(std::move(other.chunk_drawing_)),
       chunk_(std::move(other.chunk_)), block_filter_(other.block_filter_),
-      framebuffer_(other.framebuffer_), target_framebuffer_(other.target_framebuffer_),
-      present_mode_(other.present_mode_), swapchain_stale_(other.swapchain_stale_),
-      slots_(std::exchange(other.slots_, {})), origins_(std::move(other.origins_)),
+      occlusion_strength_(other.occlusion_strength_), framebuffer_(other.framebuffer_),
+      target_framebuffer_(other.target_framebuffer_), present_mode_(other.present_mode_),
+      swapchain_stale_(other.swapchain_stale_), slots_(std::exchange(other.slots_, {})),
+      origins_(std::move(other.origins_)),
       image_rendered_(std::exchange(other.image_rendered_, {})),
       frames_done_(std::exchange(other.frames_done_, VK_NULL_HANDLE)), frame_(other.frame_),
       gpu_timer_(std::move(other.gpu_timer_)), times_(other.times_),
@@ -1135,7 +1137,7 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
                        .cutout = 0};
         if (chunk_.has_value()) {
             draw.push = make_chunk_push(inputs.camera, split, extent, chunk_->quads.address(),
-                                        chunk_->position, block_filter_);
+                                        chunk_->position, block_filter_, occlusion_strength_);
             draw.opaque = chunk_->opaque;
             draw.cutout = chunk_->cutout;
         }
