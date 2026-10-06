@@ -26,6 +26,7 @@ include(VxEngineOptions)
 
 add_subdirectory(engine/core)
 add_subdirectory(engine/world)
+add_subdirectory(engine/mesh)
 add_subdirectory(engine/render)
 add_subdirectory(app)
 
