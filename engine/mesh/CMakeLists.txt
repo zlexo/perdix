@@ -1,6 +1,7 @@
 # The mesh layer (RFC 0003): a chunk's blocks into the quads the renderer
 # draws. It reads the world layer and has no GPU or window code (ADR 0003).
 add_library(vx_mesh STATIC
+    src/mesh_chunk.cpp
     src/padded_chunk.cpp)
 add_library(vx::mesh ALIAS vx_mesh)
 
