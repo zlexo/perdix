@@ -326,6 +326,6 @@ Pull request plan item 6, the GPU array, landed as two pull requests: the array 
 
 - **`Image` takes mip levels and array layers** through `create_array`, whose view is an array even with one layer, as a shader that declares an array expects.
 - **`upload_image` fills every level and layer in one copy**, a region per level, from bytes laid out level by level: the copy described above, made general, so the cube's checker and the block array upload the same way.
-- **Exactly `maxImageArrayLayers` layers are allowed.** One more is refused with both numbers before Vulkan sees the request; without the check, that request aborts the program.
+- **Exactly `maxImageArrayLayers` layers are allowed.** One more is refused with both numbers before Vulkan sees the request; without the check, that request aborts the program on KosmicKrisp. `Image::create_array` itself refuses layers outside 1 to that limit, and mip levels outside 1 to the level of 1 by 1, for any caller.
 - **The array can be copied out of** as well as into, for the readback test and for tools.
 - **The readback test also runs on both of the reference Mac's drivers**, KosmicKrisp and MoltenVK, chosen with `VK_DRIVER_FILES`.
