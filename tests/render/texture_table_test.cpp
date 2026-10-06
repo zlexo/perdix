@@ -46,9 +46,11 @@ bool near(const Pixel& pixel, const Pixel& expected) {
 }
 
 // Two layers, laid out as upload_image takes them, made for telling
-// filtering modes apart. Layer 0: level 0 a checker of single white and
-// black texels, the other levels white. Layer 1: level 0 black, level 1
-// white, the others red.
+// filtering modes apart. Layer 0: levels 0 and 1 checkers of single white
+// and black texels, the other levels white. Layer 1: level 0 black, level 1
+// white, the others a dark red stored as sRGB 128, which reads back as 128
+// only if the array is sampled as sRGB: read as UNORM, it would be light
+// 0.5 and come out as 188.
 std::vector<std::byte> probe_layers() {
     constexpr std::size_t layers = 2;
     std::vector<std::byte> bytes(layers * vx::render::block_texture_layer_bytes);
@@ -57,12 +59,12 @@ std::vector<std::byte> probe_layers() {
         for (std::size_t layer = 0; layer < layers; ++layer) {
             for (std::size_t texel = 0; texel < side * side; ++texel) {
                 Pixel color{255, 255, 255, 255};
-                if (layer == 0 && level == 0 && (texel % side + texel / side) % 2 == 1) {
+                if (layer == 0 && level <= 1 && (texel % side + texel / side) % 2 == 1) {
                     color = {0, 0, 0, 255};
                 } else if (layer == 1 && level == 0) {
                     color = {0, 0, 0, 255};
                 } else if (layer == 1 && level >= 2) {
-                    color = {255, 0, 0, 255};
+                    color = {128, 0, 0, 255};
                 }
                 const std::size_t at =
                     4 * ((layers * vx::render::block_texture_level_start.at(level)) +
@@ -200,17 +202,22 @@ TEST_CASE("binding 3 samples the array linearly between texels and levels, and r
     constexpr Pixel half = {188, 188, 188, 255};
     constexpr float texel = 1.0F / 16.0F;
 
-    // At a texel's center, that texel; on the edge between two, both.
+    // At a texel's center, that texel; on the edge between two, both. At
+    // level 0 that is the magnification filter.
     CHECK(near(at(0.5F * texel, 0.5F * texel, 0.0F, 0.0F), white));
     CHECK(near(at(1.5F * texel, 0.5F * texel, 0.0F, 0.0F), black));
     CHECK(near(at(1.0F * texel, 0.5F * texel, 0.0F, 0.0F), half));
-    // Past the right edge, the left one again: clamping would read texel 15,
-    // which is black.
+    // At level 1 alone the minification filter, the one distant ground
+    // uses: on the edge between two of level 1's texels, both again.
+    CHECK(near(at(2.0F * texel, 1.0F * texel, 0.0F, 1.0F), half));
+    // Past the right edge, the left one again, and past the bottom, the top:
+    // clamping would read texel 15 of the row or the column, which is black.
     CHECK(near(at(1.0F + (0.5F * texel), 0.5F * texel, 0.0F, 0.0F), white));
+    CHECK(near(at(0.5F * texel, 1.0F + (0.5F * texel), 0.0F, 0.0F), white));
     // Halfway between level 0, black, and level 1, white; then each layer's
-    // level 2.
+    // level 2, layer 1's dark red read back as stored, so as sRGB.
     CHECK(near(at(0.5F, 0.5F, 1.0F, 0.5F), half));
-    CHECK(near(at(0.5F, 0.5F, 1.0F, 2.0F), {255, 0, 0, 255}));
+    CHECK(near(at(0.5F, 0.5F, 1.0F, 2.0F), {128, 0, 0, 255}));
     CHECK(near(at(0.5F, 0.5F, 0.0F, 2.0F), white));
     CHECK(created.value().instance().validation_counts().errors == 0);
     CHECK(created.value().instance().validation_counts().warnings == 0);
