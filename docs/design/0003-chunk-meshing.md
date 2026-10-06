@@ -238,4 +238,9 @@ All settled on 2026-10-02: every recommendation below was accepted.
 
 ## As built
 
-Not built yet.
+Pull request plan item 2, the layer and the quad:
+
+- **`engine/mesh` is header-only until item 3**, an INTERFACE library as the world layer was at first. It links the world layer, which it reads, and nothing that draws.
+- **The quad's two words are built apart**, by `quad_geometry` and `quad_material`: the material word, texture and occlusion, is what merging compares (item 6), so the mesher builds it once per face and writes it into the quad as it is. `encode_quad` and `decode_quad` go between a quad and its fields, `QuadFields`, and are what the tests use.
+- **`face_axes` and `quad_corner` give, on the CPU, what the vertex shader computes**: the axes a face's width and height run along, and where each corner lies, 0 to 32 on each axis. The decoding shader (item 7) is tested against them.
+- **The bit layout is pinned by a test** on hand-computed words, since a change made alike in the encoder and the decoder passes every round trip but not the shader.
