@@ -204,6 +204,9 @@ private:
     [[nodiscard]] Result<void> upload_at_startup(std::span<const std::byte> block_textures);
     [[nodiscard]] Result<void> add_rendered_semaphores();
     [[nodiscard]] Result<void> recreate_target();
+    // Makes the target again where the swapchain is stale or the framebuffer
+    // changed size since it was made.
+    [[nodiscard]] Result<void> refresh_target();
     [[nodiscard]] Result<void> start_overlay(ImGuiContext* overlay);
     void destroy() noexcept;
 

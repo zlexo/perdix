@@ -1081,6 +1081,14 @@ Result<void> check_frame_inputs(const FrameInputs& inputs, bool has_overlay) {
 
 } // namespace
 
+Result<void> Renderer::refresh_target() {
+    if (!swapchain_stale_ && framebuffer_.width == target_framebuffer_.width &&
+        framebuffer_.height == target_framebuffer_.height) {
+        return {};
+    }
+    return recreate_target();
+}
+
 Result<Frame> Renderer::render(const FrameInputs& inputs) {
     ZoneScopedN("Render");
     if (const Result<void> valid = check_frame_inputs(inputs, overlay_ != nullptr);
@@ -1093,11 +1101,8 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
     if (overlay_ != nullptr) {
         ImGui::SetCurrentContext(overlay_); // ImGui's backend keeps its state there
     }
-    if (swapchain_stale_ || framebuffer_.width != target_framebuffer_.width ||
-        framebuffer_.height != target_framebuffer_.height) {
-        if (const Result<void> recreated = recreate_target(); !recreated.has_value()) {
-            return recreated.error();
-        }
+    if (const Result<void> refreshed = refresh_target(); !refreshed.has_value()) {
+        return refreshed.error();
     }
 
     VkDevice device = context_.device().handle();
