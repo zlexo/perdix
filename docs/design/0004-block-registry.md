@@ -348,3 +348,20 @@ Pull request plan item 7, the core pack, lands as two pull requests: reading a p
 - **The renderer takes the array's bytes in `RendererDesc::block_textures`** and sizes the GPU array to their layers. Bytes that are not whole layers are refused before anything is made. Without bytes it binds the one-layer checker array as before, so a renderer needs no pack, as in the tests.
 - **Where the pack is at run time, which no RFC said, was the owner's call on 2026-10-06: as built.** The app takes `--pack=DIR`, the folder holding `assets/`, or else the nearest folder from the executable's own up whose `assets/` holds a block file (through SDL's base path), so a build run from inside the repository finds its pack whatever the working directory; packaging may change the search later, and it is one function in `app/src/pack.cpp`. The pack loads before any window opens; its diagnostics print as compilers print theirs, each file named under the pack's root so it opens from any working folder; any error stops startup and warnings do not. The startup report names the pack and its states, and the layers the renderer's array holds.
 - **The budget holds even unoptimized:** loading the shipped pack, textures included, takes 1.73 ms in a debug build on the reference machine against 5 ms. A release build was not measured.
+
+Pull request plan item 8, the filter:
+
+- **Binding 3's sampler adds anisotropic filtering where the device offers `samplerAnisotropy`**, up to 16 samples or the device's limit, and binding 4 holds the same linear sampler without it, both fixed in set 0's layout. The device reports which optional features it enabled, and the texture table asks it.
+- **The chunk's fragment shader sharpens the coordinate as designed above**, then samples with `SampleGrad` and the unsharpened derivatives, so mip and anisotropy selection follow the true footprint.
+- **`Renderer::set_block_filter` picks sharpened (the default), sharpened without anisotropy, or nearest**, a push constant the fragment stage reads; the overlay's Textures row switches them (open question 3: the look is the owner's to judge by eye).
+- **The GPU's time for the M2 scene with the ground filling the screen, at 2560 by 1440** (medians of five runs of 300 headless frames each, reference machine):
+
+| Driver | Nearest | Sharpened, anisotropic | Sharpened, without |
+|---|---|---|---|
+| KosmicKrisp | 0.232 ms | 0.280 ms (+0.048) | 0.314 ms |
+| MoltenVK | 0.144 ms | 0.162 ms (+0.018) | 0.172 ms |
+
+  Within the budget of 0.2 ms more than nearest on both. Without anisotropy came out no faster; the runs vary by up to 0.05 ms, as much as the differences between filters.
+- **16 samples, set by measurement**: 4, 8 and 16 cost the same within that noise on both drivers, so the most the RFC allows is kept.
+- **Up close, a GPU test reads one red and green texture edge**: one or two blended pixels sharpened, none nearest, where plain linear filtering blends about five. A checkered floor seen nearly edge on differs between the two samplers where the device offers anisotropy.
+
