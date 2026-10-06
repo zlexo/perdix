@@ -10,5 +10,6 @@ void chunk_storage(ankerl::nanobench::Bench& bench);
 void block_registry(ankerl::nanobench::Bench& bench);
 void block_textures(ankerl::nanobench::Bench& bench);
 void block_pack(ankerl::nanobench::Bench& bench);
+void padded_chunk(ankerl::nanobench::Bench& bench);
 
 } // namespace vx::bench
