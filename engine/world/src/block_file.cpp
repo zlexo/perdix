@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -86,19 +85,27 @@ std::string unknown_key(std::string_view key, std::span<const std::string_view> 
 // blocks/ is the namespace, and the file name is the name.
 std::optional<std::string> name_from_path(std::string_view path) {
     constexpr std::string_view extension = ".toml";
-    std::array<std::string_view, 3> parts{}; // namespace, "blocks", file
+    // Exactly four parts: "assets", the namespace, "blocks" and the file. A
+    // path with more before them, or fewer, names no block.
+    std::array<std::string_view, 4> parts{};
     std::string_view rest = path;
-    for (std::string_view& part : std::views::reverse(parts)) {
-        const std::size_t slash = rest.rfind('/');
-        part = slash == std::string_view::npos ? rest : rest.substr(slash + 1);
-        rest = slash == std::string_view::npos ? std::string_view{} : rest.substr(0, slash);
+    for (std::string_view& part : parts) {
+        const std::size_t slash = rest.find('/');
+        part = rest.substr(0, slash);
+        rest = slash == std::string_view::npos ? std::string_view{} : rest.substr(slash + 1);
+        if (slash == std::string_view::npos && &part != &parts.back()) {
+            return std::nullopt;
+        }
+        if (slash != std::string_view::npos && &part == &parts.back()) {
+            return std::nullopt;
+        }
     }
-    if (parts[0].empty() || parts[1] != "blocks" || !parts[2].ends_with(extension) ||
-        parts[2].size() == extension.size()) {
+    if (parts[0] != "assets" || parts[1].empty() || parts[2] != "blocks" ||
+        !parts[3].ends_with(extension) || parts[3].size() == extension.size()) {
         return std::nullopt;
     }
-    return std::string(parts[0]) + ':' +
-           std::string(parts[2].substr(0, parts[2].size() - extension.size()));
+    return std::string(parts[1]) + ':' +
+           std::string(parts[3].substr(0, parts[3].size() - extension.size()));
 }
 
 // A property's value as text: strings as written, integers and booleans
