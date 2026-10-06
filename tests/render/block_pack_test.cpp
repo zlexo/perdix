@@ -1,17 +1,18 @@
 #include <vx/core/diagnostic.hpp>
 #include <vx/render/block_pack.hpp>
 #include <vx/render/block_textures.hpp>
+#include <vx/world/block_registry.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
 
 #include <doctest/doctest.h>
 
+#include <array>
 #include <cstddef>
-#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <random>
-#include <span>
 #include <string>
 #include <system_error>
 
@@ -112,16 +113,75 @@ TEST_CASE("the shipped pack loads with no errors and no warnings, and builds eve
     INFO(problems);
     CHECK(pack.diagnostics.empty());
     REQUIRE(pack.registry.has_value());
-    CHECK(pack.registry->textures().size() > 1);
-    CHECK(pack.textures.size() ==
-          pack.registry->textures().size() * vx::render::block_texture_layer_bytes);
-    // Every face of every block but air shows one of the pack's textures,
-    // never layer 0's checker.
-    const std::span<const vx::BlockVisual> visuals = pack.registry->visuals();
-    for (std::size_t state = 1; state < visuals.size(); ++state) {
-        for (const std::uint16_t layer : visuals[state].texture) {
-            INFO(pack.registry->key(static_cast<vx::BlockState>(state)));
-            CHECK(layer != 0);
+    CHECK(pack.registry->state_count() == 12);
+    REQUIRE(pack.registry->textures().size() == 16);
+    CHECK(pack.textures.size() == 16 * vx::render::block_texture_layer_bytes);
+}
+
+TEST_CASE("the shipped pack's blocks show the faces the owner chose") {
+    // What each state shows on +x, -x, +y, -y, +z and -z, as texture@quarter
+    // turns: grass has its top up and dirt below; a log shows its rings on
+    // the two faces along its axis and its bark turned to run along it; leaves
+    // and glass are cutouts in groups of their own.
+    struct Expected {
+        const char* key;
+        vx::Opacity opacity;
+        std::array<const char*, 6> faces;
+    };
+    constexpr vx::Opacity opaque = vx::Opacity::opaque;
+    constexpr vx::Opacity cutout = vx::Opacity::cutout;
+    const std::array<Expected, 11> table{{
+        {"core:cobblestone",
+         opaque,
+         {"cobblestone@0", "cobblestone@0", "cobblestone@0", "cobblestone@0", "cobblestone@0",
+          "cobblestone@0"}},
+        {"core:dirt", opaque, {"dirt@0", "dirt@0", "dirt@0", "dirt@0", "dirt@0", "dirt@0"}},
+        {"core:glass", cutout, {"glass@0", "glass@0", "glass@0", "glass@0", "glass@0", "glass@0"}},
+        {"core:grass",
+         opaque,
+         {"grass_side@0", "grass_side@0", "grass_top@0", "dirt@0", "grass_side@0", "grass_side@0"}},
+        {"core:oak_leaves",
+         cutout,
+         {"oak_leaves@0", "oak_leaves@0", "oak_leaves@0", "oak_leaves@0", "oak_leaves@0",
+          "oak_leaves@0"}},
+        {"core:oak_log[axis=y]",
+         opaque,
+         {"oak_log@0", "oak_log@0", "oak_log_top@0", "oak_log_top@0", "oak_log@0", "oak_log@0"}},
+        {"core:oak_log[axis=x]",
+         opaque,
+         {"oak_log_top@2", "oak_log_top@0", "oak_log@1", "oak_log@1", "oak_log@1", "oak_log@3"}},
+        {"core:oak_log[axis=z]",
+         opaque,
+         {"oak_log@1", "oak_log@3", "oak_log@0", "oak_log@2", "oak_log_top@0", "oak_log_top@2"}},
+        {"core:oak_planks",
+         opaque,
+         {"oak_planks@0", "oak_planks@0", "oak_planks@0", "oak_planks@0", "oak_planks@0",
+          "oak_planks@0"}},
+        {"core:sand", opaque, {"sand@0", "sand@0", "sand@0", "sand@0", "sand@0", "sand@0"}},
+        {"core:stone", opaque, {"stone@0", "stone@0", "stone@0", "stone@0", "stone@0", "stone@0"}},
+    }};
+    const vx::render::BlockPack pack = vx::render::load_block_pack(VX_SHIPPED_PACK_DIR);
+    REQUIRE(pack.registry.has_value());
+    const vx::BlockRegistry& registry = *pack.registry;
+    for (const Expected& expected : table) {
+        INFO(expected.key);
+        const std::optional<vx::BlockState> state = registry.find(expected.key);
+        REQUIRE(state.has_value());
+        const vx::BlockVisual& visual = registry.visuals()[static_cast<std::size_t>(*state)];
+        CHECK(visual.opacity == expected.opacity);
+        for (std::size_t face = 0; face < 6; ++face) {
+            const vx::TextureRef& texture = registry.textures()[visual.texture[face]];
+            CHECK(texture.name + "@" + std::to_string(texture.quarter_turns) ==
+                  std::string("core:") + expected.faces[face]);
         }
     }
+    // Every state is in the table, once.
+    CHECK(registry.state_count() == table.size() + 1);
+    // Leaves hide leaves and glass hides glass, and neither hides the other.
+    const auto group = [&](const char* key) {
+        return registry.visuals()[static_cast<std::size_t>(*registry.find(key))].cull_group;
+    };
+    CHECK(group("core:glass") != 0);
+    CHECK(group("core:oak_leaves") != 0);
+    CHECK(group("core:glass") != group("core:oak_leaves"));
 }
