@@ -166,3 +166,73 @@ TEST_CASE("the +x, +y and +z faces of a block at 31 lie at 32") {
                                          .occlusion = {3, 3, 3, 3}}));
     CHECK(vx::quad_corner(whole_face, 2) == std::array{32, 32, 32});
 }
+
+namespace {
+
+std::array<int, 3> minus(std::array<int, 3> a, std::array<int, 3> b) {
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+}
+
+std::array<int, 3> cross(std::array<int, 3> a, std::array<int, 3> b) {
+    return {(a[1] * b[2]) - (a[2] * b[1]), (a[2] * b[0]) - (a[0] * b[2]),
+            (a[0] * b[1]) - (a[1] * b[0])};
+}
+
+} // namespace
+
+TEST_CASE("a quad's triangles face outward and split along the brighter diagonal") {
+    // The shared index pattern draws vertices 0, 1, 2 and 2, 3, 0 of every
+    // quad. For every face and every pattern of four occlusion values, the
+    // corners those vertices take must be each corner once, both triangles
+    // must turn counterclockwise seen from outside (front faces), and the
+    // diagonal they share, vertices 0 and 2, must be the brighter one, or
+    // corners 0 and 2 on a tie (RFC 0003).
+    constexpr std::array<std::array<std::size_t, 3>, 2> triangles{{{0, 1, 2}, {2, 3, 0}}};
+    int checked = 0;
+    for (const vx::Face face : faces) {
+        std::array<int, 3> outward{};
+        outward[static_cast<std::size_t>(face) / 2] = vx::faces_positive(face) ? 1 : -1;
+        for (int pattern = 0; pattern < 256; ++pattern) {
+            std::array<std::uint8_t, 4> occlusion{};
+            for (std::size_t corner = 0; corner < 4; ++corner) {
+                occlusion[corner] =
+                    static_cast<std::uint8_t>((pattern >> (2 * static_cast<int>(corner))) & 3);
+            }
+            const vx::QuadFields quad{.block = {.x = 3, .y = 4, .z = 5},
+                                      .width = 2,
+                                      .height = 3,
+                                      .face = face,
+                                      .texture = 0,
+                                      .occlusion = occlusion};
+            std::array<int, 4> corner_of{};
+            std::array<std::array<int, 3>, 4> at{};
+            int seen = 0;
+            for (std::size_t vertex = 0; vertex < 4; ++vertex) {
+                corner_of[vertex] = vx::vertex_corner(face, occlusion, static_cast<int>(vertex));
+                at[vertex] = vx::quad_corner(quad, corner_of[vertex]);
+                seen |= 1 << corner_of[vertex];
+            }
+            INFO("face ", static_cast<int>(face), " occlusion ", pattern);
+            CHECK(seen == 15);
+            for (const std::array<std::size_t, 3>& triangle : triangles) {
+                const std::array<int, 3> normal = cross(minus(at[triangle[1]], at[triangle[0]]),
+                                                        minus(at[triangle[2]], at[triangle[0]]));
+                CHECK((normal[0] * outward[0]) + (normal[1] * outward[1]) +
+                          (normal[2] * outward[2]) >
+                      0);
+            }
+            const auto value = [&](int corner) {
+                return int{occlusion[static_cast<std::size_t>(corner & 3)]};
+            };
+            const int split = value(corner_of[0]) + value(corner_of[2]);
+            const int other = value(corner_of[0] + 1) + value(corner_of[2] + 1);
+            CHECK(((corner_of[0] + corner_of[2]) & 1) == 0); // opposite corners
+            CHECK(split >= other);
+            if (split == other) {
+                CHECK((corner_of[0] & 1) == 0); // corners 0 and 2
+            }
+            ++checked;
+        }
+    }
+    CHECK(checked == 6 * 256);
+}
