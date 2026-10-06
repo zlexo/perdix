@@ -464,3 +464,55 @@ TEST_CASE("occlusion strength 0 leaves dark corners lit, 1 darkens them fully, t
     CHECK(renderer.context().instance().validation_counts().errors == 0);
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }
+
+namespace {
+
+// How many of an image's pixels are lit: not the black sky.
+int lit_pixels(const std::vector<std::uint8_t>& pixels) {
+    int lit = 0;
+    for (std::size_t at = 0; at < pixels.size(); at += 4) {
+        lit += pixels[at] != 0 || pixels[at + 1] != 0 || pixels[at + 2] != 0 ? 1 : 0;
+    }
+    return lit;
+}
+
+} // namespace
+
+TEST_CASE("the wireframe draws a face's triangle edges where the device offers it") {
+    const std::array<Quarters, 1> layers = {Quarters{white, white, white, white}};
+    const std::vector<std::byte> textures = texture_bytes(layers);
+    vx::Result<vx::render::Renderer> created = renderer_with(textures);
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    OneBlock block(vx::Opacity::opaque);
+    REQUIRE(renderer.set_chunk({.x = 0, .y = 0, .z = 0}, block.mesh()).has_value());
+    const vx::render::Camera camera = facing(vx::Face::pos_z);
+    const std::vector<std::uint8_t> solid = draw(renderer, camera);
+    CHECK_FALSE(renderer.wireframe());
+
+    renderer.set_wireframe(true);
+    const std::vector<std::uint8_t> lines = draw(renderer, camera);
+    const bool offered = renderer.context().device().optional().fill_mode_non_solid;
+    INFO("fillModeNonSolid ", offered, ", lit pixels ", lit_pixels(solid), " solid, ",
+         lit_pixels(lines), " as lines");
+    CHECK(renderer.wireframe_offered() == offered);
+    if (offered) {
+        CHECK(renderer.wireframe());
+        // The face is about 40 pixels square: its edges and its diagonal
+        // light about 220 pixels, the rest of it shows the sky.
+        CHECK(lit_pixels(lines) > 100);
+        CHECK(lit_pixels(lines) < lit_pixels(solid) / 4);
+        CHECK(pixel_at(lines, 22, 22) == Pixel{0, 0, 0, 255});
+        CHECK(pixel_at(lines, 42, 42) == Pixel{0, 0, 0, 255});
+    } else {
+        // Asked for anyway, the chunk stays solid.
+        CHECK_FALSE(renderer.wireframe());
+        CHECK(lines == solid);
+    }
+
+    renderer.set_wireframe(false);
+    CHECK(draw(renderer, camera) == solid);
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}

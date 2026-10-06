@@ -166,6 +166,15 @@ public:
         occlusion_strength_ = std::clamp(strength, 0.0F, 1.0F);
     }
     [[nodiscard]] float occlusion_strength() const noexcept { return occlusion_strength_; }
+    // Whether the chunk can be drawn as the edges of its quads' triangles:
+    // where the device offers fillModeNonSolid (RFC 0003), which MoltenVK
+    // does and KosmicKrisp does not.
+    [[nodiscard]] bool wireframe_offered() const noexcept {
+        return chunk_drawing_.wireframe.has_value();
+    }
+    // Draws the chunk as a wireframe from the next frame, where offered.
+    void set_wireframe(bool on) noexcept { wireframe_ = on; }
+    [[nodiscard]] bool wireframe() const noexcept { return wireframe_ && wireframe_offered(); }
     // Null when headless.
     [[nodiscard]] const Swapchain* swapchain() const noexcept {
         return swapchain_.has_value() ? &swapchain_.value() : nullptr;
@@ -187,6 +196,7 @@ private:
     struct ChunkDrawing {
         GraphicsPipeline opaque;
         GraphicsPipeline cutout;
+        std::optional<GraphicsPipeline> wireframe; // where the device offers it
         Buffer indices;
     };
     // The chunk set_chunk gave: its quads, opaque then cutout.
@@ -223,6 +233,7 @@ private:
     std::optional<UploadedChunk> chunk_;
     BlockFilter block_filter_ = BlockFilter::sharpened;
     float occlusion_strength_ = 1.0F;
+    bool wireframe_ = false;
     Extent framebuffer_;
     Extent target_framebuffer_; // the size the target was made for
     PresentMode present_mode_;

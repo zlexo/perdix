@@ -254,7 +254,8 @@ Result<void> write_cube_origins(VmaAllocator allocator, const Buffer& origins,
 // Back faces are culled: the mesher only emits faces seen from outside.
 Result<GraphicsPipeline> make_chunk_pipeline(const Device& device, VkFormat color_format,
                                              VkDescriptorSetLayout textures,
-                                             const char* fragment_entry, std::string_view name) {
+                                             const char* fragment_entry, VkPolygonMode polygon_mode,
+                                             std::string_view name) {
     return GraphicsPipeline::create(device,
                                     {.spirv = shaders::chunk,
                                      .vertex_entry = "vertex_main",
@@ -262,26 +263,46 @@ Result<GraphicsPipeline> make_chunk_pipeline(const Device& device, VkFormat colo
                                      .color_format = color_format,
                                      .depth_format = depth_format,
                                      .cull_mode = VK_CULL_MODE_BACK_BIT,
+                                     .polygon_mode = polygon_mode,
                                      .set_layout = textures,
                                      .push_constant_size = sizeof(ChunkPush),
                                      .push_constant_stages = chunk_push_stages},
                                     name);
 }
 
-// Both of the chunk shader's pipelines, opaque then cutout.
-Result<std::pair<GraphicsPipeline, GraphicsPipeline>>
-make_chunk_pipelines(const Device& device, VkFormat color_format, VkDescriptorSetLayout textures) {
-    Result<GraphicsPipeline> opaque =
-        make_chunk_pipeline(device, color_format, textures, "fragment_opaque", "chunk, opaque");
+// The chunk shader's pipelines: opaque, cutout, and where the device offers
+// fillModeNonSolid, the wireframe, the opaque one drawn as lines.
+struct ChunkPipelines {
+    GraphicsPipeline opaque;
+    GraphicsPipeline cutout;
+    std::optional<GraphicsPipeline> wireframe;
+};
+
+Result<ChunkPipelines> make_chunk_pipelines(const Device& device, VkFormat color_format,
+                                            VkDescriptorSetLayout textures) {
+    Result<GraphicsPipeline> opaque = make_chunk_pipeline(
+        device, color_format, textures, "fragment_opaque", VK_POLYGON_MODE_FILL, "chunk, opaque");
     if (!opaque.has_value()) {
         return opaque.error();
     }
-    Result<GraphicsPipeline> cutout =
-        make_chunk_pipeline(device, color_format, textures, "fragment_cutout", "chunk, cutout");
+    Result<GraphicsPipeline> cutout = make_chunk_pipeline(
+        device, color_format, textures, "fragment_cutout", VK_POLYGON_MODE_FILL, "chunk, cutout");
     if (!cutout.has_value()) {
         return cutout.error();
     }
-    return std::pair(std::move(opaque).value(), std::move(cutout).value());
+    std::optional<GraphicsPipeline> wireframe;
+    if (device.optional().fill_mode_non_solid) {
+        Result<GraphicsPipeline> lines =
+            make_chunk_pipeline(device, color_format, textures, "fragment_opaque",
+                                VK_POLYGON_MODE_LINE, "chunk, wireframe");
+        if (!lines.has_value()) {
+            return lines.error();
+        }
+        wireframe = std::move(lines).value();
+    }
+    return ChunkPipelines{.opaque = std::move(opaque).value(),
+                          .cutout = std::move(cutout).value(),
+                          .wireframe = std::move(wireframe)};
 }
 
 // The shared index buffer's contents: 0, 1, 2, 2, 3, 0 for the first quad,
@@ -315,6 +336,7 @@ void begin_commands(VkCommandBuffer commands) {
 struct ChunkDraw {
     const GraphicsPipeline* opaque_pipeline;
     const GraphicsPipeline* cutout_pipeline;
+    const GraphicsPipeline* wireframe_pipeline; // null to draw solid: both passes as lines when set
     VkBuffer indices;
     ChunkPush push;
     std::uint32_t opaque; // 0 draws nothing, as when there is no chunk
@@ -349,8 +371,9 @@ void record_chunk(VkCommandBuffer commands, VkDescriptorSet textures, const Chun
                            &chunk.push);
         vkCmdDrawIndexed(commands, 6 * quads, 1, 0, static_cast<std::int32_t>(4 * first), 0);
     };
-    pass(*chunk.opaque_pipeline, 0, chunk.opaque);
-    pass(*chunk.cutout_pipeline, chunk.opaque, chunk.cutout);
+    const bool lines = chunk.wireframe_pipeline != nullptr;
+    pass(lines ? *chunk.wireframe_pipeline : *chunk.opaque_pipeline, 0, chunk.opaque);
+    pass(lines ? *chunk.wireframe_pipeline : *chunk.cutout_pipeline, chunk.opaque, chunk.cutout);
 }
 
 // Records the frame's one pass, inside the GPU zone Main pass: it clears the
@@ -768,7 +791,7 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     if (!vertices.has_value()) {
         return vertices.error();
     }
-    Result<std::pair<GraphicsPipeline, GraphicsPipeline>> chunk_pipelines =
+    Result<ChunkPipelines> chunk_pipelines =
         make_chunk_pipelines(context.value().device(), color_format, textures.value().layout());
     if (!chunk_pipelines.has_value()) {
         return chunk_pipelines.error();
@@ -786,8 +809,9 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
                       {.pipeline = std::move(pipeline).value(),
                        .vertices = std::move(vertices).value(),
                        .checker = std::move(checker).value()},
-                      {.opaque = std::move(chunk_pipelines.value().first),
-                       .cutout = std::move(chunk_pipelines.value().second),
+                      {.opaque = std::move(chunk_pipelines.value().opaque),
+                       .cutout = std::move(chunk_pipelines.value().cutout),
+                       .wireframe = std::move(chunk_pipelines.value().wireframe),
                        .indices = std::move(indices).value()},
                       desc.framebuffer, desc.present_mode);
     if (const Result<void> made = renderer.create_frame_objects(); !made.has_value()) {
@@ -823,10 +847,10 @@ Renderer::Renderer(Renderer&& other) noexcept
       textures_(std::move(other.textures_)), block_textures_(std::move(other.block_textures_)),
       cube_(std::move(other.cube_)), chunk_drawing_(std::move(other.chunk_drawing_)),
       chunk_(std::move(other.chunk_)), block_filter_(other.block_filter_),
-      occlusion_strength_(other.occlusion_strength_), framebuffer_(other.framebuffer_),
-      target_framebuffer_(other.target_framebuffer_), present_mode_(other.present_mode_),
-      swapchain_stale_(other.swapchain_stale_), slots_(std::exchange(other.slots_, {})),
-      origins_(std::move(other.origins_)),
+      occlusion_strength_(other.occlusion_strength_), wireframe_(other.wireframe_),
+      framebuffer_(other.framebuffer_), target_framebuffer_(other.target_framebuffer_),
+      present_mode_(other.present_mode_), swapchain_stale_(other.swapchain_stale_),
+      slots_(std::exchange(other.slots_, {})), origins_(std::move(other.origins_)),
       image_rendered_(std::exchange(other.image_rendered_, {})),
       frames_done_(std::exchange(other.frames_done_, VK_NULL_HANDLE)), frame_(other.frame_),
       gpu_timer_(std::move(other.gpu_timer_)), times_(other.times_),
@@ -1026,13 +1050,14 @@ Result<void> Renderer::recreate_target() {
                 return rebuilt.error();
             }
             cube_.pipeline = std::move(rebuilt).value();
-            Result<std::pair<GraphicsPipeline, GraphicsPipeline>> chunk_pipelines =
+            Result<ChunkPipelines> chunk_pipelines =
                 make_chunk_pipelines(context_.device(), format, textures_.layout());
             if (!chunk_pipelines.has_value()) {
                 return chunk_pipelines.error();
             }
-            chunk_drawing_.opaque = std::move(chunk_pipelines.value().first);
-            chunk_drawing_.cutout = std::move(chunk_pipelines.value().second);
+            chunk_drawing_.opaque = std::move(chunk_pipelines.value().opaque);
+            chunk_drawing_.cutout = std::move(chunk_pipelines.value().cutout);
+            chunk_drawing_.wireframe = std::move(chunk_pipelines.value().wireframe);
             if (overlay_ != nullptr) {
                 ImGui::SetCurrentContext(overlay_);
                 const ImGui_ImplVulkan_PipelineInfo overlay_pipeline =
@@ -1136,6 +1161,7 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
     const auto chunk_draw = [&](VkExtent2D extent) {
         ChunkDraw draw{.opaque_pipeline = &chunk_drawing_.opaque,
                        .cutout_pipeline = &chunk_drawing_.cutout,
+                       .wireframe_pipeline = wireframe() ? &*chunk_drawing_.wireframe : nullptr,
                        .indices = chunk_drawing_.indices.handle(),
                        .push = {},
                        .opaque = 0,
