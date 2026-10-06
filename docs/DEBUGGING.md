@@ -43,7 +43,7 @@ A clean run is not proof. The layers did not see these, which tests and pixels h
 
 ## Debug names
 
-Every Vulkan object Perdix makes is named when it is made, in every build where the loader offers `VK_EXT_debug_utils`: buffers and images by what they hold (`cube vertices`, `cube checker`, `depth target`, `frame slot 1 cube origins`), the cube's pipeline `cube`, the frame slots' command buffers and semaphores (`frame slot 0`, `frame slot 0 image acquired`, `frames done`), the swapchain's images (`swapchain image 2`), the `texture table` and the `GPU frame timer`. ImGui's Vulkan backend makes objects of its own that stay unnamed, as do VMA's memory blocks.
+Every Vulkan object Perdix makes is named when it is made, in every build where the loader offers `VK_EXT_debug_utils`: buffers and images by what they hold (`cube vertices`, `cube checker`, `depth target`, `frame slot 1 cube origins`), the cube's pipeline `cube`, the chunk's `chunk, opaque` and `chunk, cutout`, its `chunk quads` and the shared `chunk indices`, the frame slots' command buffers and semaphores (`frame slot 0`, `frame slot 0 image acquired`, `frames done`), the swapchain's images (`swapchain image 2`), the `texture table` and the `GPU frame timer`. ImGui's Vulkan backend makes objects of its own that stay unnamed, as do VMA's memory blocks.
 
 To check that nothing new went unnamed, record a run with the SDK's API dump layer, which logs every call, and compare the handles the create calls return with those `vkSetDebugUtilsObjectNameEXT` names:
 
