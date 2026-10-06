@@ -15,6 +15,7 @@
 #include <random>
 #include <span>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -438,4 +439,26 @@ TEST_CASE("the checker is magenta and black squares of 8 texels, fully opaque") 
     CHECK(checker[at(8, 0)] == black);
     CHECK(checker[at(0, 8)] == black);
     CHECK(checker[at(15, 15)] == magenta);
+}
+
+TEST_CASE("a texture file that cannot be read is an error that says so, not an empty file") {
+    // A folder where the texture should be: it opens, then fails on the first
+    // read, which the old reader took for the end of an empty file.
+    std::random_device random;
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() /
+        ("vx-unreadable-" + std::to_string(random()) + "-" + std::to_string(random()));
+    std::filesystem::create_directories(root / "test" / "textures" / "blocks" / "stone.png");
+    const std::vector<vx::TextureRef> textures = {{}, ref("test:stone", 0, true, false)};
+    std::vector<vx::Diagnostic> diagnostics;
+    const std::vector<std::byte> bytes =
+        vx::render::build_block_textures(textures, root, diagnostics);
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+    CHECK(bytes.empty());
+    CHECK(formatted(diagnostics) ==
+          std::vector<std::string>{
+              (root / "test" / "textures" / "blocks" / "stone.png").generic_string() +
+              ": error: the file cannot be read, for the texture test:stone (used at "
+              "assets/test/blocks/x.toml:3:7)"});
 }

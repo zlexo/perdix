@@ -1,6 +1,7 @@
 #include <vx/render/block_textures.hpp>
 
 #include <vx/core/diagnostic.hpp>
+#include <vx/core/file.hpp>
 #include <vx/core/result.hpp>
 #include <vx/world/block_registry.hpp>
 
@@ -14,12 +15,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <map>
 #include <optional>
 #include <span>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -306,18 +306,6 @@ std::filesystem::path file_of(const std::filesystem::path& assets, const std::st
            (name.substr(colon + 1) + ".png");
 }
 
-std::optional<std::vector<std::byte>> read_file(const std::filesystem::path& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        return std::nullopt;
-    }
-    const std::vector<char> bytes{std::istreambuf_iterator<char>(file),
-                                  std::istreambuf_iterator<char>()};
-    std::vector<std::byte> result(bytes.size());
-    std::memcpy(result.data(), bytes.data(), bytes.size());
-    return result;
-}
-
 // The texels the alpha test discards: alpha below 0.5.
 std::size_t transparent_texels(const BlockImage& image) {
     return static_cast<std::size_t>(std::ranges::count_if(
@@ -358,14 +346,17 @@ read_sources(std::span<const TextureRef> textures, const std::filesystem::path& 
                                    .column = 0,
                                    .message = std::move(message)});
         };
-        const std::optional<std::vector<std::byte>> bytes = read_file(path);
+        const std::optional<std::string> bytes = read_file(path);
         if (!bytes) {
             failed = true;
+            std::error_code error;
             report(Severity::error,
-                   "no such file, for the texture " + name + " (used at " + source.use + ")");
+                   std::string(std::filesystem::exists(path, error) ? "the file cannot be read"
+                                                                    : "no such file") +
+                       ", for the texture " + name + " (used at " + source.use + ")");
             continue;
         }
-        Result<BlockImage> image = decode_block_texture(*bytes);
+        Result<BlockImage> image = decode_block_texture(std::as_bytes(std::span(*bytes)));
         if (!image) {
             failed = true;
             report(Severity::error, image.error().message);

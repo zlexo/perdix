@@ -1,6 +1,7 @@
 #include <vx/world/block_registry.hpp>
 
 #include <vx/core/diagnostic.hpp>
+#include <vx/core/file.hpp>
 #include <vx/world/block_file.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
@@ -12,8 +13,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <limits>
 #include <map>
 #include <optional>
@@ -484,18 +483,6 @@ auto file_with(std::string_view extension) {
     };
 }
 
-std::optional<std::string> read_text(const fs::path& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        return std::nullopt;
-    }
-    std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-    if (file.bad()) {
-        return std::nullopt;
-    }
-    return text;
-}
-
 // A warning for each texture file of the pack's namespaces that no block
 // uses (RFC 0004), in path order.
 void warn_unused_textures(const fs::path& root, std::span<const fs::path> namespaces,
@@ -548,7 +535,7 @@ BlockLoad BlockRegistry::load(const fs::path& root) {
         }
         for (const fs::path& path : *found) {
             const std::string relative = path.lexically_relative(root).generic_string();
-            std::optional<std::string> text = read_text(path);
+            std::optional<std::string> text = read_file(path);
             if (!text) {
                 failed.diagnostics.push_back(pack_error(relative, "the file cannot be read"));
                 continue;
