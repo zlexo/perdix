@@ -23,6 +23,9 @@ struct GraphicsPipelineDesc {
     VkFormat depth_format = VK_FORMAT_UNDEFINED;
     // Faces wound counterclockwise, seen from outside, are front faces.
     VkCullModeFlags cull_mode = VK_CULL_MODE_NONE;
+    // Lines draws each triangle's edges, a wireframe; it needs the device's
+    // fillModeNonSolid.
+    VkPolygonMode polygon_mode = VK_POLYGON_MODE_FILL;
     // Set 0: the texture table's layout, or none.
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
     // Push constants from offset 0, and the stages that read them.
