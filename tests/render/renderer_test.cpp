@@ -157,11 +157,27 @@ TEST_CASE("given a pack's textures, the renderer's set 0 holds them") {
     CHECK(renderer.value().context().instance().validation_counts().warnings == 0);
 }
 
-TEST_CASE("the renderer refuses block textures that are not whole layers") {
+TEST_CASE("the renderer refuses block textures that are not whole layers, before making anything") {
+    // A window's surface source that notes when it is asked for a surface,
+    // which the context does as soon as it has made an instance: a refusal
+    // after that point would have asked.
+    bool asked = false;
+    const vx::render::SurfaceSource surface{.instance_extensions = {},
+                                            .create = [&](VkInstance) -> vx::Result<VkSurfaceKHR> {
+                                                asked = true;
+                                                return vx::Error{"no surface in this test"};
+                                            }};
     const std::vector<std::byte> bytes(vx::render::block_texture_layer_bytes + 1);
-    const vx::Result<vx::render::Renderer> renderer = headless_renderer(bytes);
+    const vx::Result<vx::render::Renderer> renderer =
+        vx::render::Renderer::create({.surface = surface,
+                                      .framebuffer = image_size,
+                                      .validation = true,
+                                      .present_mode = vx::render::PresentMode::fifo,
+                                      .overlay = nullptr,
+                                      .block_textures = bytes});
     REQUIRE_FALSE(renderer.has_value());
     CHECK(renderer.error().message.find("not whole layers") != std::string::npos);
+    CHECK_FALSE(asked);
 }
 
 TEST_CASE("the sky shows around a cube, in the color it was given") {
