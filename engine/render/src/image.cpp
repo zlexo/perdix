@@ -3,6 +3,9 @@
 #include "debug_name.hpp"
 #include "vk_result.hpp"
 
+#include <algorithm>
+#include <bit>
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -17,6 +20,29 @@ Result<Image> Image::create(const Device& device, VkExtent2D extent, VkFormat fo
 Result<Image> Image::create_array(const Device& device, VkExtent2D extent, VkFormat format,
                                   std::uint32_t levels, std::uint32_t layers,
                                   VkImageUsageFlags usage, std::string_view name) {
+    // Vulkan allows levels down to the one of 1 by 1, and as many layers as
+    // the device holds in one image. Past either, the request is invalid:
+    // KosmicKrisp aborts on too many layers, and a level past the last would
+    // have upload_image shift a 32-bit size by 32 or more.
+    const std::string image = "the image \"" + std::string(name) + "\"";
+    if (extent.width == 0 || extent.height == 0) {
+        return Error{image + " has no texels: " + std::to_string(extent.width) + " by " +
+                     std::to_string(extent.height)};
+    }
+    const auto most_levels =
+        static_cast<std::uint32_t>(std::bit_width(std::max(extent.width, extent.height)));
+    if (levels == 0 || levels > most_levels) {
+        return Error{image + " of " + std::to_string(extent.width) + " by " +
+                     std::to_string(extent.height) + " has 1 to " + std::to_string(most_levels) +
+                     " mip levels, not " + std::to_string(levels)};
+    }
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(device.physical_device(), &properties);
+    if (const std::uint32_t most = properties.limits.maxImageArrayLayers;
+        layers == 0 || layers > most) {
+        return Error{image + " has 1 to " + std::to_string(most) + " layers on this device, not " +
+                     std::to_string(layers)};
+    }
     return make(device, extent, format, usage, VK_IMAGE_ASPECT_COLOR_BIT, name, levels, layers,
                 VK_IMAGE_VIEW_TYPE_2D_ARRAY);
 }

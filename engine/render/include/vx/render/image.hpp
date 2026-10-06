@@ -25,7 +25,9 @@ public:
                                               VkImageAspectFlags aspect, std::string_view name);
     // A color image of `levels` mip levels, each half the one before, and
     // `layers` layers, whose view shaders sample as an array of 2D images,
-    // even with one layer: RFC 0004's block texture array.
+    // even with one layer: RFC 0004's block texture array. Levels run from 1
+    // to the one of 1 by 1, layers from 1 to the device's maxImageArrayLayers;
+    // anything else is an error, before Vulkan sees it.
     [[nodiscard]] static Result<Image> create_array(const Device& device, VkExtent2D extent,
                                                     VkFormat format, std::uint32_t levels,
                                                     std::uint32_t layers, VkImageUsageFlags usage,

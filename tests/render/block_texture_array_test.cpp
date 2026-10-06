@@ -111,3 +111,39 @@ TEST_CASE("more layers than the device holds in one image are refused, naming bo
     CHECK(vx::render::create_block_texture_array(device, most).has_value());
     CHECK(created.value().instance().validation_counts().errors == 0);
 }
+
+TEST_CASE(
+    "an array image refuses levels and layers Vulkan does not allow, before Vulkan sees them") {
+    vx::Result<vx::render::Context> created = create_context();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    const vx::render::Device& device = created.value().device();
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(device.physical_device(), &properties);
+    const std::uint32_t most = properties.limits.maxImageArrayLayers;
+    const auto array = [&](VkExtent2D extent, std::uint32_t levels, std::uint32_t layers) {
+        return vx::render::Image::create_array(device, extent, VK_FORMAT_R8G8B8A8_UNORM, levels,
+                                               layers, VK_IMAGE_USAGE_SAMPLED_BIT, "test array");
+    };
+    const auto refusal = [](const vx::Result<vx::render::Image>& image) {
+        return image.has_value() ? std::string("none") : image.error().message;
+    };
+
+    // 8 by 4 has four levels: 8 by 4, 4 by 2, 2 by 1 and 1 by 1.
+    CHECK(array({.width = 8, .height = 4}, 4, 1).has_value());
+    CHECK(refusal(array({.width = 8, .height = 4}, 5, 1)) ==
+          "the image \"test array\" of 8 by 4 has 1 to 4 mip levels, not 5");
+    CHECK(refusal(array({.width = 4, .height = 8}, 0, 1)) ==
+          "the image \"test array\" of 4 by 8 has 1 to 4 mip levels, not 0");
+    CHECK(refusal(array({.width = 8, .height = 4}, 1, 0)) == "the image \"test array\" has 1 to " +
+                                                                 std::to_string(most) +
+                                                                 " layers on this device, not 0");
+    CHECK(refusal(array({.width = 8, .height = 4}, 1, most + 1)) ==
+          "the image \"test array\" has 1 to " + std::to_string(most) +
+              " layers on this device, not " + std::to_string(most + 1));
+    CHECK(refusal(array({.width = 0, .height = 4}, 1, 1)) ==
+          "the image \"test array\" has no texels: 0 by 4");
+    CHECK(array({.width = 8, .height = 4}, 1, most).has_value());
+    CHECK(created.value().instance().validation_counts().errors == 0);
+    CHECK(created.value().instance().validation_counts().warnings == 0);
+}
