@@ -182,6 +182,33 @@ void Overlay::draw_present_mode(render::Renderer& renderer) {
     }
 }
 
+void Overlay::draw_block_filter(render::Renderer& renderer) {
+    // RFC 0004's filtering, the owner's call by eye: sharpened by default,
+    // anisotropic where the device offers it, and the classic nearest.
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Textures");
+    int filter = static_cast<int>(renderer.block_filter());
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Sharpened", &filter, 0)) {
+        renderer.set_block_filter(render::BlockFilter::sharpened);
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("No anisotropy", &filter, 1)) {
+        renderer.set_block_filter(render::BlockFilter::sharpened_isotropic);
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Nearest", &filter, 2)) {
+        renderer.set_block_filter(render::BlockFilter::nearest);
+    }
+    const float anisotropy = renderer.textures().block_anisotropy();
+    if (anisotropy > 1.0F) {
+        ImGui::TextDisabled("Anisotropic filtering up to %.0f samples",
+                            static_cast<double>(anisotropy));
+    } else {
+        ImGui::TextDisabled("No anisotropic filtering on this device");
+    }
+}
+
 void Overlay::draw_camera(const render::Camera& camera) {
     ImGui::Text("Camera at x %.2f, y %.2f, z %.2f", camera.position.x, camera.position.y,
                 camera.position.z);
@@ -246,6 +273,8 @@ ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& cam
         ImGui::TextUnformatted(swapchain_report_.data(),
                                swapchain_report_.data() + swapchain_report_.size());
         draw_present_mode(renderer);
+        ImGui::Separator();
+        draw_block_filter(renderer);
         ImGui::Separator();
         draw_camera(camera);
         ImGui::Separator();

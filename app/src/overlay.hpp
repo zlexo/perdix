@@ -17,10 +17,10 @@ union SDL_Event;
 namespace vx::app {
 
 // RFC 0001's debug overlay, built with Dear ImGui over the window: frame
-// time graphs, the GPU and driver, the present mode switch, the camera's
-// position and the validation count. F3 shows and hides it. It owns the ImGui
-// context, which the renderer it is given to draws with, so it must outlive
-// that renderer.
+// time graphs, the GPU and driver, the present mode switch, RFC 0004's
+// texture filter switch, the camera's position and the validation count. F3 shows and hides it. It
+// owns the ImGui context, which the renderer it is given to draws with, so it must outlive that
+// renderer.
 class Overlay {
 public:
     // An overlay for `window`, shown from the start or not. `validation` says
@@ -76,6 +76,7 @@ private:
     // The parts of the overlay's window, top to bottom.
     void draw_frame_times() const;
     static void draw_present_mode(render::Renderer& renderer);
+    static void draw_block_filter(render::Renderer& renderer);
     static void draw_camera(const render::Camera& camera);
     void draw_validation(const render::Context& context) const;
 
