@@ -16,6 +16,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <optional>
 #include <span>
 #include <string>
@@ -215,34 +216,40 @@ TEST_CASE("an image of several levels and layers takes them in one copy, level b
     const vx::render::Device& device = created.value().device();
 
     // 8 by 4, 4 by 2, 2 by 1 and 1 by 1, the last level's height held at 1,
-    // in three layers: 43 texels a layer.
-    vx::Result<vx::render::Image> image = vx::render::Image::create_array(
-        device, {.width = 8, .height = 4}, VK_FORMAT_R8G8B8A8_UNORM, 4, 3,
-        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-        "uploaded array");
-    constexpr std::size_t bytes = std::size_t{43} * 3 * 4;
-    vx::Result<vx::render::Buffer> readback =
-        vx::render::Buffer::create(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                   vx::render::BufferMemory::readback, "readback buffer");
-    REQUIRE(image.has_value());
-    REQUIRE(readback.has_value());
-    CHECK(image.value().levels() == 4);
-    CHECK(image.value().layers() == 3);
+    // in three layers: 43 texels a layer. Then the same turned on its side,
+    // 4 by 8, so the width is the one held at 1.
+    for (const VkExtent2D extent :
+         {VkExtent2D{.width = 8, .height = 4}, VkExtent2D{.width = 4, .height = 8}}) {
+        INFO(extent.width, " by ", extent.height);
+        vx::Result<vx::render::Image> image = vx::render::Image::create_array(
+            device, extent, VK_FORMAT_R8G8B8A8_UNORM, 4, 3,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            "uploaded array");
+        constexpr std::size_t bytes = std::size_t{43} * 3 * 4;
+        vx::Result<vx::render::Buffer> readback =
+            vx::render::Buffer::create(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                       vx::render::BufferMemory::readback, "readback buffer");
+        REQUIRE(image.has_value());
+        REQUIRE(readback.has_value());
+        CHECK(image.value().levels() == 4);
+        CHECK(image.value().layers() == 3);
 
-    const std::vector<std::byte> pixels = pattern(bytes, std::byte{0x30});
-    vx::render::UploadContext uploads(device);
-    vx::test::OneShot shot(device);
-    const vx::Result<void> uploaded =
-        vx::render::upload_image(uploads, shot.commands(), image.value(), pixels);
-    INFO((uploaded.has_value() ? std::string() : uploaded.error().message));
-    REQUIRE(uploaded.has_value());
-    vx::test::record_image_readback(shot.commands(), image.value(), readback.value());
-    shot.submit_and_wait();
-    vmaInvalidateAllocation(device.allocator(), readback.value().allocation(), 0, VK_WHOLE_SIZE);
+        const std::vector<std::byte> pixels = pattern(bytes, std::byte{0x30});
+        vx::render::UploadContext uploads(device);
+        vx::test::OneShot shot(device);
+        const vx::Result<void> uploaded =
+            vx::render::upload_image(uploads, shot.commands(), image.value(), pixels);
+        INFO((uploaded.has_value() ? std::string() : uploaded.error().message));
+        REQUIRE(uploaded.has_value());
+        vx::test::record_image_readback(shot.commands(), image.value(), readback.value());
+        shot.submit_and_wait();
+        vmaInvalidateAllocation(device.allocator(), readback.value().allocation(), 0,
+                                VK_WHOLE_SIZE);
 
-    CHECK(uploads.staged_bytes() == bytes);
-    CHECK(std::ranges::equal(readback.value().mapping(), pixels));
+        CHECK(uploads.staged_bytes() == bytes);
+        CHECK(std::ranges::equal(readback.value().mapping(), pixels));
+    }
     CHECK(created.value().instance().validation_counts().errors == 0);
     CHECK(created.value().instance().validation_counts().warnings == 0);
 }
@@ -278,6 +285,15 @@ TEST_CASE("pixels of the wrong size for an image are an error, and nothing is st
     REQUIRE_FALSE(short_array.has_value());
     CHECK(short_array.error().message ==
           "an image of 8 by 4, 4 levels and 3 layers, takes 516 bytes of pixels, not 172");
+    CHECK(uploads.staged_bytes() == 0);
+    // Too many bytes are as wrong as too few: a fourth layer's would be
+    // dropped without a word.
+    const std::vector<std::byte> four_layers = pattern(std::size_t{43} * 4 * 4, std::byte{0});
+    const vx::Result<void> long_array =
+        vx::render::upload_image(uploads, VK_NULL_HANDLE, array.value(), four_layers);
+    REQUIRE_FALSE(long_array.has_value());
+    CHECK(long_array.error().message ==
+          "an image of 8 by 4, 4 levels and 3 layers, takes 516 bytes of pixels, not 688");
     CHECK(uploads.staged_bytes() == 0);
 
     // One layer of five levels, as a block texture array holding only the
