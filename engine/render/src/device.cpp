@@ -198,6 +198,7 @@ Result<Device> Device::create(VkInstance instance, VkPhysicalDevice physical_dev
     Device device;
     device.physical_device_ = physical_device;
     device.queue_family_ = family;
+    device.optional_ = info.optional;
     if (const VkResult result =
             vkCreateDevice(physical_device, &create_info, nullptr, &device.device_);
         result != VK_SUCCESS) {
@@ -230,7 +231,7 @@ Device::Device(Device&& other) noexcept
     : physical_device_(std::exchange(other.physical_device_, VK_NULL_HANDLE)),
       device_(std::exchange(other.device_, VK_NULL_HANDLE)),
       queue_(std::exchange(other.queue_, VK_NULL_HANDLE)), queue_family_(other.queue_family_),
-      allocator_(std::exchange(other.allocator_, VK_NULL_HANDLE)) {}
+      allocator_(std::exchange(other.allocator_, VK_NULL_HANDLE)), optional_(other.optional_) {}
 
 Device& Device::operator=(Device&& other) noexcept {
     if (this != &other) {
@@ -240,6 +241,7 @@ Device& Device::operator=(Device&& other) noexcept {
         queue_ = std::exchange(other.queue_, VK_NULL_HANDLE);
         queue_family_ = other.queue_family_;
         allocator_ = std::exchange(other.allocator_, VK_NULL_HANDLE);
+        optional_ = other.optional_;
     }
     return *this;
 }
