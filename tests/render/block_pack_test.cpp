@@ -15,6 +15,7 @@
 #include <random>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace {
 
@@ -184,4 +185,24 @@ TEST_CASE("the shipped pack's blocks show the faces the owner chose") {
     CHECK(group("core:glass") != 0);
     CHECK(group("core:oak_leaves") != 0);
     CHECK(group("core:glass") != group("core:oak_leaves"));
+}
+
+TEST_CASE("a pack's diagnostics name their files under its root, from blocks and textures alike") {
+    // One warning from the registry, a texture no block uses, and one from
+    // the textures, holes in a texture an opaque block uses. Only the
+    // textures' come back with paths to make relative, and the registry's
+    // must be left as they are.
+    const TempPack pack;
+    pack.write("assets/t/blocks/rock.toml", "[textures]\nall = \"rock\"\n");
+    pack.copy_texture("leaves", "assets/t/textures/blocks/rock.png");
+    pack.copy_texture("solid", "assets/t/textures/blocks/moss.png");
+    const vx::render::BlockPack loaded = vx::render::load_block_pack(pack.root());
+    std::vector<std::string> lines;
+    for (const vx::Diagnostic& diagnostic : loaded.diagnostics) {
+        lines.push_back(vx::format(diagnostic));
+    }
+    REQUIRE(lines.size() == 2);
+    CHECK(lines[0] == "assets/t/textures/blocks/moss.png: warning: no block uses this texture");
+    CHECK(lines[1].starts_with("assets/t/textures/blocks/rock.png: warning: "));
+    CHECK(lines[1].find("texels are transparent") != std::string::npos);
 }
