@@ -65,9 +65,10 @@ inline constexpr std::size_t max_chunk_quads = std::size_t{6} * chunk_volume; //
 
 // The quads that show the chunk inside `blocks` (RFC 0003): a face for
 // every place where a block that draws faces meets one that does not hide
-// them. `visuals` is the block registry's table, indexed by state, and must
-// cover every state in `blocks`. The mesh points into `scratch`, so it is
-// valid until the scratch's next use.
+// them, darkened at its corners by the opaque blocks around them.
+// `visuals` is the block registry's table, indexed by state, and must cover
+// every state in `blocks`. The mesh points into `scratch`, so it is valid
+// until the scratch's next use.
 [[nodiscard]] ChunkMesh mesh_chunk(const PaddedChunk& blocks, std::span<const BlockVisual> visuals,
                                    MeshScratch& scratch) noexcept;
 
