@@ -50,6 +50,7 @@ add_executable(vx_render_tests
     render/feature_floor_test.cpp
     render/projection_test.cpp
     render/swapchain_choice_test.cpp
+    render/texture_table_capacity_test.cpp
     render/timestamp_test.cpp)
 target_link_libraries(vx_render_tests PRIVATE vx::render doctest::doctest)
 # Block texture files for RFC 0004's texture tests, laid out as a pack:

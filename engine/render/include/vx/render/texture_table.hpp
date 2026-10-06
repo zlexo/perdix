@@ -41,6 +41,8 @@ public:
     // 1024 slots, or fewer where the device's limits say so: MoltenVK allows
     // 256 sampled images a shader stage, one of them the block texture array.
     [[nodiscard]] std::uint32_t capacity() const noexcept { return capacity_; }
+    // The capacity a device with `limits` gets.
+    [[nodiscard]] static std::uint32_t capacity_for(const VkPhysicalDeviceLimits& limits) noexcept;
 
 private:
     TextureTable() = default;

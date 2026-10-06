@@ -20,19 +20,22 @@ constexpr std::string_view block_sampler_name = "block texture sampler";
 
 } // namespace
 
+std::uint32_t TextureTable::capacity_for(const VkPhysicalDeviceLimits& limits) noexcept {
+    // Each texture counts against the fragment stage's sampled images and the
+    // set's, and so does the block texture array; against the stage's
+    // resources too, with the array and each color attachment the stage
+    // draws to: one, in every pipeline so far. Samplers do not count.
+    return std::min({wanted_capacity, limits.maxPerStageDescriptorSampledImages - 1,
+                     limits.maxDescriptorSetSampledImages - 1, limits.maxPerStageResources - 2});
+}
+
 Result<TextureTable> TextureTable::create(const Device& device) {
     TextureTable table;
     table.device_ = device.handle();
 
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(device.physical_device(), &properties);
-    // Each texture counts against the fragment stage's resources, and so do
-    // the block texture array and each color attachment the stage draws to:
-    // one, in every pipeline so far. Samplers do not count.
-    table.capacity_ =
-        std::min({wanted_capacity, properties.limits.maxPerStageDescriptorSampledImages - 1,
-                  properties.limits.maxDescriptorSetSampledImages - 1,
-                  properties.limits.maxPerStageResources - 2});
+    table.capacity_ = capacity_for(properties.limits);
 
     // Nearest filtering and repeating coordinates, for pixel art; how block
     // textures filter and mip is RFC 0004's.
