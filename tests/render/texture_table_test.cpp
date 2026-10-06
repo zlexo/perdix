@@ -16,6 +16,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -133,7 +134,7 @@ TEST_CASE("a full texture table says so, rather than writing past its end") {
     CHECK(created.value().instance().validation_counts().errors == 0);
 }
 
-TEST_CASE("the block texture array goes into binding 2, and a new array takes its place") {
+TEST_CASE("set 0 samples the block texture array given to it, and a new one in its place") {
     vx::Result<vx::render::Context> created = create_context();
     INFO((created.has_value() ? std::string() : created.error().message));
     REQUIRE(created.has_value());
@@ -145,7 +146,9 @@ TEST_CASE("the block texture array goes into binding 2, and a new array takes it
     vkGetPhysicalDeviceProperties(device.physical_device(), &properties);
     CHECK(table.value().capacity() + 1 <= properties.limits.maxPerStageDescriptorSampledImages);
 
-    // Two arrays, of one layer and of three, in the layout shaders read.
+    // Two arrays: one layer of gray, stored as sRGB 128, then three layers
+    // of which the last is white. A one-layer array's view is an array too,
+    // as the probe's shader declares it.
     std::vector<vx::render::Image> arrays;
     vx::render::UploadContext uploads(device);
     vx::test::OneShot shot(device);
@@ -153,20 +156,37 @@ TEST_CASE("the block texture array goes into binding 2, and a new array takes it
         vx::Result<vx::render::Image> array =
             vx::render::create_block_texture_array(device, layers);
         REQUIRE(array.has_value());
-        const std::vector<std::byte> bytes(layers * vx::render::block_texture_layer_bytes);
+        std::vector<std::byte> bytes(layers * vx::render::block_texture_layer_bytes,
+                                     layers == 1 ? std::byte{128} : std::byte{0});
+        if (layers == 3) {
+            // Layer 2 of every level white: level by level, the last layer
+            // ends each level's run.
+            for (std::size_t level = 0; level < 5; ++level) {
+                const std::size_t texels = (std::size_t{16} >> level) * (std::size_t{16} >> level);
+                const std::size_t start =
+                    4 * ((layers * vx::render::block_texture_level_start.at(level)) + (2 * texels));
+                std::fill_n(bytes.begin() + static_cast<std::ptrdiff_t>(start), 4 * texels,
+                            std::byte{255});
+            }
+        }
         REQUIRE(
             vx::render::upload_image(uploads, shot.commands(), array.value(), bytes).has_value());
         arrays.push_back(std::move(array).value());
     }
     shot.submit_and_wait();
+    vx::Result<vx::test::BlockTextureProbe> probe =
+        vx::test::BlockTextureProbe::create(device, table.value().layout());
+    INFO((probe.has_value() ? std::string() : probe.error().message));
+    REQUIRE(probe.has_value());
+
     table.value().set_block_textures(arrays[0].view());
+    CHECK(near(probe.value().sample(table.value().set(), {.u = 0.5F, .v = 0.5F}),
+               {128, 128, 128, 128}));
+    // The new array replaces the first: its layer 2 is white, where the
+    // first array, holding one layer, would give its gray.
     table.value().set_block_textures(arrays[1].view());
-    // The slots of binding 0 are untouched by it.
-    vx::Result<vx::render::Image> image = texture(device);
-    REQUIRE(image.has_value());
-    const vx::Result<std::uint32_t> slot = table.value().add(image.value().view());
-    REQUIRE(slot.has_value());
-    CHECK(slot.value() == 0);
+    CHECK(near(probe.value().sample(table.value().set(), {.u = 0.5F, .v = 0.5F, .layer = 2.0F}),
+               {255, 255, 255, 255}));
     CHECK(created.value().instance().validation_counts().errors == 0);
     CHECK(created.value().instance().validation_counts().warnings == 0);
 }
