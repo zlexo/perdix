@@ -162,10 +162,14 @@ Result<void> upload_image(UploadContext& context, VkCommandBuffer commands, cons
         expected += std::size_t{width} * height * 4 * image.layers();
     }
     if (pixels.size() != expected) {
+        // "1 level", "5 levels".
+        const auto counted = [](std::uint32_t count, const std::string& noun) {
+            return std::to_string(count) + " " + noun + (count == 1 ? "" : "s");
+        };
         std::string shape = std::to_string(extent.width) + " by " + std::to_string(extent.height);
         if (image.levels() != 1 || image.layers() != 1) {
-            shape += ", " + std::to_string(image.levels()) + " levels and " +
-                     std::to_string(image.layers()) + " layers,";
+            shape += ", " + counted(image.levels(), "level") + " and " +
+                     counted(image.layers(), "layer") + ",";
         }
         return Error{"an image of " + shape + " takes " + std::to_string(expected) +
                      " bytes of pixels, not " + std::to_string(pixels.size())};

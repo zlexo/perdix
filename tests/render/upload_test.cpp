@@ -279,5 +279,18 @@ TEST_CASE("pixels of the wrong size for an image are an error, and nothing is st
     CHECK(short_array.error().message ==
           "an image of 8 by 4, 4 levels and 3 layers, takes 516 bytes of pixels, not 172");
     CHECK(uploads.staged_bytes() == 0);
+
+    // One layer of five levels, as a block texture array holding only the
+    // checker: its shape is named, the layer in the singular.
+    vx::Result<vx::render::Image> one_layer_array = vx::render::Image::create_array(
+        device, {.width = 16, .height = 16}, VK_FORMAT_R8G8B8A8_UNORM, 5, 1,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, "one-layer array");
+    REQUIRE(one_layer_array.has_value());
+    const vx::Result<void> no_pixels =
+        vx::render::upload_image(uploads, VK_NULL_HANDLE, one_layer_array.value(), {});
+    REQUIRE_FALSE(no_pixels.has_value());
+    CHECK(no_pixels.error().message ==
+          "an image of 16 by 16, 5 levels and 1 layer, takes 1364 bytes of pixels, not 0");
+    CHECK(uploads.staged_bytes() == 0);
     CHECK(created.value().instance().validation_counts().errors == 0);
 }
