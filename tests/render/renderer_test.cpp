@@ -98,6 +98,7 @@ TEST_CASE("the renderer's set 0 holds the block texture array, the checker until
     vx::Result<vx::render::Renderer> renderer = headless_renderer();
     INFO((renderer.has_value() ? std::string() : renderer.error().message));
     REQUIRE(renderer.has_value());
+    CHECK(renderer.value().block_texture_layers() == 1);
     const vx::render::TextureTable& textures = renderer.value().textures();
     vx::Result<vx::test::BlockTextureProbe> probe =
         vx::test::BlockTextureProbe::create(renderer.value().context().device(), textures.layout());
@@ -131,6 +132,7 @@ TEST_CASE("given a pack's textures, the renderer's set 0 holds them") {
     vx::Result<vx::render::Renderer> renderer = headless_renderer(bytes);
     INFO((renderer.has_value() ? std::string() : renderer.error().message));
     REQUIRE(renderer.has_value());
+    CHECK(renderer.value().block_texture_layers() == 2);
     const vx::render::TextureTable& textures = renderer.value().textures();
     vx::Result<vx::test::BlockTextureProbe> probe =
         vx::test::BlockTextureProbe::create(renderer.value().context().device(), textures.layout());

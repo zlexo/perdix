@@ -22,7 +22,9 @@ struct BlockPack {
 
 // The pack under `root`: every assets/<namespace>/blocks/*.toml and the
 // textures they name, assets/<namespace>/textures/blocks/<name>.png. Every
-// diagnostic names its file relative to `root`, as BlockRegistry::load does.
+// diagnostic names its file relative to `root`, as BlockRegistry::load does,
+// except those about the root itself, such as a missing assets folder,
+// which name it as given.
 [[nodiscard]] BlockPack load_block_pack(const std::filesystem::path& root);
 
 } // namespace vx::render

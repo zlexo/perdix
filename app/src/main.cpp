@@ -102,7 +102,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     const vx::render::BlockPack pack = vx::render::load_block_pack(root.value());
-    for (const vx::Diagnostic& diagnostic : pack.diagnostics) {
+    for (vx::Diagnostic diagnostic : pack.diagnostics) {
+        // Named under the root, so a terminal or an editor finds the file
+        // from whatever folder the program was started in.
+        if (const std::filesystem::path file(diagnostic.file); file.is_relative()) {
+            diagnostic.file = (root.value() / file).generic_string();
+        }
         std::cerr << vx::format(diagnostic) << '\n';
     }
     // Any error leaves the pack without a registry or without textures.
@@ -111,7 +116,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     std::cout << "Block pack: " << root.value().string() << ", " << pack.registry->state_count()
-              << " states, " << pack.registry->textures().size() << " texture layers\n";
+              << " states\n";
 
     // SDL loads a Vulkan library for the window's surface, and it must be the
     // engine's loader: a driver's library does not understand the loader's
@@ -142,6 +147,8 @@ int main(int argc, char* argv[]) {
         std::cerr << "error: " << renderer.error().message << '\n';
         return 1;
     }
+    // Counted on the GPU, so the report shows what the renderer holds.
+    std::cout << "Block texture array: " << renderer.value().block_texture_layers() << " layers\n";
     const vx::render::Context& context = renderer.value().context();
     std::cout << vx::render::format_device_report(context.device_info(),
                                                   context.portability_fallback());
