@@ -69,6 +69,7 @@ TEST_CASE("the block texture array gives back every layer at every level, byte f
     CHECK(array.value().extent().height == 16);
     CHECK(array.value().levels() == 5);
     CHECK(array.value().layers() == textures.size());
+    CHECK(array.value().view_type() == VK_IMAGE_VIEW_TYPE_2D_ARRAY);
 
     vx::Result<vx::render::Buffer> readback =
         vx::render::Buffer::create(device, bytes.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -129,8 +130,13 @@ TEST_CASE(
         return image.has_value() ? std::string("none") : image.error().message;
     };
 
-    // 8 by 4 has four levels: 8 by 4, 4 by 2, 2 by 1 and 1 by 1.
-    CHECK(array({.width = 8, .height = 4}, 4, 1).has_value());
+    // 8 by 4 has four levels: 8 by 4, 4 by 2, 2 by 1 and 1 by 1. Its view is
+    // an array even with one layer, as shaders that sample the block texture
+    // array declare it. Neither validation (1.4.363) nor the Mac's drivers
+    // tell when a 2D view is sampled as an array, so it is checked here.
+    const vx::Result<vx::render::Image> one_layer = array({.width = 8, .height = 4}, 4, 1);
+    REQUIRE(one_layer.has_value());
+    CHECK(one_layer.value().view_type() == VK_IMAGE_VIEW_TYPE_2D_ARRAY);
     CHECK(refusal(array({.width = 8, .height = 4}, 5, 1)) ==
           "the image \"test array\" of 8 by 4 has 1 to 4 mip levels, not 5");
     CHECK(refusal(array({.width = 4, .height = 8}, 0, 1)) ==

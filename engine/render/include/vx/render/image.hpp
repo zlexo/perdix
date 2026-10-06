@@ -45,6 +45,8 @@ public:
     [[nodiscard]] VkFormat format() const noexcept { return format_; }
     [[nodiscard]] std::uint32_t levels() const noexcept { return levels_; }
     [[nodiscard]] std::uint32_t layers() const noexcept { return layers_; }
+    // 2D, or 2D_ARRAY for create_array's images, even of one layer.
+    [[nodiscard]] VkImageViewType view_type() const noexcept { return view_type_; }
 
 private:
     Image() = default;
@@ -64,6 +66,7 @@ private:
     VkFormat format_ = VK_FORMAT_UNDEFINED;
     std::uint32_t levels_ = 1;
     std::uint32_t layers_ = 1;
+    VkImageViewType view_type_ = VK_IMAGE_VIEW_TYPE_2D;
 };
 
 } // namespace vx::render

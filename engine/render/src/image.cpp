@@ -57,6 +57,7 @@ Result<Image> Image::make(const Device& device, VkExtent2D extent, VkFormat form
     image.format_ = format;
     image.levels_ = levels;
     image.layers_ = layers;
+    image.view_type_ = view_type;
 
     const VkImageCreateInfo image_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -117,7 +118,8 @@ Image::Image(Image&& other) noexcept
       image_(std::exchange(other.image_, VK_NULL_HANDLE)),
       allocation_(std::exchange(other.allocation_, VK_NULL_HANDLE)),
       view_(std::exchange(other.view_, VK_NULL_HANDLE)), extent_(other.extent_),
-      format_(other.format_), levels_(other.levels_), layers_(other.layers_) {}
+      format_(other.format_), levels_(other.levels_), layers_(other.layers_),
+      view_type_(other.view_type_) {}
 
 Image& Image::operator=(Image&& other) noexcept {
     if (this != &other) {
@@ -131,6 +133,7 @@ Image& Image::operator=(Image&& other) noexcept {
         format_ = other.format_;
         levels_ = other.levels_;
         layers_ = other.layers_;
+        view_type_ = other.view_type_;
     }
     return *this;
 }
