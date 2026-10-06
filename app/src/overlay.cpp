@@ -209,6 +209,26 @@ void Overlay::draw_block_filter(render::Renderer& renderer) {
     }
 }
 
+void Overlay::draw_chunk(render::Renderer& renderer, ChunkMeshing& meshing) {
+    // RFC 0003's toggles for looking at the mesh: merging, which meshes the
+    // chunk again, occlusion's strength, and the wireframe, shown only where
+    // the device offers fillModeNonSolid (the report above says when not).
+    ImGui::Text("Chunk: %zu quads, %zu of them cutout", meshing.quads, meshing.cutout);
+    ImGui::Checkbox("Merge faces", &meshing.merge);
+    if (renderer.wireframe_offered()) {
+        bool wireframe = renderer.wireframe();
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Wireframe", &wireframe)) {
+            renderer.set_wireframe(wireframe);
+        }
+    }
+    float strength = renderer.occlusion_strength();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0F);
+    if (ImGui::SliderFloat("Ambient occlusion", &strength, 0.0F, 1.0F, "%.2f")) {
+        renderer.set_occlusion_strength(strength);
+    }
+}
+
 void Overlay::draw_camera(const render::Camera& camera) {
     ImGui::Text("Camera at x %.2f, y %.2f, z %.2f", camera.position.x, camera.position.y,
                 camera.position.z);
@@ -233,7 +253,7 @@ void Overlay::draw_validation(const render::Context& context) const {
 }
 
 ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& camera,
-                           bool mouse_captured) {
+                           bool mouse_captured, ChunkMeshing& meshing) {
     if (!shown_) {
         return nullptr;
     }
@@ -275,6 +295,8 @@ ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& cam
         draw_present_mode(renderer);
         ImGui::Separator();
         draw_block_filter(renderer);
+        ImGui::Separator();
+        draw_chunk(renderer, meshing);
         ImGui::Separator();
         draw_camera(camera);
         ImGui::Separator();
