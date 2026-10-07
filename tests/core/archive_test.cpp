@@ -5,14 +5,18 @@
 
 #include <doctest/doctest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
 #include <random>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -43,6 +47,27 @@ vx::Result<vx::Archive> from(std::vector<std::byte> bytes) {
 std::string why(const vx::Result<vx::Archive>& result) {
     REQUIRE_FALSE(result.has_value());
     return result.error().message;
+}
+
+vx::Archive must(vx::Result<vx::Archive> result) {
+    REQUIRE(result.has_value());
+    return std::move(result).value();
+}
+
+std::string text_of(const std::vector<std::byte>& bytes) {
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+std::string read_text(const vx::Archive& archive, std::string_view name) {
+    const vx::Result<std::vector<std::byte>> bytes = archive.read(name);
+    REQUIRE(bytes.has_value());
+    return text_of(bytes.value());
+}
+
+std::string why_not(const vx::Archive& archive, std::string_view name) {
+    const vx::Result<std::vector<std::byte>> bytes = archive.read(name);
+    REQUIRE_FALSE(bytes.has_value());
+    return bytes.error().message;
 }
 
 // A path as the archive names it in messages.
@@ -254,4 +279,208 @@ TEST_CASE("an archive moved to another keeps its entries") {
     vx::Archive moved = std::move(archive).value();
     CHECK(moved.size() == 3);
     CHECK(moved.contains("hello.txt"));
+}
+
+TEST_CASE("an entry reads back exactly as it was stored, with or without a data descriptor") {
+    for (const std::uint16_t flags : {std::uint16_t{0}, std::uint16_t{8}}) {
+        std::vector<ZipEntry> entries = three;
+        for (ZipEntry& entry : entries) {
+            entry.flags = flags;
+        }
+        const vx::Archive archive = must(from(vx::test::make_zip(entries).bytes));
+        for (const ZipEntry& entry : entries) {
+            CHECK(read_text(archive, entry.name) == entry.data);
+        }
+    }
+}
+
+TEST_CASE("the archive another zip writer made reads back what it was given") {
+    const vx::Archive archive =
+        must(vx::Archive::open(std::filesystem::path(VX_ARCHIVES_DIR) / "stored.zip"));
+    CHECK(read_text(archive, "hello.txt") == "hello, archive\n");
+    CHECK(read_text(archive, "folder/bytes.bin") == every_byte());
+    CHECK(read_text(archive, "folder/").empty());
+    CHECK(read_text(archive, "empty.txt").empty());
+}
+
+TEST_CASE("an entry the archive lacks, or holds twice, is refused by name") {
+    const vx::Archive archive = must(from(vx::test::make_zip(three).bytes));
+    CHECK(why_not(archive, "HELLO.TXT") == "test.zip has no entry 'HELLO.TXT'");
+
+    const std::vector<ZipEntry> twice = {
+        {.name = "a", .data = "1"}, {.name = "twice", .data = "2"}, {.name = "twice", .data = "3"}};
+    const vx::Archive doubled = must(from(vx::test::make_zip(twice).bytes));
+    CHECK(doubled.contains("twice"));
+    CHECK(why_not(doubled, "twice") == "test.zip: 'twice' appears twice");
+    CHECK(read_text(doubled, "a") == "1");
+}
+
+TEST_CASE("an encrypted, compressed or oversized entry is refused before it is read") {
+    const vx::test::Zip good = vx::test::make_zip(three);
+    const std::size_t hello = good.central_headers[0];
+
+    vx::test::Zip locked = good;
+    put16(locked.bytes, hello + 8, 1); // flags: encrypted
+    CHECK(why_not(must(from(locked.bytes)), "hello.txt") == "test.zip: 'hello.txt' is encrypted");
+
+    vx::test::Zip deflated = good;
+    put16(deflated.bytes, hello + 10, 8); // method: deflate
+    CHECK(why_not(must(from(deflated.bytes)), "hello.txt") ==
+          "test.zip: 'hello.txt' uses compression method 8, and only stored entries are read");
+
+    vx::test::Zip huge = good;
+    put32(huge.bytes, hello + 20, (16U << 20U) + 1);
+    put32(huge.bytes, hello + 24, (16U << 20U) + 1);
+    CHECK(why_not(must(from(huge.bytes)), "hello.txt") ==
+          "test.zip: 'hello.txt' is larger than 16 MiB");
+
+    // At exactly 16 MiB the size is allowed, and the entry fails further on.
+    vx::test::Zip largest = good;
+    put32(largest.bytes, hello + 20, 16U << 20U);
+    put32(largest.bytes, hello + 24, 16U << 20U);
+    CHECK(why_not(must(from(largest.bytes)), "hello.txt") ==
+          "test.zip: 'hello.txt' runs past the start of the central directory");
+
+    vx::test::Zip uneven = good;
+    put32(uneven.bytes, hello + 20, 16); // compressed: one byte more than stored
+    CHECK(why_not(must(from(uneven.bytes)), "hello.txt") ==
+          "test.zip: 'hello.txt' is stored, but its compressed and uncompressed sizes differ");
+}
+
+TEST_CASE("an entry whose local header is misplaced, damaged or disagrees is refused") {
+    const vx::test::Zip good = vx::test::make_zip(three);
+    const std::size_t local = good.local_headers[0];
+    const std::string disagrees =
+        "test.zip: 'hello.txt' has a local header that disagrees with the central directory";
+
+    vx::test::Zip damaged = good;
+    put32(damaged.bytes, local, 0x0201'4b50);
+    CHECK(why_not(must(from(damaged.bytes)), "hello.txt") ==
+          "test.zip: 'hello.txt' has a damaged local header");
+
+    vx::test::Zip method = good;
+    put16(method.bytes, local + 8, 8);
+    CHECK(why_not(must(from(method.bytes)), "hello.txt") == disagrees);
+    vx::test::Zip name_length = good;
+    put16(name_length.bytes, local + 26, 8);
+    CHECK(why_not(must(from(name_length.bytes)), "hello.txt") == disagrees);
+    vx::test::Zip name = good;
+    name.bytes[local + 30] = std::byte{'H'};
+    CHECK(why_not(must(from(name.bytes)), "hello.txt") == disagrees);
+
+    // The central directory points into itself instead of at a local header.
+    vx::test::Zip inside = good;
+    put32(inside.bytes, good.central_headers[0] + 42,
+          static_cast<std::uint32_t>(good.central_headers[0]));
+    CHECK(why_not(must(from(inside.bytes)), "hello.txt") ==
+          "test.zip: 'hello.txt' has a local header outside the archive's entries");
+}
+
+TEST_CASE("an entry whose data runs into the central directory is refused") {
+    const vx::test::Zip good = vx::test::make_zip(three);
+    const std::string runs_past =
+        "test.zip: 'hello.txt' runs past the start of the central directory";
+
+    vx::test::Zip longer = good;
+    put32(longer.bytes, good.central_headers[0] + 20, 1000);
+    put32(longer.bytes, good.central_headers[0] + 24, 1000);
+    CHECK(why_not(must(from(longer.bytes)), "hello.txt") == runs_past);
+
+    vx::test::Zip extra = good;
+    put16(extra.bytes, good.local_headers[0] + 28, 1000); // the local extra field's length
+    CHECK(why_not(must(from(extra.bytes)), "hello.txt") == runs_past);
+}
+
+TEST_CASE("an entry whose bytes were damaged fails its CRC-32 check") {
+    for (const std::uint16_t flags : {std::uint16_t{0}, std::uint16_t{8}}) {
+        std::vector<ZipEntry> entries = three;
+        entries[2].flags = flags;
+        vx::test::Zip zip = vx::test::make_zip(entries);
+        zip.bytes[zip.local_headers[2] + 30 + entries[2].name.size() + 100] ^= std::byte{1};
+        const vx::Archive archive = must(from(zip.bytes));
+        CHECK(why_not(archive, "folder/bytes.bin") ==
+              "test.zip: 'folder/bytes.bin' fails its CRC-32 check");
+        CHECK(read_text(archive, "hello.txt") == "hello, archive\n");
+    }
+}
+
+TEST_CASE("threads reading one archive in a file at once each get whole entries") {
+    // A file has one position: without the archive's lock, one thread's seek
+    // lands between another's seek and read.
+    std::vector<ZipEntry> entries;
+    for (int index = 0; index < 16; ++index) {
+        entries.push_back({.name = "entry" + std::to_string(index),
+                           .data = std::string(4096, static_cast<char>('a' + index))});
+    }
+    const TemporaryFile file(vx::test::make_zip(entries).bytes);
+    {
+        const vx::Archive archive = must(vx::Archive::open(file.path()));
+        std::atomic<int> wrong{0};
+        std::vector<std::thread> threads;
+        for (int thread = 0; thread < 8; ++thread) {
+            threads.emplace_back([&archive, &entries, &wrong] {
+                for (int round = 0; round < 100; ++round) {
+                    for (const ZipEntry& entry : entries) {
+                        const vx::Result<std::vector<std::byte>> bytes = archive.read(entry.name);
+                        if (!bytes.has_value() || text_of(bytes.value()) != entry.data) {
+                            ++wrong;
+                        }
+                    }
+                }
+            });
+        }
+        for (std::thread& thread : threads) {
+            thread.join();
+        }
+        CHECK(wrong == 0);
+    }
+}
+
+TEST_CASE(
+    "an entry's data is found past its local extra field, which may differ from the central") {
+    std::vector<ZipEntry> entries = three;
+    entries[0].local_extra = std::string(8, 'x');
+    entries[0].central_extra = std::string(5, 'y');
+    entries[0].comment = "hi!";
+    entries[2].local_extra = std::string(28, 'z');
+    const vx::Archive archive = must(from(vx::test::make_zip(entries).bytes));
+    for (const ZipEntry& entry : entries) {
+        CHECK(read_text(archive, entry.name) == entry.data);
+    }
+}
+
+TEST_CASE("an entry of a file cut short after opening cannot be read, and says which") {
+    // A large entry after the first keeps it out of what opening read, which
+    // stdio may still hold in its buffer: reading it again goes to the file.
+    std::vector<ZipEntry> entries = three;
+    entries.insert(entries.begin() + 1, {.name = "padding", .data = std::string(256 * 1024, 'p')});
+    const TemporaryFile file(vx::test::make_zip(entries).bytes);
+    const vx::Archive archive = must(vx::Archive::open(file.path()));
+    const std::string cannot = utf8(file.path()) + ": 'hello.txt' cannot be read";
+    // Into the local header, then into the data after it.
+    std::filesystem::resize_file(file.path(), 45);
+    CHECK(why_not(archive, "hello.txt") == cannot);
+    std::filesystem::resize_file(file.path(), 20);
+    CHECK(why_not(archive, "hello.txt") == cannot);
+}
+
+TEST_CASE("an archive as large as Minecraft's jar reads back every entry") {
+    // 26.2's client jar lists 31,709 entries, each with a data descriptor.
+    std::vector<ZipEntry> entries;
+    for (int index = 0; index < 31'709; ++index) {
+        entries.push_back(
+            {.name = "assets/minecraft/textures/block/e" + std::to_string(index) + ".png",
+             .data = std::to_string(index * 7919),
+             .flags = 8});
+    }
+    const vx::Archive archive = must(from(vx::test::make_zip(entries).bytes));
+    CHECK(archive.size() == entries.size());
+    int wrong = 0;
+    for (const ZipEntry& entry : entries) {
+        const vx::Result<std::vector<std::byte>> bytes = archive.read(entry.name);
+        if (!bytes.has_value() || text_of(bytes.value()) != entry.data) {
+            ++wrong;
+        }
+    }
+    CHECK(wrong == 0);
 }
