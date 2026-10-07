@@ -3,6 +3,7 @@
 #include <vx/core/result.hpp>
 
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -17,8 +18,10 @@ namespace vx {
 // problem is an Error that names the archive.
 class Archive {
 public:
-    // An archive in memory, such as one a browser hands over. The name only
-    // labels messages.
+    // The archive in a file, which stays open for reading entries.
+    [[nodiscard]] static Result<Archive> open(const std::filesystem::path& path);
+    // An archive already in memory, such as one a browser hands over. The
+    // name only labels messages.
     [[nodiscard]] static Result<Archive> from_bytes(std::string name, std::vector<std::byte> bytes);
 
     Archive(const Archive&) = delete;
