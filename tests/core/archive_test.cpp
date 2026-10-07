@@ -191,25 +191,28 @@ TEST_CASE("an archive split across disks is refused") {
     }
 }
 
-TEST_CASE("an archive that needs zip64 records is refused") {
-    const std::string needs = "test.zip: needs zip64 records, which are not read";
+TEST_CASE("an end record at its largest with no zip64 records behind it is taken as it is") {
+    // Python's zipfile writes exactly 65,535 entries as 0xFFFF there, with
+    // no zip64 records; past what the archive holds, the directory does not
+    // add up.
     vx::test::Zip count = vx::test::make_zip(three);
     put16(count.bytes, count.end_record + 8, 0xFFFF);
     put16(count.bytes, count.end_record + 10, 0xFFFF);
-    CHECK(why(from(count.bytes)) == needs);
+    CHECK(why(from(count.bytes)) ==
+          "test.zip: entry 4 of its central directory runs past the directory's end");
     vx::test::Zip size = vx::test::make_zip(three);
     put32(size.bytes, size.end_record + 12, 0xFFFF'FFFF);
-    CHECK(why(from(size.bytes)) == needs);
+    CHECK(why(from(size.bytes)) == "test.zip: its central directory runs past its end record");
     vx::test::Zip offset = vx::test::make_zip(three);
     put32(offset.bytes, offset.end_record + 16, 0xFFFF'FFFF);
-    CHECK(why(from(offset.bytes)) == needs);
+    CHECK(why(from(offset.bytes)) == "test.zip: its central directory runs past its end record");
 
-    // An entry's size or place given as "in a zip64 record".
+    // An entry's size or place at its largest, with no zip64 extra field.
     for (const std::size_t field : {20U, 24U, 42U}) {
         vx::test::Zip zip = vx::test::make_zip(three);
         put32(zip.bytes, zip.central_headers[1] + field, 0xFFFF'FFFF);
-        CHECK(why(from(zip.bytes)) ==
-              "test.zip: entry 2 of its central directory needs zip64 records, which are not read");
+        CHECK(why(from(zip.bytes)) == "test.zip: entry 2 of its central directory has no zip64 "
+                                      "extra field for its sizes and place");
     }
 }
 

@@ -8,6 +8,7 @@
 #include <sys/types.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -29,10 +30,15 @@ namespace {
 // (PKWARE's APPNOTE.TXT, sections 4.3.12 and 4.3.16).
 constexpr std::uint32_t local_header_signature = 0x0403'4b50;
 constexpr std::uint32_t central_header_signature = 0x0201'4b50;
+constexpr std::uint32_t zip64_end_record_signature = 0x0606'4b50;
+constexpr std::uint32_t zip64_locator_signature = 0x0706'4b50;
 constexpr std::uint32_t end_record_signature = 0x0605'4b50;
 constexpr std::size_t local_header_size = 30;
 constexpr std::size_t central_header_size = 46;
+constexpr std::size_t zip64_end_record_size = 56;
+constexpr std::size_t zip64_locator_size = 20;
 constexpr std::size_t end_record_size = 22;
+constexpr std::uint16_t zip64_extra_id = 0x0001;
 constexpr std::size_t longest_comment = 0xFFFF;
 constexpr std::uint16_t encrypted = 1U << 0U; // general purpose flag bit 0
 constexpr std::uint16_t stored = 0;           // compression methods
@@ -43,7 +49,8 @@ constexpr std::uint64_t largest_entry = std::uint64_t{16} << 20U;
 // Deflate grows what it cannot compress by 5 bytes a 64 KiB block, so no
 // entry under the limit needs more than this, compressed.
 constexpr std::uint64_t largest_compressed = largest_entry + (largest_entry >> 4U);
-// A field at its largest says that the real value is in a zip64 record.
+// A field at its largest says that the real value is in a zip64 record
+// (APPNOTE.TXT, sections 4.3.14 to 4.3.15 and 4.5.3).
 constexpr std::uint16_t in_zip64_16 = 0xFFFF;
 constexpr std::uint32_t in_zip64_32 = 0xFFFF'FFFF;
 
@@ -56,6 +63,11 @@ std::uint16_t field16(std::span<const std::byte> bytes, std::size_t at) noexcept
 std::uint32_t field32(std::span<const std::byte> bytes, std::size_t at) noexcept {
     return static_cast<std::uint32_t>(field16(bytes, at)) |
            (static_cast<std::uint32_t>(field16(bytes, at + 2)) << 16U);
+}
+
+std::uint64_t field64(std::span<const std::byte> bytes, std::size_t at) noexcept {
+    return static_cast<std::uint64_t>(field32(bytes, at)) |
+           (static_cast<std::uint64_t>(field32(bytes, at + 4)) << 32U);
 }
 
 bool seek(std::FILE* file, std::uint64_t offset) noexcept {
@@ -125,6 +137,14 @@ struct Archive::State {
         std::uint16_t flags = 0;
     };
 
+    // Where the central directory is, as the end records give it.
+    struct Place {
+        std::uint64_t entry_count = 0;
+        std::uint64_t size = 0;
+        std::uint64_t offset = 0;
+        std::uint64_t end = 0; // what follows it: the zip64 end record, or the end record
+    };
+
     std::string name;                       // the path, or the name given, for messages
     std::unique_ptr<std::FILE, Close> file; // the archive in a file; without one,
     std::vector<std::byte> memory;          // the archive in memory
@@ -149,6 +169,15 @@ struct Archive::State {
                std::fread(out.data(), 1, out.size(), file.get()) == out.size();
     }
 
+    // The end record, and the zip64 end record when the end record's fields
+    // say their values are there and its locator is found.
+    [[nodiscard]] Result<Place> locate_directory();
+    [[nodiscard]] Result<Place> read_zip64_end(std::uint64_t locator_offset,
+                                               std::span<const std::byte> locator);
+    // The entry's sizes and place from its zip64 extra field, for each of its
+    // own fields that says the value is there. False when the field is
+    // missing or too short.
+    [[nodiscard]] static bool read_zip64_extra(std::span<const std::byte> extra, Entry& entry);
     // Why the entry cannot be read, found from the directory alone, before
     // anything is allocated for it; nothing when it can be.
     [[nodiscard]] static std::optional<std::string> refusal(const Entry& entry);
@@ -192,19 +221,17 @@ Result<Archive> Archive::from_bytes(std::string name, std::vector<std::byte> byt
     return read_directory(std::move(state));
 }
 
-Result<Archive> Archive::read_directory(std::unique_ptr<State> state) {
-    const std::string& name = state->name;
-
+Result<Archive::State::Place> Archive::State::locate_directory() {
     // The end record closes the archive, followed only by a comment of up to
     // 65,535 bytes, so it is looked for backward over that much of the end:
     // the last record whose comment length reaches exactly to the end, as
     // Python's zipfile and unzip take it. A signature inside a comment is
     // passed over unless it, too, reaches the end.
     const std::uint64_t tail_size =
-        std::min<std::uint64_t>(state->size, end_record_size + longest_comment);
+        std::min<std::uint64_t>(size, end_record_size + longest_comment);
     std::vector<std::byte> tail(static_cast<std::size_t>(tail_size));
-    if (!state->read(state->size - tail_size, tail)) {
-        return Error{name + ": cannot be read"};
+    if (!read(size - tail_size, tail)) {
+        return Error{"cannot be read"};
     }
     std::optional<std::size_t> end;
     for (std::size_t back = 0; back + end_record_size <= tail.size(); ++back) {
@@ -216,42 +243,115 @@ Result<Archive> Archive::read_directory(std::unique_ptr<State> state) {
         }
     }
     if (!end) {
-        return Error{name + ": not a zip archive: it has no end of central directory record"};
+        return Error{"not a zip archive: it has no end of central directory record"};
     }
-
     const auto record = std::span<const std::byte>(tail).subspan(*end, end_record_size);
-    const std::uint16_t entry_count = field16(record, 10);
-    const std::uint32_t directory_size = field32(record, 12);
-    const std::uint32_t directory_offset = field32(record, 16);
-    if (entry_count == in_zip64_16 || directory_size == in_zip64_32 ||
-        directory_offset == in_zip64_32) {
-        return Error{name + ": needs zip64 records, which are not read"};
+    const std::uint64_t end_offset = size - tail.size() + *end;
+    // Any field at its largest may mean its value is in the zip64 end record,
+    // whose locator then sits right before the end record.
+    const bool at_largest =
+        field16(record, 4) == in_zip64_16 || field16(record, 6) == in_zip64_16 ||
+        field16(record, 8) == in_zip64_16 || field16(record, 10) == in_zip64_16 ||
+        field32(record, 12) == in_zip64_32 || field32(record, 16) == in_zip64_32;
+    std::array<std::byte, zip64_locator_size> locator{};
+    if (at_largest && end_offset >= locator.size() && read(end_offset - locator.size(), locator) &&
+        field32(locator, 0) == zip64_locator_signature) {
+        return read_zip64_end(end_offset - locator.size(), locator);
     }
-    if (field16(record, 4) != 0 || field16(record, 6) != 0 || field16(record, 8) != entry_count) {
-        return Error{name + ": is split across several disks"};
+    // Without one, the end record's values are taken as they are: Python's
+    // zipfile writes exactly 65,535 entries as 0xFFFF there, with no zip64
+    // records. The directory still has to add up.
+    if (field16(record, 4) != 0 || field16(record, 6) != 0 ||
+        field16(record, 8) != field16(record, 10)) {
+        return Error{"is split across several disks"};
     }
-    const std::uint64_t end_offset = state->size - tail.size() + *end;
-    if (std::uint64_t{directory_offset} + directory_size > end_offset) {
+    return Place{.entry_count = field16(record, 10),
+                 .size = field32(record, 12),
+                 .offset = field32(record, 16),
+                 .end = end_offset};
+}
+
+Result<Archive::State::Place> Archive::State::read_zip64_end(std::uint64_t locator_offset,
+                                                             std::span<const std::byte> locator) {
+    // The locator gives the zip64 end record's place, which must come before
+    // it.
+    const std::uint64_t record_offset = field64(locator, 8);
+    std::array<std::byte, zip64_end_record_size> record{};
+    if (record_offset > locator_offset || locator_offset - record_offset < record.size() ||
+        !read(record_offset, record) || field32(record, 0) != zip64_end_record_signature) {
+        return Error{"has a damaged zip64 end record"};
+    }
+    if (field32(locator, 4) != 0 || field32(locator, 16) > 1 || field32(record, 16) != 0 ||
+        field32(record, 20) != 0 || field64(record, 24) != field64(record, 32)) {
+        return Error{"is split across several disks"};
+    }
+    return Place{.entry_count = field64(record, 32),
+                 .size = field64(record, 40),
+                 .offset = field64(record, 48),
+                 .end = record_offset};
+}
+
+bool Archive::State::read_zip64_extra(std::span<const std::byte> extra, Entry& entry) {
+    // Each extra field is an id, a length and that many bytes. The zip64
+    // one holds 8-byte values in this order, only for the fields at their
+    // largest.
+    const std::array<std::uint64_t*, 3> wanted = {
+        entry.size == in_zip64_32 ? &entry.size : nullptr,
+        entry.compressed_size == in_zip64_32 ? &entry.compressed_size : nullptr,
+        entry.local_header == in_zip64_32 ? &entry.local_header : nullptr};
+    std::size_t at = 0;
+    while (extra.size() - at >= 4) {
+        const std::size_t length = field16(extra, at + 2);
+        if (extra.size() - at - 4 < length) {
+            return false;
+        }
+        if (field16(extra, at) == zip64_extra_id) {
+            std::size_t value = at + 4;
+            for (std::uint64_t* field : wanted) {
+                if (field == nullptr) {
+                    continue;
+                }
+                if (at + 4 + length - value < 8) {
+                    return false;
+                }
+                *field = field64(extra, value);
+                value += 8;
+            }
+            return true;
+        }
+        at += 4 + length;
+    }
+    return false;
+}
+
+Result<Archive> Archive::read_directory(std::unique_ptr<State> state) {
+    const std::string& name = state->name;
+    const Result<State::Place> found = state->locate_directory();
+    if (!found) {
+        return Error{name + ": " + found.error().message};
+    }
+    const State::Place& place = found.value();
+    if (place.offset > place.end || place.size > place.end - place.offset) {
         return Error{name + ": its central directory runs past its end record"};
     }
-    state->directory.resize(directory_size);
-    if (!state->read(directory_offset, state->directory)) {
+    state->directory.resize(static_cast<std::size_t>(place.size));
+    if (!state->read(place.offset, state->directory)) {
         return Error{name + ": cannot be read"};
     }
-    state->directory_offset = directory_offset;
+    state->directory_offset = place.offset;
 
     // Each entry's header, then its name, extra field and comment. Only the
     // names are kept as text, pointing into the directory.
     const std::span<const std::byte> directory = state->directory;
-    const auto problem = [&name](std::size_t index, std::string_view what) {
+    const auto problem = [&name](std::uint64_t index, std::string_view what) {
         return Error{name + ": entry " + std::to_string(index + 1) + " of its central directory " +
                      std::string(what)};
     };
     // In proportion to the bytes there are, not to what the end record says.
-    state->entries.reserve(
-        std::min<std::size_t>(entry_count, directory.size() / central_header_size));
+    state->entries.reserve(static_cast<std::size_t>(
+        std::min<std::uint64_t>(place.entry_count, directory.size() / central_header_size)));
     std::size_t at = 0;
-    for (std::size_t index = 0; index < entry_count; ++index) {
+    for (std::uint64_t index = 0; index < place.entry_count; ++index) {
         if (directory.size() - at < central_header_size) {
             return problem(index, "runs past the directory's end");
         }
@@ -259,12 +359,13 @@ Result<Archive> Archive::read_directory(std::unique_ptr<State> state) {
             return problem(index, "is damaged");
         }
         const std::size_t name_length = field16(directory, at + 28);
-        const std::size_t length = central_header_size + name_length + field16(directory, at + 30) +
-                                   field16(directory, at + 32);
+        const std::size_t extra_length = field16(directory, at + 30);
+        const std::size_t length =
+            central_header_size + name_length + extra_length + field16(directory, at + 32);
         if (directory.size() - at < length) {
             return problem(index, "runs past the directory's end");
         }
-        const State::Entry entry{
+        State::Entry entry{
             .name = std::string_view(
                 reinterpret_cast<const char*>(directory.data() + at + central_header_size),
                 name_length),
@@ -274,16 +375,18 @@ Result<Archive> Archive::read_directory(std::unique_ptr<State> state) {
             .crc32 = field32(directory, at + 16),
             .method = field16(directory, at + 10),
             .flags = field16(directory, at + 8)};
-        if (entry.compressed_size == in_zip64_32 || entry.size == in_zip64_32 ||
-            entry.local_header == in_zip64_32) {
-            return problem(index, "needs zip64 records, which are not read");
+        if ((entry.compressed_size == in_zip64_32 || entry.size == in_zip64_32 ||
+             entry.local_header == in_zip64_32) &&
+            !State::read_zip64_extra(
+                directory.subspan(at + central_header_size + name_length, extra_length), entry)) {
+            return problem(index, "has no zip64 extra field for its sizes and place");
         }
         state->entries.push_back(entry);
         at += length;
     }
     if (at != directory.size()) {
         return Error{name + ": its central directory holds more than its " +
-                     std::to_string(entry_count) + " entries"};
+                     std::to_string(place.entry_count) + " entries"};
     }
     std::ranges::sort(state->entries, {}, &State::Entry::name);
     return Archive(std::move(state));
