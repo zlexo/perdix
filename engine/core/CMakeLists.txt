@@ -43,6 +43,7 @@ configure_file(src/version_config.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/generated/
     @ONLY)
 
 add_library(vx_core STATIC
+    src/crc32.cpp
     src/diagnostic.cpp
     src/version.cpp)
 add_library(vx::core ALIAS vx_core)
