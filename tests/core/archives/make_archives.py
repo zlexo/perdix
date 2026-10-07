@@ -8,15 +8,25 @@ a data descriptor (flag bit 3), as in Minecraft's client jars.
   deflated.zip  entries deflated by zlib: dynamic Huffman blocks for text and
                 a repeating pattern, a stored block for noise, fixed Huffman
                 for one byte and for nothing
+  zip64_python.zip   zipfile with its zip64 limits at zero: every size and
+                place in zip64 extra fields, and zip64 end records, the end
+                record keeping its own values
+  zip64_infozip.zip  Info-ZIP's zip -fz (a writer apart from both): zip64 end
+                records with the end record's directory offset at its largest,
+                and each entry's uncompressed size in a zip64 extra field
 
 The tests make the same contents with the same formulas.
 
     python3 tests/core/archives/make_archives.py
 """
 import io
+import os
 import pathlib
+import shutil
 import struct
+import subprocess
 import sys
+import tempfile
 import zipfile
 
 
@@ -63,16 +73,47 @@ def first_blocks(name):
     return kinds
 
 
-def write(name, comment, method, entries):
+def write(name, comment, method, entries, force_zip64=False):
     out = Unseekable()
     with zipfile.ZipFile(out, "w", compression=method) as archive:
         archive.comment = comment
         for entry_name, data in entries:
             info = zipfile.ZipInfo(entry_name, date_time=(2026, 10, 7, 0, 0, 0))
             info.compress_type = method
-            with archive.open(info, "w") as entry:
+            with archive.open(info, "w", force_zip64=force_zip64) as entry:
                 entry.write(data)
     pathlib.Path(__file__).with_name(name).write_bytes(bytes(out.data))
+
+
+ZIP64_ENTRIES = [("a.txt", b"zip64 " * 50), ("b.bin", bytes(range(256)))]
+
+
+def write_zip64_python():
+    saved = zipfile.ZIP64_LIMIT, zipfile.ZIP_FILECOUNT_LIMIT
+    zipfile.ZIP64_LIMIT = zipfile.ZIP_FILECOUNT_LIMIT = 0
+    try:
+        write("zip64_python.zip", b"made by make_archives.py", zipfile.ZIP_DEFLATED,
+              ZIP64_ENTRIES, force_zip64=True)
+    finally:
+        zipfile.ZIP64_LIMIT, zipfile.ZIP_FILECOUNT_LIMIT = saved
+
+
+def write_zip64_infozip():
+    tool = shutil.which("zip")
+    if tool is None:
+        print("zip64_infozip.zip: no zip program here, so it is left as it is")
+        return
+    with tempfile.TemporaryDirectory() as folder:
+        for entry_name, data in ZIP64_ENTRIES:
+            path = pathlib.Path(folder) / entry_name
+            path.write_bytes(data)
+            path.chmod(0o644)
+            os.utime(path, (1791331200, 1791331200))  # 2026-10-07, UTC
+        # -X leaves out the file attributes the system would add.
+        subprocess.run([tool, "-q", "-X", "-fz", "out.zip", *(n for n, _ in ZIP64_ENTRIES)],
+                       cwd=folder, env={**os.environ, "TZ": "UTC"}, check=True)
+        data = (pathlib.Path(folder) / "out.zip").read_bytes()
+    pathlib.Path(__file__).with_name("zip64_infozip.zip").write_bytes(data)
 
 
 # stored.zip keeps the comment it was first made with, under this script's
@@ -95,3 +136,5 @@ write("deflated.zip", b"made by make_archives.py", zipfile.ZIP_DEFLATED, [
 blocks = {"text.txt": 2, "pattern.bin": 2, "noise.bin": 0, "tiny.txt": 1, "empty.txt": 1}
 if first_blocks("deflated.zip") != blocks:
     sys.exit(f"deflated.zip: first blocks {first_blocks('deflated.zip')}, not {blocks}")
+write_zip64_python()
+write_zip64_infozip()

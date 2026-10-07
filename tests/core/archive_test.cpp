@@ -5,6 +5,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -664,4 +665,127 @@ TEST_CASE("every entry of the player's Minecraft jar reads back, when one is nam
     MESSAGE(archive.size(), " entries, ", bytes, " bytes; opened in ", milliseconds(opened - start),
             " ms, every entry read in ", milliseconds(read - opened), " ms, the ", textures,
             " block textures in ", milliseconds(read_textures - read), " ms");
+}
+
+TEST_CASE("zip64 end records and extra fields read the same, from us and two other writers") {
+    std::vector<ZipEntry> entries = three;
+    entries.push_back({.name = "deflated.bin", .data = every_byte(), .deflate = true});
+    // An extra field of another kind before the zip64 one, as Info-ZIP
+    // writes its time stamps first.
+    entries[1].central_extra = std::string("UT\x05\x00\x01\x00\x00\x00\x00", 9);
+    for (const vx::test::Zip64 zip64 :
+         {vx::test::Zip64{.end_records = true}, vx::test::Zip64{.entries = true},
+          vx::test::Zip64{.end_records = true, .entries = true}}) {
+        const vx::Archive archive = must(from(vx::test::make_zip(entries, {}, zip64).bytes));
+        CHECK(archive.size() == entries.size());
+        for (const ZipEntry& entry : entries) {
+            CHECK(read_text(archive, entry.name) == entry.data);
+        }
+    }
+    // Python's zipfile and Info-ZIP's zip each wrote one (make_archives.py).
+    std::string zip64_text;
+    for (int copy = 0; copy < 50; ++copy) {
+        zip64_text += "zip64 ";
+    }
+    for (const char* file : {"zip64_python.zip", "zip64_infozip.zip"}) {
+        CAPTURE(file);
+        const vx::Archive archive =
+            must(vx::Archive::open(std::filesystem::path(VX_ARCHIVES_DIR) / file));
+        CHECK(read_text(archive, "a.txt") == zip64_text);
+        CHECK(read_text(archive, "b.bin") == every_byte());
+    }
+}
+
+TEST_CASE("zip64 end records that are missing, misplaced, damaged or split are refused") {
+    const vx::test::Zip good = vx::test::make_zip(three, {}, {.end_records = true});
+    const std::size_t record = good.zip64_end_record;
+    const std::size_t locator = good.zip64_locator;
+    const std::string damaged = "test.zip: has a damaged zip64 end record";
+    const std::string split = "test.zip: is split across several disks";
+
+    // Without its locator, the end record is taken as it is: disk numbers
+    // at their largest.
+    vx::test::Zip no_locator = good;
+    put32(no_locator.bytes, locator, 0x0605'4b50);
+    CHECK(why(from(no_locator.bytes)) == split);
+
+    vx::test::Zip signature = good;
+    put32(signature.bytes, record, 0x0605'4b50);
+    CHECK(why(from(signature.bytes)) == damaged);
+    vx::test::Zip no_room = good; // a record 55 bytes before the locator, which needs 56
+    put32(no_room.bytes, locator - 55, 0x0606'4b50);
+    put32(no_room.bytes, locator + 8, static_cast<std::uint32_t>(locator - 55));
+    CHECK(why(from(no_room.bytes)) == damaged);
+    vx::test::Zip beyond = good;
+    put32(beyond.bytes, locator + 12, 1); // the high half of its offset
+    CHECK(why(from(beyond.bytes)) == damaged);
+
+    // A whole zip64 end record in the comment, after the locator: it must
+    // come before it.
+    vx::test::Zip after = vx::test::make_zip(three, std::string(56, 'r'), {.end_records = true});
+    std::copy_n(after.bytes.begin() + static_cast<std::ptrdiff_t>(after.zip64_end_record), 56,
+                after.bytes.begin() + static_cast<std::ptrdiff_t>(after.end_record + 22));
+    put32(after.bytes, after.zip64_locator + 8, static_cast<std::uint32_t>(after.end_record + 22));
+    CHECK(why(from(after.bytes)) == damaged);
+
+    for (const std::size_t field : {record + 16, record + 20, record + 24, locator + 4}) {
+        vx::test::Zip disks = good; // a disk number, or entries on this disk but not all
+        put32(disks.bytes, field, 2);
+        CHECK(why(from(disks.bytes)) == split);
+    }
+    vx::test::Zip many_disks = good;
+    put32(many_disks.bytes, locator + 16, 2);
+    CHECK(why(from(many_disks.bytes)) == split);
+
+    vx::test::Zip past = good; // the directory one byte longer than there is room for
+    put32(past.bytes, record + 40,
+          static_cast<std::uint32_t>(record - good.central_headers[0] + 1));
+    CHECK(why(from(past.bytes)) == "test.zip: its central directory runs past its end record");
+
+    // A count of 2^40 entries is only believed as far as there are bytes.
+    vx::test::Zip huge = good;
+    put32(huge.bytes, record + 28, 256);
+    put32(huge.bytes, record + 36, 256);
+    CHECK(why(from(huge.bytes)) ==
+          "test.zip: entry 4 of its central directory runs past the directory's end");
+}
+
+TEST_CASE("a zip64 extra field too short for the fields it stands for is refused") {
+    const vx::test::Zip good = vx::test::make_zip(three, {}, {.entries = true});
+    const std::string none = "test.zip: entry 2 of its central directory has no zip64 extra "
+                             "field for its sizes and place";
+    // The zip64 extra field of entry 2 ("folder/") follows its 7-byte name.
+    const std::size_t extra = good.central_headers[1] + 46 + 7;
+    vx::test::Zip short_field = good; // room for two of its three values
+    put16(short_field.bytes, extra + 2, 16);
+    put16(short_field.bytes, good.central_headers[1] + 30, 4 + 16);
+    CHECK(why(from(short_field.bytes)) == none);
+
+    vx::test::Zip overlong = good; // a length past the end of the extra fields
+    put16(overlong.bytes, extra + 2, 200);
+    CHECK(why(from(overlong.bytes)) == none);
+
+    vx::test::Zip other_id = good; // another field in its place
+    put16(other_id.bytes, extra, 0x5455);
+    CHECK(why(from(other_id.bytes)) == none);
+
+    // Entry 3's field one byte short: 7 bytes for its third value.
+    const std::size_t third = good.central_headers[2] + 46 + 16;
+    vx::test::Zip seven = good;
+    put16(seven.bytes, third + 2, 23);
+    put16(seven.bytes, good.central_headers[2] + 30, 4 + 23);
+    CHECK(why(from(seven.bytes)) == "test.zip: entry 3 of its central directory has no zip64 "
+                                    "extra field for its sizes and place");
+}
+
+TEST_CASE("an archive of exactly 65,535 entries reads without zip64 records, as Python writes it") {
+    std::vector<ZipEntry> entries;
+    for (int index = 0; index < 65'535; ++index) {
+        entries.push_back({.name = "e" + std::to_string(index), .data = std::to_string(index)});
+    }
+    const vx::test::Zip zip = vx::test::make_zip(entries);
+    REQUIRE(std::to_integer<int>(zip.bytes[zip.end_record + 10]) == 0xFF); // the count: 0xFFFF
+    const vx::Archive archive = must(from(zip.bytes));
+    CHECK(archive.size() == 65'535);
+    CHECK(read_text(archive, "e65534") == "65534");
 }
