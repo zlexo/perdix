@@ -302,6 +302,15 @@ bool Archive::contains(std::string_view name) const noexcept {
     return std::ranges::binary_search(state_->entries, name, {}, &State::Entry::name);
 }
 
+std::vector<std::string_view> Archive::names() const {
+    std::vector<std::string_view> names;
+    names.reserve(state_->entries.size());
+    for (const State::Entry& entry : state_->entries) {
+        names.push_back(entry.name);
+    }
+    return names;
+}
+
 std::optional<std::string> Archive::State::refusal(const Entry& entry) {
     if ((entry.flags & encrypted) != 0) {
         return "is encrypted";

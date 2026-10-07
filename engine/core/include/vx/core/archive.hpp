@@ -36,6 +36,8 @@ public:
     // Whether it lists an entry of exactly this name: zip names are bytes, so
     // case counts.
     [[nodiscard]] bool contains(std::string_view name) const noexcept;
+    // Every entry's name, in byte order, valid while the archive is.
+    [[nodiscard]] std::vector<std::string_view> names() const;
     // The entry's bytes, stored or inflated, checked against its local header
     // and its CRC-32, or why not. Several threads may read one archive at
     // once.
