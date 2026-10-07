@@ -323,10 +323,13 @@ TEST_CASE("an encrypted, compressed or oversized entry is refused before it is r
     put16(locked.bytes, hello + 8, 1); // flags: encrypted
     CHECK(why_not(must(from(locked.bytes)), "hello.txt") == "test.zip: 'hello.txt' is encrypted");
 
-    vx::test::Zip deflated = good;
-    put16(deflated.bytes, hello + 10, 8); // method: deflate
-    CHECK(why_not(must(from(deflated.bytes)), "hello.txt") ==
-          "test.zip: 'hello.txt' uses compression method 8, and only stored entries are read");
+    for (const std::uint16_t method : {std::uint16_t{12}, std::uint16_t{14}, std::uint16_t{93}}) {
+        vx::test::Zip other = good; // bzip2, LZMA, Zstandard
+        put16(other.bytes, hello + 10, method);
+        CHECK(why_not(must(from(other.bytes)), "hello.txt") ==
+              "test.zip: 'hello.txt' uses compression method " + std::to_string(method) +
+                  ", which is neither stored (0) nor deflate (8)");
+    }
 
     vx::test::Zip huge = good;
     put32(huge.bytes, hello + 20, (16U << 20U) + 1);
