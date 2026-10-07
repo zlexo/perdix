@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
-| **Milestone** | To be placed (recommended: after M2, before M3) |
+| **Status** | Accepted (2026-10-07) |
+| **Milestone** | M2.5 Minecraft Look |
 | **Issue** | #162 |
 
 ## Summary
@@ -322,6 +322,8 @@ The first run after the files had left the cache took about 13, 14 and 5 ms for 
 7. The app: the three options and the report line, the local test against the real install, the CI check for Mojang's files, and a README section on using the game's textures, with the statement the Usage Guidelines ask for (not an official Minecraft product, not approved by or associated with Mojang or Microsoft).
 
 ## Open questions
+
+All settled on 2026-10-07: every recommendation below was accepted.
 
 1. **Resource packs.** The game layers the player's enabled packs (`options.txt`) over the jar. Many are 16 by 16, but popular ones are 32 to 512 texels, which RFC 0004's 16 by 16 array cannot hold, and they come from the internet: untrusted archives and PNGs, where stb_image's warning that its security fixes can take time starts to matter. Recommendation: **later, in an RFC of their own**, which also decides texture sizes and a hardened decoder.
 2. **Which launchers are searched.** Prism Launcher and MultiMC keep the vanilla jar at `libraries/com/mojang/minecraft/<version>/minecraft-<version>-client.jar` under their data folder; the Modrinth App lays out `meta/versions/<id>/` as the official launcher lays out `versions/`; where CurseForge keeps jars was not confirmed. The reference machine has Prism and the Modrinth App as well as the official launcher. Searching them all means a data folder per launcher on each system, three layouts, and a rule for choosing between installs. With `--minecraft`, Prism's jar can be named directly, and the Modrinth App's `meta` folder works as a game folder. Recommendation: **the official launcher's folder by default**; every other launcher through `--minecraft`, which takes a game folder or a jar.
