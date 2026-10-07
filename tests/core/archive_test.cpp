@@ -5,9 +5,14 @@
 
 #include <doctest/doctest.h>
 
+#include <chrono>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
+#include <random>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -39,6 +44,41 @@ std::string why(const vx::Result<vx::Archive>& result) {
     REQUIRE_FALSE(result.has_value());
     return result.error().message;
 }
+
+// A path as the archive names it in messages.
+std::string utf8(const std::filesystem::path& path) {
+    const std::u8string text = path.u8string();
+    return {reinterpret_cast<const char*>(text.data()), text.size()};
+}
+
+// A file of these bytes in the system's temporary folder, removed when it
+// goes out of scope, even after a failed check. Its name has a random part,
+// since the folder may be shared.
+class TemporaryFile {
+public:
+    explicit TemporaryFile(const std::vector<std::byte>& bytes)
+        : path_(std::filesystem::temp_directory_path() /
+                ("vx_archive_test_" + std::to_string(std::random_device{}()) + "_" +
+                 std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+                 ".zip")) {
+        std::ofstream file(path_, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(bytes.data()),
+                   static_cast<std::streamsize>(bytes.size()));
+    }
+    TemporaryFile(const TemporaryFile&) = delete;
+    TemporaryFile& operator=(const TemporaryFile&) = delete;
+    TemporaryFile(TemporaryFile&&) = delete;
+    TemporaryFile& operator=(TemporaryFile&&) = delete;
+    ~TemporaryFile() {
+        std::error_code ignored;
+        std::filesystem::remove(path_, ignored);
+    }
+
+    [[nodiscard]] const std::filesystem::path& path() const { return path_; }
+
+private:
+    std::filesystem::path path_;
+};
 
 } // namespace
 
@@ -87,6 +127,19 @@ TEST_CASE("the end record is the last one whose comment reaches the end") {
     const vx::Result<vx::Archive> nested = from(vx::test::make_zip(three, fake).bytes);
     REQUIRE(nested.has_value());
     CHECK(nested.value().size() == 0);
+}
+
+TEST_CASE("an archive written by another zip writer, with data descriptors, reads the same") {
+    // Python's zipfile wrote it (make_stored.py beside it), each entry's sizes
+    // and CRC after its data, as in Minecraft's client jars.
+    const vx::Result<vx::Archive> archive =
+        vx::Archive::open(std::filesystem::path(VX_ARCHIVES_DIR) / "stored.zip");
+    REQUIRE(archive.has_value());
+    CHECK(archive.value().size() == 4);
+    CHECK(archive.value().contains("hello.txt"));
+    CHECK(archive.value().contains("folder/"));
+    CHECK(archive.value().contains("folder/bytes.bin"));
+    CHECK(archive.value().contains("empty.txt"));
 }
 
 TEST_CASE("bytes that are not a zip archive are refused, naming them") {
@@ -177,6 +230,22 @@ TEST_CASE("a central directory that is damaged or does not add up is refused") {
     put16(too_few.bytes, good.end_record + 10, 2);
     CHECK(why(from(too_few.bytes)) ==
           "test.zip: its central directory holds more than its 2 entries");
+}
+
+TEST_CASE("an archive in a file reads as one in memory, and what cannot be read is named") {
+    std::filesystem::path gone;
+    {
+        const TemporaryFile file(vx::test::make_zip(three).bytes);
+        const vx::Result<vx::Archive> archive = vx::Archive::open(file.path());
+        REQUIRE(archive.has_value());
+        CHECK(archive.value().size() == 3);
+        CHECK(archive.value().contains("folder/bytes.bin"));
+        gone = file.path();
+    }
+    CHECK(why(vx::Archive::open(gone)) == utf8(gone) + ": cannot be opened");
+    // A folder opens on some systems, but is not a file to read.
+    const std::filesystem::path folder = std::filesystem::temp_directory_path();
+    CHECK(why(vx::Archive::open(folder)).starts_with(utf8(folder) + ": cannot be"));
 }
 
 TEST_CASE("an archive moved to another keeps its entries") {
