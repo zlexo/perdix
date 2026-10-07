@@ -21,14 +21,19 @@ set(VX_DOCTEST_PROPERTIES
 
 add_executable(vx_core_tests
     main.cpp
+    core/archive_fuzz_test.cpp
     core/archive_test.cpp
     core/crc32_test.cpp
     core/diagnostic_test.cpp
     core/result_test.cpp
-    core/version_test.cpp)
+    core/version_test.cpp
+    fuzz/archive_fuzz.cpp)
 target_link_libraries(vx_core_tests PRIVATE vx::core doctest::doctest)
-# Archives written by another zip writer, read by the archive tests (RFC 0009).
-target_compile_definitions(vx_core_tests PRIVATE VX_ARCHIVES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/core/archives")
+# Archives from other zip writers, and inputs fuzzing saved, read by the
+# archive tests (RFC 0009).
+target_compile_definitions(vx_core_tests PRIVATE
+    VX_ARCHIVES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/core/archives"
+    VX_FUZZ_INPUTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fuzz/inputs")
 vx_target_warnings(vx_core_tests)
 doctest_discover_tests(vx_core_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 
