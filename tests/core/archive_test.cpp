@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -608,4 +609,56 @@ TEST_CASE("a compressed size larger than any 16 MiB entry needs is refused befor
     put32(larger.bytes, good.central_headers[0] + 20, (16U << 20U) + (1U << 20U) + 1);
     CHECK(why_not(must(from(larger.bytes)), "d.bin") ==
           "test.zip: 'd.bin' is larger than 17 MiB compressed");
+}
+
+TEST_CASE("an archive lists its entries' names in byte order") {
+    const vx::Archive archive = must(from(vx::test::make_zip(three).bytes));
+    const std::vector<std::string_view> names = archive.names();
+    CHECK(names == std::vector<std::string_view>{"folder/", "folder/bytes.bin", "hello.txt"});
+}
+
+TEST_CASE("every entry of the player's Minecraft jar reads back, when one is named") {
+    // A local check against the real game, never in CI: the jar is Mojang's.
+    // With the variable set, a jar that cannot be read fails the test.
+    const char* jar = std::getenv("VX_TEST_MINECRAFT_JAR");
+    if (jar == nullptr) {
+        MESSAGE("skipped: VX_TEST_MINECRAFT_JAR does not name a Minecraft client jar");
+        return;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const vx::Result<vx::Archive> open = vx::Archive::open(jar);
+    if (!open.has_value()) {
+        FAIL(open.error().message);
+    }
+    const vx::Archive& archive = open.value();
+    const auto opened = std::chrono::steady_clock::now();
+    std::size_t failed = 0;
+    std::uint64_t bytes = 0;
+    for (const std::string_view name : archive.names()) {
+        const vx::Result<std::vector<std::byte>> entry = archive.read(name);
+        if (entry.has_value()) {
+            bytes += entry.value().size();
+        } else {
+            ++failed;
+            MESSAGE(entry.error().message);
+        }
+    }
+    const auto read = std::chrono::steady_clock::now();
+    // The block textures alone, which RFC 0009 reads, once more.
+    std::size_t textures = 0;
+    for (const std::string_view name : archive.names()) {
+        if (name.starts_with("assets/minecraft/textures/block/") && name.ends_with(".png")) {
+            textures += archive.read(name).has_value() ? 1 : 0;
+        }
+    }
+    const auto read_textures = std::chrono::steady_clock::now();
+    CHECK(archive.size() > 0);
+    CHECK(failed == 0);
+    CHECK(textures > 0);
+    const auto milliseconds = [](auto duration) {
+        return std::chrono::duration<double, std::milli>(duration).count();
+    };
+    MESSAGE(archive.size(), " entries, ", bytes, " bytes; opened in ", milliseconds(opened - start),
+            " ms, every entry read in ", milliseconds(read - opened), " ms, the ", textures,
+            " block textures in ", milliseconds(read_textures - read), " ms");
 }
