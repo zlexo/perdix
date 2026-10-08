@@ -41,15 +41,22 @@ target_link_libraries(vx_app_startup PUBLIC vx::render vx::minecraft)
 vx_target_warnings(vx_app_startup)
 vx_target_engine_options(vx_app_startup)
 
+# The demo chunk and the player walking on it (RFC 0010): a library of their
+# own so that tests walk the chunk without a window.
+add_library(vx_app_play STATIC src/demo_chunk.cpp src/walking.cpp)
+target_include_directories(vx_app_play PUBLIC src)
+target_link_libraries(vx_app_play PUBLIC vx::world)
+vx_target_warnings(vx_app_play)
+vx_target_engine_options(vx_app_play)
+
 add_executable(vx_app
     src/allocation_profiling.cpp
-    src/demo_chunk.cpp
     src/fly_controls.cpp
     src/main.cpp
     src/pack.cpp
     src/window.cpp)
 target_link_libraries(vx_app PRIVATE vx::core vx::world vx::mesh vx::render vx::minecraft
-    vx_app_overlay vx_app_startup vx_imgui_sdl3 SDL3::SDL3-static)
+    vx_app_overlay vx_app_play vx_app_startup vx_imgui_sdl3 SDL3::SDL3-static)
 set_target_properties(vx_app PROPERTIES OUTPUT_NAME perdix)
 vx_target_warnings(vx_app)
 vx_target_engine_options(vx_app)
