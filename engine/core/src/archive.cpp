@@ -1,5 +1,6 @@
 #include <vx/core/archive.hpp>
 
+#include <vx/core/crc32.hpp>
 #include <vx/core/result.hpp>
 
 #include <sys/stat.h>
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -24,11 +26,18 @@ namespace {
 
 // Record signatures and sizes, from the zip format's specification
 // (PKWARE's APPNOTE.TXT, sections 4.3.12 and 4.3.16).
+constexpr std::uint32_t local_header_signature = 0x0403'4b50;
 constexpr std::uint32_t central_header_signature = 0x0201'4b50;
 constexpr std::uint32_t end_record_signature = 0x0605'4b50;
+constexpr std::size_t local_header_size = 30;
 constexpr std::size_t central_header_size = 46;
 constexpr std::size_t end_record_size = 22;
 constexpr std::size_t longest_comment = 0xFFFF;
+constexpr std::uint16_t encrypted = 1U << 0U; // general purpose flag bit 0
+constexpr std::uint16_t stored = 0;           // compression method
+// A larger entry is refused before anything is allocated for it: Minecraft's
+// largest block texture is 122 KiB, the largest entry in its jar 4.5 MiB.
+constexpr std::uint64_t largest_entry = std::uint64_t{16} << 20U;
 // A field at its largest says that the real value is in a zip64 record.
 constexpr std::uint16_t in_zip64_16 = 0xFFFF;
 constexpr std::uint32_t in_zip64_32 = 0xFFFF'FFFF;
@@ -262,6 +271,67 @@ std::size_t Archive::size() const noexcept {
 
 bool Archive::contains(std::string_view name) const noexcept {
     return std::ranges::binary_search(state_->entries, name, {}, &State::Entry::name);
+}
+
+Result<std::vector<std::byte>> Archive::read(std::string_view name) const {
+    State& state = *state_;
+    const auto problem = [&state, name](std::string_view what) {
+        return Error{state.name + ": '" + std::string(name) + "' " + std::string(what)};
+    };
+    const auto found = std::ranges::lower_bound(state.entries, name, {}, &State::Entry::name);
+    if (found == state.entries.end() || found->name != name) {
+        return Error{state.name + " has no entry '" + std::string(name) + "'"};
+    }
+    // Zip readers disagree on which of two entries of one name is meant.
+    if (std::next(found) != state.entries.end() && std::next(found)->name == name) {
+        return problem("appears twice");
+    }
+    const State::Entry& entry = *found;
+    if ((entry.flags & encrypted) != 0) {
+        return problem("is encrypted");
+    }
+    if (entry.method != stored) {
+        return problem("uses compression method " + std::to_string(entry.method) +
+                       ", and only stored entries are read");
+    }
+    if (entry.size > largest_entry) {
+        return problem("is larger than 16 MiB");
+    }
+    if (entry.compressed_size != entry.size) {
+        return problem("is stored, but its compressed and uncompressed sizes differ");
+    }
+
+    // The local header, before the directory, agreeing with it on the method
+    // and the name. Its CRC and sizes are not compared: with a data
+    // descriptor after the data, as in Minecraft's jars, they are zeros.
+    std::vector<std::byte> local(local_header_size + entry.name.size());
+    if (entry.local_header > state.directory_offset ||
+        state.directory_offset - entry.local_header < local.size()) {
+        return problem("has a local header outside the archive's entries");
+    }
+    if (!state.read(entry.local_header, local)) {
+        return problem("cannot be read");
+    }
+    if (field32(local, 0) != local_header_signature) {
+        return problem("has a damaged local header");
+    }
+    const auto local_name = std::span<const std::byte>(local).subspan(local_header_size);
+    if (field16(local, 8) != entry.method || field16(local, 26) != entry.name.size() ||
+        !std::ranges::equal(local_name, std::as_bytes(std::span(entry.name)))) {
+        return problem("has a local header that disagrees with the central directory");
+    }
+    const std::uint64_t data = entry.local_header + local.size() + field16(local, 28);
+    if (data > state.directory_offset || state.directory_offset - data < entry.compressed_size) {
+        return problem("runs past the start of the central directory");
+    }
+    std::vector<std::byte> bytes(static_cast<std::size_t>(entry.size));
+    if (!state.read(data, bytes)) {
+        return problem("cannot be read");
+    }
+    if (crc32(bytes) != entry.crc32) {
+        return problem("fails its CRC-32 check");
+    }
+    return bytes;
 }
 
 } // namespace vx

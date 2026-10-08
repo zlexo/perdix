@@ -36,6 +36,10 @@ public:
     // Whether it lists an entry of exactly this name: zip names are bytes, so
     // case counts.
     [[nodiscard]] bool contains(std::string_view name) const noexcept;
+    // The entry's bytes, checked against its local header and its CRC-32, or
+    // why not. Entries are read stored; deflated ones come with RFC 0009's
+    // item 3. Several threads may read one archive at once.
+    [[nodiscard]] Result<std::vector<std::byte>> read(std::string_view name) const;
 
 private:
     struct State;
