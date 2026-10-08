@@ -31,6 +31,7 @@ target_compile_definitions(vx_yyjson PUBLIC
 add_library(vx_minecraft STATIC
     src/install.cpp
     src/json.cpp
+    src/made_textures.cpp
     src/texture_map.cpp
     src/version_description.cpp)
 add_library(vx::minecraft ALIAS vx_minecraft)
