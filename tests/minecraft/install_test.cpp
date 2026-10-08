@@ -7,8 +7,12 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <chrono>
+#include <cstddef>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <optional>
 #include <random>
 #include <string>
@@ -64,10 +68,21 @@ void write(const fs::path& file, std::string_view bytes) {
     std::ofstream(file, std::ios::binary) << bytes;
 }
 
-// A jar that opens: an archive with nothing in it.
-std::string empty_jar() {
-    const vx::test::Zip zip = vx::test::make_zip({});
+std::string text_of(const vx::test::Zip& zip) {
     return {reinterpret_cast<const char*>(zip.bytes.data()), zip.bytes.size()};
+}
+
+// A jar that opens: an archive with nothing in it, as old as 1.8.9's in that
+// it does not say which version it is.
+std::string empty_jar() {
+    return text_of(vx::test::make_zip({}));
+}
+
+// A jar that says which version it is, as jars have since 1.14.
+std::string jar_saying(std::string_view version_json) {
+    const std::vector<vx::test::ZipEntry> entries = {
+        {.name = "version.json", .data = std::string(version_json)}};
+    return text_of(vx::test::make_zip(entries));
 }
 
 std::string release(std::string_view time) {
@@ -91,6 +106,10 @@ fs::path jar_of(const fs::path& game, std::string_view id) {
 
 vx::minecraft::InstallQuery named(const fs::path& game) {
     return {.path = game};
+}
+
+vx::minecraft::InstallQuery named(const fs::path& game, std::string_view version) {
+    return {.path = game, .version = std::string(version)};
 }
 
 // What find_install gave, and its diagnostics, formatted.
@@ -378,9 +397,6 @@ TEST_CASE("a named path that is not a game folder is an error saying why") {
     // A folder with no versions in it, such as the versions folder itself.
     CHECK(why(find(named(folder.path()))) ==
           utf8(folder.path()) + " is not a game folder: it holds no versions folder");
-    write(folder.path() / "notes.txt", "");
-    CHECK(why(find(named(folder.path() / "notes.txt"))) ==
-          utf8(folder.path() / "notes.txt") + " is not a game folder: it holds no versions folder");
 }
 
 TEST_CASE("without a path, the launcher's folders are looked in, in order") {
@@ -442,4 +458,177 @@ TEST_CASE("each system's folder is where find_install looks") {
     CHECK(version_of(find(query(System::macos))) == "26.2");
     CHECK(version_of(find(query(System::windows))) == "26.1.2");
     CHECK(why(find({})) == "no home folder to look for Minecraft in");
+}
+
+TEST_CASE("the version shown is the one the jar's version.json gives") {
+    const TemporaryFolder game;
+    // The Modrinth App keeps a modded profile with no inheritsFrom, and in it
+    // the jar of the version it builds on.
+    add_version(game.path(), "1.21.1-21.1.243", release("2026-07-22T12:37:28.579491528Z"),
+                jar_saying(R"({"id": "1.21.1", "name": "1.21.1", "world_version": 3955})"));
+    Found found = find(named(game.path()));
+    CHECK(version_of(found) == "1.21.1");
+    CHECK(path_of(found) == jar_of(game.path(), "1.21.1-21.1.243"));
+    CHECK(found.diagnostics.empty());
+
+    // A jar from before 1.14 says nothing, and its folder's name is shown.
+    add_version(game.path(), "1.8.9", release("2026-08-01T00:00:00+00:00"));
+    found = find(named(game.path()));
+    CHECK(version_of(found) == "1.8.9");
+    CHECK(found.diagnostics.empty());
+}
+
+TEST_CASE("a version.json that cannot be read is a warning, and the folder's name is shown") {
+    vx::test::Zip damaged = vx::test::make_zip(
+        std::vector<vx::test::ZipEntry>{{.name = "version.json", .data = R"({"id": "26.2"})"}});
+    vx::test::put32(damaged.bytes, damaged.central_headers[0] + 16, 0);
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {jar_saying(R"({"id": )"), "its version.json is not JSON: unexpected end of data"},
+        {jar_saying(R"({"id": 26.2})"), "its version.json gives no id as a string"},
+        {jar_saying(R"({"id": ""})"), "its version.json gives no id as a string"},
+        {text_of(damaged), "'version.json' fails its CRC-32 check"},
+        // The report shows the id as it is.
+        {jar_saying(R"({"id": "26.2\nfake.json:1:1: error: spoofed"})"),
+         "its version.json gives an id that is not a version's name"},
+        {jar_saying(R"({"id": ")" + std::string(65, '2') + R"("})"),
+         "its version.json gives an id that is not a version's name"},
+    };
+    for (const auto& [jar, problem] : cases) {
+        CAPTURE(problem);
+        const TemporaryFolder game;
+        add_version(game.path(), "26.2", release("2026-06-16T12:03:33+00:00"), jar);
+        const Found found = find(named(game.path()));
+        CHECK(version_of(found) == "26.2");
+        CHECK(found.diagnostics ==
+              std::vector<std::string>{utf8(jar_of(game.path(), "26.2")) + ": warning: " + problem +
+                                       "; the version shown is 26.2, from its name"});
+    }
+}
+
+TEST_CASE("a client jar named as the path skips the choice") {
+    const TemporaryFolder folder;
+    // Prism Launcher's name for the jar of 1.20.1.
+    const fs::path prism = folder.path() / "minecraft-1.20.1-client.jar";
+    write(prism, jar_saying(R"({"id": "1.20.1"})"));
+    const Found found = find(named(prism));
+    CHECK(version_of(found) == "1.20.1");
+    CHECK(path_of(found) == prism);
+    CHECK(found.diagnostics.empty());
+    // A jar too old to say is shown by its file's name.
+    write(folder.path() / "1.8.9.jar", empty_jar());
+    CHECK(version_of(find(named(folder.path() / "1.8.9.jar"))) == "1.8.9");
+}
+
+TEST_CASE("a named file that does not open as a jar is an error saying why") {
+    const TemporaryFolder folder;
+    const fs::path notes = folder.path() / "notes.txt";
+    write(notes, "not a zip archive");
+    CHECK(why(find(named(notes))) ==
+          utf8(notes) + ": not a zip archive: it has no end of central directory record");
+}
+
+TEST_CASE("a named version is used whatever its type, and only its jar is needed") {
+    const TemporaryFolder game;
+    add_version(game.path(), "26.2", release("2026-06-16T12:03:33+00:00"));
+    // Its description is not read, so one that is not JSON does no harm.
+    add_version(game.path(), "26.3-snapshot-1", "not JSON");
+    add_version(game.path(), "fabric-loader-0.19.2-26.2",
+                R"({"inheritsFrom": "26.2", "type": "release"})", jar_saying(R"({"id": "26.2"})"));
+    write(jar_of(game.path(), "custom"), empty_jar());
+    Found found = find(named(game.path(), "26.3-snapshot-1"));
+    CHECK(version_of(found) == "26.3-snapshot-1");
+    CHECK(path_of(found) == jar_of(game.path(), "26.3-snapshot-1"));
+    CHECK(found.diagnostics.empty());
+    // A modded profile's jar is the one of the version it builds on.
+    found = find(named(game.path(), "fabric-loader-0.19.2-26.2"));
+    CHECK(version_of(found) == "26.2");
+    CHECK(path_of(found) == jar_of(game.path(), "fabric-loader-0.19.2-26.2"));
+    CHECK(version_of(find(named(game.path(), "custom"))) == "custom");
+}
+
+TEST_CASE("a named version that has no jar, or none that opens, or is not there, is an error") {
+    const TemporaryFolder game;
+    add_version(game.path(), "26.3", release("2026-07-15T10:00:00+00:00"), std::nullopt);
+    add_version(game.path(), "26.2", release("2026-06-16T12:03:33+00:00"), "not a zip archive");
+    CHECK(why(find(named(game.path(), "26.3"))) ==
+          "version 26.3 in " + utf8(game.path()) + " has no jar");
+    CHECK(why(find(named(game.path(), "26.2"))) ==
+          utf8(jar_of(game.path(), "26.2")) +
+              ": not a zip archive: it has no end of central directory record");
+    CHECK(why(find(named(game.path(), "25w36b"))) == "no version 25w36b in " + utf8(game.path()));
+}
+
+TEST_CASE("a version name that could reach outside the versions folder is refused") {
+    const TemporaryFolder game;
+    add_version(game.path(), "26.2", release("2026-06-16T12:03:33+00:00"));
+    for (const std::string& name :
+         {std::string(), std::string("."), std::string(".."), std::string("../versions/26.2"),
+          std::string("26.2/../26.2"), std::string("26.2\\..\\26.2"), std::string("26.2\0", 5),
+          // A drive, which would replace the whole path on Windows, what is
+          // not printable ASCII, and a name longer than any version's.
+          std::string("D:26.2"), std::string("26.2\xC3\xA9"), std::string("26.2\n"),
+          std::string(65, '2')}) {
+        CAPTURE(name);
+        CHECK(why(find(named(game.path(), name))) ==
+              "'" + name + "' is not the name of a version folder");
+    }
+}
+
+TEST_CASE("a version named with a jar for the path is an error") {
+    const TemporaryFolder folder;
+    write(folder.path() / "26.2.jar", empty_jar());
+    CHECK(why(find(named(folder.path() / "26.2.jar", "26.2"))) ==
+          "version 26.2 is named, but " + utf8(folder.path() / "26.2.jar") +
+              " is a jar, not a game folder");
+}
+
+TEST_CASE("without a path, a named version is looked for in the launcher's folders, in order") {
+    const TemporaryFolder home;
+    const vx::minecraft::InstallQuery query{
+        .version = "26.2", .home = home.path(), .system = System::linux_os};
+    const fs::path launcher = home.path() / ".minecraft";
+    const fs::path flathub = home.path() / ".var" / "app" / "com.mojang.Minecraft" / ".minecraft";
+    CHECK(why(find(query)) ==
+          "no Minecraft game folder at " + utf8(launcher) + " or " + utf8(flathub));
+    add_version(launcher, "1.21.11", release("2025-12-09T12:23:30+00:00"));
+    CHECK(why(find(query)) == "no version 26.2 in " + utf8(launcher));
+    add_version(flathub, "26.2", release("2026-06-16T12:03:33+00:00"));
+    CHECK(path_of(find(query)) == jar_of(flathub, "26.2"));
+    add_version(launcher, "26.2", release("2026-06-16T12:03:33+00:00"));
+    CHECK(path_of(find(query)) == jar_of(launcher, "26.2"));
+}
+
+TEST_CASE("the player's own Minecraft is found, when asked") {
+    // A local check against the real game, never in CI: with the variable
+    // set, finding no jar fails the test.
+    if (std::getenv("VX_TEST_MINECRAFT") == nullptr) {
+        MESSAGE(
+            "skipped: VX_TEST_MINECRAFT is not set, so the player's Minecraft is not looked for");
+        return;
+    }
+    vx::minecraft::InstallQuery query;
+#ifdef _WIN32
+    const char* home = std::getenv("USERPROFILE");
+    if (const char* appdata = std::getenv("APPDATA")) {
+        query.appdata = fs::path(appdata);
+    }
+#else
+    const char* home = std::getenv("HOME");
+#endif
+    if (home != nullptr) {
+        query.home = home;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const Found found = find(query);
+    const auto took = std::chrono::steady_clock::now() - start;
+    for (const std::string& diagnostic : found.diagnostics) {
+        MESSAGE(diagnostic);
+    }
+    if (!found.install.has_value()) {
+        FAIL(found.install.error().message);
+    }
+    const vx::minecraft::Install& install = found.install.value();
+    MESSAGE("Minecraft ", install.version, " from ", utf8(install.path), ", ", install.jar.size(),
+            " entries, found and opened in ",
+            std::chrono::duration<double, std::milli>(took).count(), " ms");
 }
