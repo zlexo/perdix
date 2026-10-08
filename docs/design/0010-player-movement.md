@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
-| **Milestone** | M5 Hands today; open question 1 proposes M2.75 Walk |
+| **Status** | Accepted (2026-10-08) |
+| **Milestone** | M2.75 Walk |
 | **Issue** | #196 |
 
 ## Summary
@@ -307,6 +307,8 @@ A tick is a small fraction of RFC 0005's 50 ms tick, so the budget's point is th
 8. **View bobbing**, if open question 6 keeps it, judged by eye against the game; then As built.
 
 ## Open questions
+
+All settled on 2026-10-08: every recommendation below was accepted.
 
 1. **When is it built?** The roadmap puts walking in M5 Hands, after M3 (streaming) and M4 (terrain). Items 1 to 6 need nothing from either; item 7 needs a world, and the demo chunk is one: 32 by 32 blocks of ground with a beach a step lower, a tree, logs and a hut. Recommended: now, as **M2.75 Walk**, between M2.5 and M3, walking on the demo chunk with the main thread's clock; M3 moves the tick onto the world thread with the rest of the simulation, and M5 keeps breaking and placing. The alternative is M5, where streaming and terrain make more of a world to walk in.
 2. **Which game?** Recommended: 26.2 exactly, quirks included: the 2% diagonal, the 41% diagonal sneak, sprinting while crouching, the speed-based threshold, the 8-degree graze. They are what players' hands expect; Mojang reverted its own attempt to remove the first two.
