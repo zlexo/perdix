@@ -28,6 +28,7 @@ add_subdirectory(engine/core)
 add_subdirectory(engine/world)
 add_subdirectory(engine/mesh)
 add_subdirectory(engine/render)
+add_subdirectory(engine/minecraft)
 add_subdirectory(app)
 
 if(VX_BUILD_TESTS)

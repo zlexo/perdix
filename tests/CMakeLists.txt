@@ -146,3 +146,10 @@ add_executable(vx_render_allocation_tests
 target_link_libraries(vx_render_allocation_tests PRIVATE vx::render doctest::doctest)
 vx_target_warnings(vx_render_allocation_tests)
 doctest_discover_tests(vx_render_allocation_tests PROPERTIES ${VX_VULKAN_DOCTEST_PROPERTIES})
+
+add_executable(vx_minecraft_tests
+    main.cpp
+    minecraft/version_description_test.cpp)
+target_link_libraries(vx_minecraft_tests PRIVATE vx::minecraft doctest::doctest)
+vx_target_warnings(vx_minecraft_tests)
+doctest_discover_tests(vx_minecraft_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
