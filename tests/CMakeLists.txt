@@ -149,6 +149,7 @@ doctest_discover_tests(vx_render_allocation_tests PROPERTIES ${VX_VULKAN_DOCTEST
 
 add_executable(vx_minecraft_tests
     main.cpp
+    minecraft/install_test.cpp
     minecraft/version_description_test.cpp)
 target_link_libraries(vx_minecraft_tests PRIVATE vx::minecraft doctest::doctest)
 vx_target_warnings(vx_minecraft_tests)
