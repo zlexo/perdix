@@ -16,6 +16,7 @@
 #include <span>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -90,6 +91,13 @@ std::vector<std::string> formatted(const std::vector<vx::Diagnostic>& diagnostic
         lines.push_back(vx::format(diagnostic));
     }
     return lines;
+}
+
+// A texture of `name` made from `image`, as the minecraft layer makes them.
+vx::MadeTexture made_of(std::string name, const BlockImage& image) {
+    vx::MadeTexture made{.name = std::move(name), .rgba = {}};
+    std::memcpy(made.rgba.data(), image.data(), sizeof(image));
+    return made;
 }
 
 } // namespace
@@ -168,6 +176,73 @@ TEST_CASE("the texture array holds every layer of level 0, then every layer of e
               path_of("pattern") +
               ": warning: 28 texels are transparent (alpha below 0.5), and opaque blocks draw "
               "them solid; cutout blocks would show the holes"});
+}
+
+TEST_CASE("a made texture takes its file's place, turned, filled and mipmapped as a file is") {
+    // test:gone has no file and needs none once made; test:pattern's file
+    // would warn about its holes on an opaque block, and is not read.
+    BlockImage holed = asymmetric();
+    holed[at(3, 5)].a = 0;
+    BlockImage other = asymmetric();
+    other[at(0, 0)].r = 1;
+    const std::vector<vx::MadeTexture> made = {made_of("test:gone", holed),
+                                               made_of("test:pattern", other)};
+    const std::vector<vx::TextureRef> textures = {{},
+                                                  ref("test:gone", 0, true, false),
+                                                  ref("test:gone", 1, true, false),
+                                                  ref("test:pattern", 0, true, false)};
+    std::vector<vx::Diagnostic> diagnostics;
+    const std::vector<std::byte> bytes =
+        vx::render::build_block_textures(textures, assets, made, diagnostics);
+    CHECK(formatted(diagnostics).empty());
+    REQUIRE(bytes.size() == 4 * vx::render::block_texture_layer_bytes);
+
+    std::vector<BlockMips> expected = {vx::render::mipmaps(vx::render::checker())};
+    for (const auto& [image, turns] :
+         {std::pair{holed, 0}, std::pair{holed, 1}, std::pair{other, 0}}) {
+        BlockImage layer = vx::render::turned(image, turns);
+        vx::render::fill_transparent(layer);
+        expected.push_back(vx::render::mipmaps(layer));
+    }
+    std::size_t offset = 0;
+    for (std::size_t level = 0; level < 5; ++level) {
+        const std::size_t texels = (std::size_t{16} >> level) * (std::size_t{16} >> level);
+        for (std::size_t layer = 0; layer < 4; ++layer) {
+            INFO("level " << level << ", layer " << layer);
+            CHECK(std::memcmp(&bytes[offset],
+                              &expected[layer][vx::render::block_texture_level_start[level]],
+                              4 * texels) == 0);
+            offset += 4 * texels;
+        }
+    }
+}
+
+TEST_CASE("made textures no layer uses are passed over") {
+    const std::vector<vx::TextureRef> textures = {{}, ref("test:solid", 0, true, false)};
+    const std::vector<vx::MadeTexture> made = {made_of("test:unused", asymmetric()),
+                                               made_of("other:solid", asymmetric())};
+    std::vector<vx::Diagnostic> plain;
+    std::vector<vx::Diagnostic> with_made;
+    const std::vector<std::byte> from_files =
+        vx::render::build_block_textures(textures, assets, plain);
+    CHECK_FALSE(from_files.empty());
+    CHECK(vx::render::build_block_textures(textures, assets, made, with_made) == from_files);
+    CHECK(with_made.empty());
+}
+
+TEST_CASE("of two made textures with one name, the first stands in") {
+    const std::vector<vx::TextureRef> textures = {{}, ref("test:gone", 0, true, false)};
+    const BlockImage first = asymmetric();
+    BlockImage second = asymmetric();
+    second[at(0, 0)].r = 1;
+    const std::vector<vx::MadeTexture> made = {made_of("test:gone", first),
+                                               made_of("test:gone", second)};
+    std::vector<vx::Diagnostic> diagnostics;
+    const std::vector<std::byte> bytes =
+        vx::render::build_block_textures(textures, assets, made, diagnostics);
+    REQUIRE(bytes.size() == 2 * vx::render::block_texture_layer_bytes);
+    // Level 0 of layer 1 comes right after the checker's.
+    CHECK(std::memcmp(&bytes[sizeof(first)], first.data(), sizeof(first)) == 0);
 }
 
 TEST_CASE("a missing or bad texture file is an error, every one reported, and nothing comes back") {

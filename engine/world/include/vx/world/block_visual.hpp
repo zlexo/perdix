@@ -10,6 +10,11 @@ namespace vx {
 // leaves or glass, draws faces with holes in them and hides nothing.
 enum class Opacity : std::uint8_t { air, opaque, cutout };
 
+// The alpha test cutout faces are drawn with (RFC 0004): a texel whose alpha
+// is 128 or more, 0.5 or more in the shader, is drawn; any other is
+// discarded.
+inline constexpr std::uint8_t alpha_test_passes = 128;
+
 // What the mesher needs to know about a block state (RFC 0003), one per
 // state, built by the block registry (RFC 0004). Two cutout blocks with the
 // same nonzero cull group hide each other's shared faces; 0 is none. A

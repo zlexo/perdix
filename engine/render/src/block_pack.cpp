@@ -6,11 +6,16 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <span>
 #include <utility>
 
 namespace vx::render {
 
 BlockPack load_block_pack(const std::filesystem::path& root) {
+    return load_block_pack(root, {});
+}
+
+BlockPack load_block_pack(const std::filesystem::path& root, std::span<const MadeTexture> made) {
     BlockLoad load = BlockRegistry::load(root);
     BlockPack pack{.registry = std::move(load.registry),
                    .textures = {},
@@ -20,7 +25,7 @@ BlockPack load_block_pack(const std::filesystem::path& root) {
     }
     const std::size_t first = pack.diagnostics.size();
     pack.textures =
-        build_block_textures(pack.registry->textures(), root / "assets", pack.diagnostics);
+        build_block_textures(pack.registry->textures(), root / "assets", made, pack.diagnostics);
     // The textures are named by their paths under the root it was given;
     // relative to it, as the block files are.
     for (std::size_t index = first; index < pack.diagnostics.size(); ++index) {

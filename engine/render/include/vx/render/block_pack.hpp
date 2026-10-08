@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace vx::render {
@@ -26,5 +27,10 @@ struct BlockPack {
 // except those about the root itself, such as a missing assets folder,
 // which name it as given.
 [[nodiscard]] BlockPack load_block_pack(const std::filesystem::path& root);
+// The same, with textures made from something other than their files, such
+// as the player's own Minecraft (RFC 0009), as build_block_textures takes
+// them.
+[[nodiscard]] BlockPack load_block_pack(const std::filesystem::path& root,
+                                        std::span<const MadeTexture> made);
 
 } // namespace vx::render
