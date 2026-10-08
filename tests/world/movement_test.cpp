@@ -55,6 +55,16 @@ void check_vector(const std::vector<double>& moved, const std::array<double, vec
 
 constexpr vx::MovementKeys forward{.forward = true};
 
+// Where one tick of `keys` at `yaw` takes a player at rest.
+Vec3d one_tick_from_rest(const vx::MovementKeys& keys, float yaw) {
+    const vx::test::FlatWorld world;
+    const vx::MovementNumbers numbers;
+    std::vector<Box> scratch;
+    vx::Player player = at_rest();
+    vx::tick(player, {.held = keys, .yaw = yaw}, world, numbers, scratch);
+    return player.position;
+}
+
 } // namespace
 
 TEST_CASE(
@@ -240,4 +250,178 @@ TEST_CASE("a yaw that is not finite leaves the player as it was, as a move that 
         vx::tick(player, {.held = forward, .yaw = 0.0F}, world, numbers, scratch);
         CHECK(player.position.z == doctest::Approx(-0.098));
     }
+}
+
+// The rules the vectors leave unchecked, one at a time.
+
+TEST_CASE("a vertical speed under the threshold stops before the move, whatever the rest") {
+    // RFC 0010: |vy| < 0.003 becomes 0, on its own; 0.004 is kept.
+    struct Case {
+        double vy;
+        double height;
+        double vy_after;
+    };
+    const vx::test::FlatWorld world;
+    const vx::MovementNumbers numbers;
+    std::vector<Box> scratch;
+    for (const Case& game : {Case{.vy = 0.002, .height = 5.0, .vy_after = -0.0784},
+                             Case{.vy = -0.002, .height = 5.0, .vy_after = -0.0784},
+                             Case{.vy = 0.004, .height = 5.004, .vy_after = -0.07448}}) {
+        INFO("vy ", game.vy);
+        vx::Player player;
+        player.position.y = 5.0;
+        player.velocity = {.x = 0.0, .y = game.vy, .z = -0.2};
+        vx::tick(player, {.held = {}, .yaw = 0.0F}, world, numbers, scratch);
+        CHECK(player.position.y == doctest::Approx(game.height).epsilon(tolerance));
+        CHECK(player.velocity.y == doctest::Approx(game.vy_after).epsilon(tolerance));
+    }
+}
+
+TEST_CASE("S walks back and D strafes right, and opposite keys cancel") {
+    // Facing -z: back is +z and right is +x.
+    CHECK(one_tick_from_rest({.back = true}, 0.0F).z == doctest::Approx(0.098).epsilon(tolerance));
+    CHECK(one_tick_from_rest({.right = true}, 0.0F).x == doctest::Approx(0.098).epsilon(tolerance));
+    CHECK(one_tick_from_rest({.forward = true, .back = true}, 0.0F) == Vec3d{});
+    CHECK(one_tick_from_rest({.left = true, .right = true}, 0.0F) == Vec3d{});
+}
+
+TEST_CASE("the keys turn with the yaw: a quarter turn left, W goes toward -x and A toward +z") {
+    // RFC 0010's axes: forward (-sin yaw, 0, -cos yaw), left (-cos yaw, 0, sin yaw).
+    const float quarter_turn = std::numbers::pi_v<float> / 2.0F;
+    const Vec3d walked = one_tick_from_rest({.forward = true}, quarter_turn);
+    CHECK(walked.x == doctest::Approx(-0.098).epsilon(tolerance));
+    CHECK(walked.z == doctest::Approx(0.0).epsilon(tolerance));
+    const Vec3d strafed = one_tick_from_rest({.left = true}, quarter_turn);
+    CHECK(strafed.x == doctest::Approx(0.0).epsilon(tolerance));
+    CHECK(strafed.z == doctest::Approx(0.098).epsilon(tolerance));
+}
+
+TEST_CASE("a wall across x stops only x") {
+    // The z wall's case turned a quarter: walking diagonally into a wall
+    // across x, x stops and z carries on.
+    vx::test::FlatWorld world;
+    for (int z = -20; z < 4; ++z) {
+        world.boxes.push_back(block_box(-2.0, 0.0, z));
+        world.boxes.push_back(block_box(-2.0, 1.0, z));
+    }
+    const vx::MovementNumbers numbers;
+    vx::Player player = at_rest();
+    player.position = {.x = 0.5, .y = 0.0, .z = 0.5};
+    std::vector<Box> scratch;
+    for (int i = 0; i < 20; ++i) {
+        vx::tick(player, {.held = {.forward = true, .left = true}, .yaw = 0.0F}, world, numbers,
+                 scratch);
+    }
+    CHECK(player.position.x == doctest::Approx(-0.7));
+    CHECK(player.velocity.x == 0.0);
+    CHECK(player.velocity.z < 0.0);
+    CHECK(player.horizontal_collision);
+}
+
+TEST_CASE("in the air, W adds 0.02 a tick, 0.026 sprinting, against a drag of 0.91") {
+    const vx::test::FlatWorld world;
+    for (const bool sprinting : {false, true}) {
+        INFO("sprinting ", sprinting);
+        vx::Player player; // high above the floor, so in the air throughout
+        player.position.y = 100.0;
+        player.sprinting = sprinting;
+        const std::vector<double> moved = run_along_z(player, forward, 5, world);
+        const std::array<double, 5> game =
+            sprinting ? std::array{0.02548, 0.0486668, 0.0697668, 0.0889678, 0.1064407}
+                      : std::array{0.0196, 0.037436, 0.0536668, 0.0684368, 0.0818774};
+        for (std::size_t i = 0; i < game.size(); ++i) {
+            INFO("tick ", i + 1);
+            CHECK(moved[i] == doctest::Approx(game[i]).epsilon(tolerance));
+        }
+        CHECK_FALSE(player.on_ground);
+    }
+}
+
+TEST_CASE("the tick that lands still drags as in the air: drag follows where the tick began") {
+    // Begun in the air, the landing tick keeps 0.91 of the speed; the next
+    // begins on the ground and keeps 0.546.
+    const vx::test::FlatWorld world;
+    vx::Player player;
+    player.position.y = 0.05;
+    player.velocity = {.x = 0.0, .y = -0.1, .z = -0.2};
+    const std::vector<double> moved = run_along_z(player, {}, 3, world);
+    CHECK(moved[0] == doctest::Approx(0.2).epsilon(tolerance));
+    CHECK(moved[1] == doctest::Approx(0.182).epsilon(tolerance));
+    CHECK(moved[2] == doctest::Approx(0.099372).epsilon(tolerance));
+    CHECK(player.on_ground);
+}
+
+TEST_CASE(
+    "walking onto a slab steps up on the 5th tick, losing no speed (RFC 0010's slab vector)") {
+    // The vector's slab, 0.5 tall from z = 1 on, is here from z = -1 on.
+    vx::test::FlatWorld world;
+    for (int x = -2; x < 2; ++x) {
+        for (int z = -12; z < -1; ++z) {
+            world.boxes.push_back(vx::test::low_box(x, z, 0.5));
+        }
+    }
+    const vx::MovementNumbers numbers;
+    vx::Player player = at_rest();
+    std::vector<Box> scratch;
+    std::vector<double> moved;
+    for (std::size_t i = 0; i < vector_ticks; ++i) {
+        INFO("tick ", i + 1);
+        const double before = player.position.z;
+        vx::tick(player, {.held = forward, .yaw = 0.0F}, world, numbers, scratch);
+        moved.push_back(before - player.position.z);
+        CHECK(player.position.y == (i < 4 ? 0.0 : 0.5));
+        CHECK(player.on_ground);
+        CHECK_FALSE(player.horizontal_collision);
+    }
+    check_vector(moved, {0.098000, 0.151508, 0.180723, 0.196675, 0.205385, 0.210140, 0.212736,
+                         0.214154, 0.214928, 0.215351, 0.215582, 0.215708});
+}
+
+TEST_CASE("a speed under the threshold is gone before the keys add theirs") {
+    // Seven ticks after W is released, 0.0017 is left, under 0.003: pressing
+    // W again moves 0.098, as from rest.
+    const vx::test::FlatWorld world;
+    vx::Player player = at_rest();
+    static_cast<void>(run_along_z(player, forward, 100, world));
+    static_cast<void>(run_along_z(player, {}, 7, world));
+    CHECK(run_along_z(player, forward, 1, world)[0] == doctest::Approx(0.098).epsilon(tolerance));
+}
+
+TEST_CASE("Shift alone does not slow a standing player: the crouch factor follows the pose") {
+    CHECK(one_tick_from_rest({.forward = true, .sneak = true}, 0.0F).z ==
+          doctest::Approx(-0.098).epsilon(tolerance));
+}
+
+TEST_CASE("without Shift nothing holds the player back at an edge: it walks off and falls") {
+    // A platform a block high whose edge is at z = -1, on the floor.
+    vx::test::FlatWorld world;
+    for (int x = -2; x < 2; ++x) {
+        for (int z = -1; z < 2; ++z) {
+            world.boxes.push_back(block_box(x, 0.0, z));
+        }
+    }
+    vx::Player player = at_rest();
+    player.position.y = 1.0;
+    static_cast<void>(run_along_z(player, forward, 20, world));
+    CHECK(player.position.y == 0.0);
+    CHECK(player.on_ground);
+}
+
+TEST_CASE("a head that hits a ceiling stops rising, and is not on the ground") {
+    // Under a ceiling 2 blocks up, the standing box, 1.8 tall, rises 0.2 of
+    // the 0.3 asked for.
+    vx::test::FlatWorld world;
+    for (int x = -2; x < 2; ++x) {
+        for (int z = -2; z < 2; ++z) {
+            world.boxes.push_back(block_box(x, 2.0, z));
+        }
+    }
+    const vx::MovementNumbers numbers;
+    vx::Player player;
+    player.velocity.y = 0.3;
+    std::vector<Box> scratch;
+    vx::tick(player, {.held = {}, .yaw = 0.0F}, world, numbers, scratch);
+    CHECK(player.position.y == doctest::Approx(0.2).epsilon(tolerance));
+    CHECK(player.velocity.y == doctest::Approx(-0.0784).epsilon(tolerance));
+    CHECK_FALSE(player.on_ground);
 }
