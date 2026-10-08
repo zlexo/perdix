@@ -6,6 +6,7 @@
 #include <cmath>
 #include <span>
 #include <utility>
+#include <vector>
 
 namespace vx {
 namespace {
@@ -105,6 +106,18 @@ Move clip_move(const Box& box, Vec3d wanted, std::span<const Box> obstacles) noe
         motion.x = step(Axis::x);
     }
     return collided(wanted, motion);
+}
+
+Move move_box(const Box& box, Vec3d wanted, const BlockBoxes& world, std::vector<Box>& scratch) {
+    const auto finite = [](const Vec3d& v) {
+        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+    };
+    if (!finite(wanted) || !finite(box.min) || !finite(box.max)) {
+        return {};
+    }
+    scratch.clear();
+    world.collect(swept(box, wanted), scratch);
+    return clip_move(box, wanted, scratch);
 }
 
 } // namespace vx

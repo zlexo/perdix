@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <span>
+#include <vector>
 
 namespace vx {
 
@@ -71,5 +72,23 @@ struct Move {
 // the box. Since y goes first, a box that walks off an edge still ends that
 // move on the ground.
 [[nodiscard]] Move clip_move(const Box& box, Vec3d wanted, std::span<const Box> obstacles) noexcept;
+
+// The blocks movement collides with.
+class BlockBoxes {
+public:
+    virtual ~BlockBoxes() = default;
+
+    // Appends to `out` the collision box of every block that overlaps or
+    // touches `region`.
+    virtual void collect(const Box& region, std::vector<Box>& out) const = 0;
+};
+
+// clip_move against the world's blocks: the boxes the move could touch are
+// gathered into `scratch`, which keeps its memory from one move to the next,
+// so moves allocate only when they gather more boxes than any before them. A
+// move with a coordinate that is not finite does nothing, and asks the world
+// for nothing.
+[[nodiscard]] Move move_box(const Box& box, Vec3d wanted, const BlockBoxes& world,
+                            std::vector<Box>& scratch);
 
 } // namespace vx

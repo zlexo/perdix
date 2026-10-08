@@ -278,3 +278,55 @@ TEST_CASE("swept grows a box toward each axis's motion, whichever its sign") {
     CHECK(other_way.min == Vec3d{.x = box.min.x - 0.5, .y = box.min.y, .z = box.min.z - 0.75});
     CHECK(other_way.max == Vec3d{.x = box.max.x, .y = box.max.y + 0.25, .z = box.max.z});
 }
+
+TEST_CASE("move_box asks the world for the swept region and keeps the "
+          "scratch's memory") {
+    vx::test::BoxWorld world;
+    for (int x = -2; x < 2; ++x) {
+        for (int z = -2; z < 2; ++z) {
+            world.boxes.push_back(block_box(x, -1.0, z));
+        }
+    }
+    const Box box = player_box({.x = 0.5, .y = 0.5, .z = 0.5});
+    const Vec3d wanted{.x = 0.25, .y = -1.0, .z = -0.125};
+    std::vector<Box> scratch;
+    scratch.reserve(64);
+    const Box* const memory = scratch.data();
+
+    const vx::Move move = vx::move_box(box, wanted, world, scratch);
+    REQUIRE(world.regions.size() == 1);
+    CHECK(world.regions[0] == vx::swept(box, wanted));
+    CHECK(move.motion == Vec3d{.x = 0.25, .y = -0.5, .z = -0.125});
+    CHECK(move.on_ground);
+    // The two floor blocks the region touches, gathered into the scratch.
+    CHECK(scratch.size() == 2);
+    CHECK(scratch.capacity() == 64);
+    CHECK(scratch.data() == memory);
+
+    // The same move again: the scratch is cleared, not freed.
+    const vx::Move again = vx::move_box(box, wanted, world, scratch);
+    CHECK(scratch.data() == memory);
+    CHECK(again.motion == move.motion);
+
+    // Blocks taken out of the world are gone from the next move's boxes.
+    world.boxes.clear();
+    CHECK(vx::move_box(box, wanted, world, scratch).motion == wanted);
+}
+
+TEST_CASE("a move that is not finite does nothing, and asks the world for nothing") {
+    vx::test::BoxWorld world;
+    world.boxes.push_back(block_box(0.0, -1.0, 0.0));
+    std::vector<Box> scratch;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double infinity = std::numeric_limits<double>::infinity();
+    const Box box = player_box({.x = 0.5, .y = 0.0, .z = 0.5});
+
+    const vx::Move nan_move = vx::move_box(box, {.x = nan, .y = -0.0784, .z = 0.0}, world, scratch);
+    CHECK(nan_move.motion == Vec3d{});
+    CHECK_FALSE(nan_move.vertical_collision);
+    CHECK_FALSE(nan_move.horizontal_collision());
+
+    const Box lost = player_box({.x = infinity, .y = 0.0, .z = 0.5});
+    CHECK(vx::move_box(lost, {.x = 0.1, .y = 0.0, .z = 0.0}, world, scratch).motion == Vec3d{});
+    CHECK(world.regions.empty());
+}
