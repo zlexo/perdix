@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Fuzzes the archive reader (RFC 0009) with libFuzzer: bytes mutated from the
+# test archives go through Archive::from_bytes, names and read, with
+# UndefinedBehaviorSanitizer, the standard library's bounds checks, and a
+# check of every heap read: on Linux AddressSanitizer; on macOS, where it does
+# not run, Guard Malloc, which places each allocation against an unmapped
+# page, so a read even one byte past it crashes.
+#
+#   scripts/fuzz.sh [seconds]      180 by default
+#
+# It needs a configured debug build (the compile commands give each source's
+# flags) and a Clang that ships libFuzzer, which Apple's does not: on macOS,
+# brew install llvm. FUZZ_CXX names another; FUZZ_GUARD_MALLOC=0 leaves Guard
+# Malloc out, which runs faster and checks less. The corpus grows in
+# build/fuzz from run to run; an input that stops it is kept there as
+# crash-<hash>.
+
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+seconds=${1:-180}
+case "$seconds" in
+'' | *[!0-9]* | 0)
+    echo "fuzz: give a number of seconds above 0, not '$seconds'" >&2
+    exit 2
+    ;;
+esac
+out=build/fuzz
+mkdir -p "$out/corpus"
+
+guard_malloc=0
+case "$(uname -s)" in
+Darwin)
+    preset=mac-debug
+    llvm=$(brew --prefix llvm 2>/dev/null || true)
+    cxx=${FUZZ_CXX:-${llvm:-/opt/homebrew/opt/llvm}/bin/clang++}
+    install="brew install llvm"
+    # Apple's linker by its path: another ld earlier on PATH may not take
+    # LLVM's objects. libc++ checks bounds in its debug hardening mode.
+    link=(--ld-path=/usr/bin/ld)
+    checks=(-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG)
+    sanitizers=undefined
+    if [ "${FUZZ_GUARD_MALLOC:-1}" != 0 ]; then
+        guard_malloc=1
+        # Allocations end exactly at a page, so they are not aligned, and
+        # UBSan's alignment check would stop on every one.
+        checks+=(-fno-sanitize=alignment)
+    fi
+    ;;
+*)
+    preset=linux-clang
+    cxx=${FUZZ_CXX:-$(command -v clang++-18 || command -v clang++ || echo clang++)}
+    install="install Clang 18, or set FUZZ_CXX"
+    link=()
+    checks=(-D_GLIBCXX_ASSERTIONS)
+    sanitizers=address,undefined
+    ;;
+esac
+if [ ! -x "$(command -v "$cxx" || true)" ]; then
+    echo "fuzz: no Clang with libFuzzer at $cxx ($install)" >&2
+    exit 2
+fi
+database=build/$preset/compile_commands.json
+if [ ! -f "$database" ]; then
+    echo "fuzz: no $database: configure the $preset preset first" >&2
+    exit 2
+fi
+
+# The core sources the reader needs, each compiled with its own flags from the
+# compile commands, the compiler swapped and the fuzzer's coverage added.
+sanitize=(-g -O1 "-fsanitize=fuzzer-no-link,$sanitizers" -fno-sanitize-recover=all)
+python3 - "$cxx" "$database" "$root" "$out" "${sanitize[@]}" "${checks[@]}" <<'PY'
+import json, os, shlex, subprocess, sys
+cxx, database, root, out, *extra = sys.argv[1:]
+wanted = {os.path.join("engine", "core", "src", name)
+          for name in ("archive.cpp", "crc32.cpp", "stb_image.cpp")}
+root = os.path.realpath(root)
+done = set()
+for entry in json.load(open(database)):
+    path = os.path.relpath(os.path.realpath(os.path.join(entry["directory"], entry["file"])), root)
+    if path not in wanted:
+        continue
+    words = entry["arguments"] if "arguments" in entry else shlex.split(entry["command"])
+    command, skip = [cxx], False
+    for word in words[1:]:
+        if skip:
+            skip = False
+        elif word == "-o":
+            skip = True
+        elif word != "-c":
+            command.append(word)
+    target = os.path.join(root, out, os.path.basename(path) + ".o")
+    subprocess.run(command + extra + ["-c", "-o", target], cwd=entry["directory"], check=True)
+    done.add(path)
+if done != wanted:
+    sys.exit(f"fuzz: no compile commands for {sorted(wanted - done)}")
+PY
+"$cxx" -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Werror \
+    "${sanitize[@]}" "${checks[@]}" "-fsanitize=fuzzer,$sanitizers" -I engine/core/include \
+    tests/fuzz/archive_fuzz.cpp "$out"/archive.cpp.o "$out"/crc32.cpp.o "$out"/stb_image.cpp.o \
+    ${link[@]+"${link[@]}"} -o "$out/archive_fuzz"
+
+cp tests/core/archives/*.zip tests/fuzz/inputs/* "$out/corpus/"
+# The memory limit holds where AddressSanitizer counts allocations; the
+# resident limit holds everywhere.
+run=("$out/archive_fuzz" -max_total_time="$seconds" -malloc_limit_mb=64 -rss_limit_mb=1024
+    -print_final_stats=1 -artifact_prefix="$out/" "$out/corpus")
+if [ "$guard_malloc" = 1 ]; then
+    DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib MALLOC_STRICT_SIZE=1 "${run[@]}"
+else
+    "${run[@]}"
+fi

@@ -87,6 +87,17 @@ A capture shows each frame's steps as CPU zones, the GPU time of each frame and 
 
 For a glance without Tracy, in any build, F3 shows the overlay, and `--overlay` shows it from the start: graphs of the CPU's and the GPU's time over the last 240 frames, against the 0.5 ms budget, the startup report, the present mode switch, the camera's position and the validation count. Its CPU time is each frame's interval less the time the renderer waited on the GPU or the display, and its GPU time comes from the renderer's own timestamps, which span what Tracy's Frame zone does. Debug builds run with validation, which costs CPU time, so judge the CPU graph against the budget in `mac-profile` or `mac-release`.
 
+## Fuzzing
+
+Code that reads files from outside the project, such as the zip archives of RFC 0009, gets a libFuzzer target in `tests/fuzz/`. `scripts/fuzz.sh [seconds]` builds it from a configured debug build and runs it, seeded with the test archives, with UndefinedBehaviorSanitizer, the standard library's bounds checks, and a check of every heap read: AddressSanitizer on Linux, and on macOS, where it does not run, Guard Malloc, which crashes on a read even one byte past an allocation.
+
+```sh
+brew install llvm        # libFuzzer comes with LLVM's Clang, not Apple's
+scripts/fuzz.sh 300
+```
+
+An input that stops it is kept in `build/fuzz` as `crash-<hash>`. The bug gets a test that reproduces it, then its fix, in the pull request that brought the code, and the input joins `tests/fuzz/inputs/`, which every test build replays through the target.
+
 ## Code style
 
 Formatting is enforced by `clang-format` with the configuration in the repository root, at the version CI pins. Install the same release with `pipx install clang-format==22.1.8` and check that `clang-format --version` reports 22.1.8: other versions format the same file differently, and older ones, such as Homebrew's 14, reject the configuration. Static analysis runs `clang-tidy` with the repository's `.clang-tidy`, also pinned: `pipx install clang-tidy==22.1.8`, then `git ls-files 'engine/*.cpp' 'app/*.cpp' | xargs clang-tidy -p build/mac-debug` after configuring. It also checks naming. Naming, error handling and the rest of the conventions are set in RFC 0000.
