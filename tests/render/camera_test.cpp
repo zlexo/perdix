@@ -95,3 +95,18 @@ TEST_CASE("the pitch stops short of straight up and down, and the yaw wraps") {
     vx::render::fly(camera, {.pitch_turn = -20.0F}, 0.0F);
     CHECK(camera.pitch > -quarter_turn);
 }
+
+TEST_CASE("a roll leans the view: rolled a quarter turn left, the world's up is to the right") {
+    // Leaning left, counterclockwise as the camera sees it, the world turns
+    // clockwise in the view: its up points right.
+    const glm::vec4 up =
+        vx::render::view_rotation(0.0F, 0.0F, quarter_turn) * glm::vec4(0.0F, 1.0F, 0.0F, 0.0F);
+    CHECK(up.x == doctest::Approx(1.0F));
+    CHECK(up.y == doctest::Approx(0.0F));
+    // A roll of 0 is no roll at all, bit for bit.
+    CHECK(vx::render::view_rotation(0.4F, -0.3F, 0.0F) == vx::render::view_rotation(0.4F, -0.3F));
+    vx::render::Camera camera;
+    camera.roll = 0.2F;
+    CHECK(vx::render::view_projection(camera, 1.0F) !=
+          vx::render::view_projection(vx::render::Camera{}, 1.0F));
+}
