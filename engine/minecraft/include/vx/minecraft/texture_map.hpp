@@ -2,12 +2,14 @@
 
 #include <vx/core/diagnostic.hpp>
 #include <vx/world/block_file.hpp>
+#include <vx/world/block_registry.hpp>
 
 #include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <variant>
 #include <vector>
@@ -68,5 +70,15 @@ struct TextureMapLoad {
 // neither a name nor #rrggbb, and a name with characters other than a to z,
 // 0 to 9 and _.
 [[nodiscard]] TextureMapLoad load_texture_map(const SourceFile& file);
+
+// Checks a map against the textures a pack's blocks use, as the block
+// registry lists its layers, and adds a warning for each texture of the
+// map's namespace that blocks use and that has no key, which is then drawn
+// from its own file whatever is installed, and one at each key whose texture
+// no block uses, with a guess when the key is a near miss of a texture
+// without one. Textures of other namespaces are left to their own maps. The
+// warnings come in the order of the file, those on the whole file first.
+void check_texture_map(const TextureMap& map, std::span<const TextureRef> textures,
+                       std::vector<Diagnostic>& diagnostics);
 
 } // namespace vx::minecraft

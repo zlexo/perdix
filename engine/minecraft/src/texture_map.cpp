@@ -2,6 +2,7 @@
 
 #include <vx/core/diagnostic.hpp>
 #include <vx/world/block_file.hpp>
+#include <vx/world/block_registry.hpp>
 #include <vx/world/names.hpp>
 
 #include <toml++/toml.hpp>
@@ -11,7 +12,10 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -227,6 +231,51 @@ void Parser::read_tint(const toml::node& node, Layer& layer) {
 
 TextureMapLoad load_texture_map(const SourceFile& file) {
     return Parser(file).parse();
+}
+
+void check_texture_map(const TextureMap& map, std::span<const TextureRef> textures,
+                       std::vector<Diagnostic>& diagnostics) {
+    const std::string space = map.namespace_name + ':';
+    // The namespace's textures that blocks use, by their keys in the map,
+    // each with where it is first used. A texture turned more than one way
+    // is a layer for each turn; the first, the least turned, gives a place
+    // to look.
+    std::map<std::string_view, std::string_view, std::less<>> used;
+    for (const TextureRef& texture : textures) {
+        if (texture.name.starts_with(space)) {
+            used.try_emplace(std::string_view(texture.name).substr(space.size()),
+                             texture.first_use);
+        }
+    }
+    const auto warn = [&](SourcePlace place, std::string message) {
+        diagnostics.push_back({.severity = Severity::warning,
+                               .file = map.path,
+                               .line = place.line,
+                               .column = place.column,
+                               .message = std::move(message)});
+    };
+    // The textures without a key, which a key no block uses may have meant.
+    std::vector<std::string_view> keyless;
+    for (const auto& [name, use] : used) {
+        if (!map.textures.contains(name)) {
+            keyless.push_back(name);
+            warn(SourcePlace{}, space + std::string(name) +
+                                    " has no key, and is drawn from its own file (used at " +
+                                    std::string(use) + ")");
+        }
+    }
+    // The map holds its keys in name order; the warnings follow the file.
+    std::vector<std::pair<SourcePlace, std::string_view>> unused;
+    for (const auto& [name, texture] : map.textures) {
+        if (!used.contains(name)) {
+            unused.emplace_back(texture.place, name);
+        }
+    }
+    std::ranges::sort(unused);
+    for (const auto& [place, name] : unused) {
+        warn(place, "no block uses the texture " + space + std::string(name) +
+                        did_you_mean(name, keyless));
+    }
 }
 
 } // namespace vx::minecraft

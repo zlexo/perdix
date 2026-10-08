@@ -1,14 +1,17 @@
 #include <vx/core/diagnostic.hpp>
 #include <vx/minecraft/texture_map.hpp>
 #include <vx/world/block_file.hpp>
+#include <vx/world/block_registry.hpp>
 
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -79,6 +82,28 @@ std::optional<std::string> color_map(const Layer& layer) {
         return *name;
     }
     return std::nullopt;
+}
+
+// A layer of the block texture array, as the block registry lists them.
+vx::TextureRef array_layer(const std::string& name, const std::string& first_use,
+                           std::uint8_t quarter_turns = 0) {
+    return {.name = name,
+            .quarter_turns = quarter_turns,
+            .used_opaque = true,
+            .used_cutout = false,
+            .first_use = first_use};
+}
+
+// What checking a map against the layers says, formatted.
+std::vector<std::string> checked(const TextureMap& map, std::span<const vx::TextureRef> layers) {
+    std::vector<vx::Diagnostic> diagnostics;
+    vx::minecraft::check_texture_map(map, layers, diagnostics);
+    std::vector<std::string> messages;
+    for (const vx::Diagnostic& diagnostic : diagnostics) {
+        CHECK(diagnostic.severity == vx::Severity::warning);
+        messages.push_back(vx::format(diagnostic));
+    }
+    return messages;
 }
 
 } // namespace
@@ -246,10 +271,86 @@ mango = { texture = "Mango", shade = 1 }
             "assets/core/minecraft.toml:3:30: error: unknown key 'shade'"});
 }
 
+TEST_CASE("a map with a key for every texture blocks use, and no other, gives no warnings") {
+    const Read got = read(rfc_map);
+    REQUIRE(got.map.has_value());
+    // The core pack's layers: the checker, then each texture and turn.
+    const std::vector<vx::TextureRef> layers = {
+        array_layer("", ""),
+        array_layer("core:cobblestone", "assets/core/blocks/cobblestone.toml:2:7"),
+        array_layer("core:dirt", "assets/core/blocks/dirt.toml:2:7"),
+        array_layer("core:glass", "assets/core/blocks/glass.toml:3:7"),
+        array_layer("core:grass_side", "assets/core/blocks/grass.toml:2:8"),
+        array_layer("core:grass_top", "assets/core/blocks/grass.toml:3:7"),
+        array_layer("core:oak_leaves", "assets/core/blocks/oak_leaves.toml:4:7"),
+        array_layer("core:oak_log", "assets/core/blocks/oak_log.toml:5:8"),
+        array_layer("core:oak_log", "assets/core/blocks/oak_log.toml:5:8", 1),
+        array_layer("core:oak_log_top", "assets/core/blocks/oak_log.toml:6:7"),
+        array_layer("core:oak_log_top", "assets/core/blocks/oak_log.toml:6:7", 1),
+        array_layer("core:oak_planks", "assets/core/blocks/oak_planks.toml:2:7"),
+        array_layer("core:sand", "assets/core/blocks/sand.toml:2:7"),
+        array_layer("core:stone", "assets/core/blocks/stone.toml:2:7"),
+    };
+    CHECK(checked(*got.map, layers).empty());
+}
+
+TEST_CASE("a texture blocks use without a key is drawn from its own file, and says so") {
+    const Read got = read("stone = \"stone\"\n");
+    REQUIRE(got.map.has_value());
+    // Turned twice: one warning, at the least turned layer's first use.
+    const std::vector<vx::TextureRef> layers = {
+        array_layer("", ""),
+        array_layer("core:oak_log", "assets/core/blocks/oak_log.toml:5:8"),
+        array_layer("core:oak_log", "assets/core/blocks/oak_beam.toml:3:7", 1),
+        array_layer("core:stone", "assets/core/blocks/stone.toml:2:7"),
+    };
+    CHECK(checked(*got.map, layers) ==
+          std::vector<std::string>{
+              "assets/core/minecraft.toml: warning: core:oak_log has no key, and is drawn from "
+              "its own file (used at assets/core/blocks/oak_log.toml:5:8)"});
+}
+
+TEST_CASE("a key no block uses is a warning at the key, in the order of the file") {
+    const Read got = read("zinc = \"zinc\"\nstone = \"stone\"\napple = \"apple\"\n");
+    REQUIRE(got.map.has_value());
+    const std::vector<vx::TextureRef> layers = {
+        array_layer("", ""),
+        array_layer("core:stone", "assets/core/blocks/stone.toml:2:7"),
+    };
+    CHECK(checked(*got.map, layers) ==
+          std::vector<std::string>{
+              "assets/core/minecraft.toml:1:1: warning: no block uses the texture core:zinc",
+              "assets/core/minecraft.toml:3:1: warning: no block uses the texture core:apple"});
+}
+
+TEST_CASE("a map answers for its own namespace's textures, whichever blocks use them") {
+    const Read got = read("stone = \"stone\"\n", "assets/core/minecraft.toml");
+    REQUIRE(got.map.has_value());
+    // core:stone used by a block of another namespace is used; other:dirt
+    // and corelike:sand belong to maps of their own.
+    const std::vector<vx::TextureRef> layers = {
+        array_layer("", ""),
+        array_layer("core:stone", "assets/other/blocks/wall.toml:2:7"),
+        array_layer("corelike:sand", "assets/corelike/blocks/sand.toml:2:7"),
+        array_layer("other:dirt", "assets/other/blocks/dirt.toml:2:7"),
+    };
+    CHECK(checked(*got.map, layers).empty());
+    // And one whose keys name only another namespace's textures uses none.
+    const Read other = read("dirt = \"dirt\"\n", "assets/core/minecraft.toml");
+    REQUIRE(other.map.has_value());
+    CHECK(checked(*other.map, layers) ==
+          std::vector<std::string>{
+              "assets/core/minecraft.toml: warning: core:stone has no key, and is drawn from its "
+              "own file (used at assets/other/blocks/wall.toml:2:7)",
+              "assets/core/minecraft.toml:1:1: warning: no block uses the texture core:dirt"});
+}
+
 TEST_CASE("every file in the corpus of bad maps gives exactly the messages it expects") {
-    // RFC 0009's test plan: a bad file for each error, so every check is
-    // shown to fire. Each file ends in comments that give the path it stands
-    // for and every message it must give, in order.
+    // RFC 0009's test plan: a bad file for each error and each warning, so
+    // every check is shown to fire. Each file ends in comments that give the
+    // path it stands for, the textures its namespace's blocks use (each a
+    // layer, with where it is first used), and every message it must give,
+    // in order. A map is checked against those textures once it reads.
     std::vector<std::filesystem::path> files;
     for (const std::filesystem::directory_entry& entry :
          std::filesystem::directory_iterator(VX_BAD_MAPS_DIR)) {
@@ -265,17 +366,29 @@ TEST_CASE("every file in the corpus of bad maps gives exactly the messages it ex
         std::stringstream text;
         text << stream.rdbuf();
         std::string path;
+        std::vector<vx::TextureRef> layers = {array_layer("", "")};
         std::vector<std::string> expected;
         std::istringstream lines(text.str());
         for (std::string line; std::getline(lines, line);) {
             if (line.starts_with("# path: ")) {
                 path = line.substr(8);
+            } else if (line.starts_with("# uses: ")) {
+                const std::size_t at = line.find(" at ");
+                REQUIRE(at != std::string::npos);
+                layers.push_back(array_layer(line.substr(8, at - 8), line.substr(at + 4)));
             } else if (line.starts_with("# expect: ")) {
                 expected.push_back(line.substr(10));
             }
         }
-        const Read got = read(text.str(), path);
-        CHECK_FALSE(got.map.has_value());
+        Read got = read(text.str(), path);
+        if (got.map) {
+            const std::vector<std::string> warnings = checked(*got.map, layers);
+            got.messages.insert(got.messages.end(), warnings.begin(), warnings.end());
+        }
+        // A map comes back unless the file has an error.
+        CHECK(got.map.has_value() == std::ranges::none_of(expected, [](const std::string& message) {
+                  return message.find(": error: ") != std::string::npos;
+              }));
         CHECK_FALSE(expected.empty());
         CHECK(got.messages == expected);
     }
