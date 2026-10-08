@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <span>
 #include <utility>
 #include <vector>
@@ -52,6 +53,30 @@ std::pair<Axis, Axis> other_axes(Axis axis) noexcept {
 bool overlap(const Box& a, const Box& b, Axis axis) noexcept {
     return along(a.max, axis) - along(b.min, axis) > collision_tolerance &&
            along(b.max, axis) - along(a.min, axis) > collision_tolerance;
+}
+
+// The horizontal distance a motion covers, squared.
+double horizontal_squared(const Vec3d& v) noexcept {
+    return (v.x * v.x) + (v.z * v.z);
+}
+
+// The lowest height above `bottom` of a face of `obstacles` that is more than
+// `after` and at most `step_height`, leaving out `skip`; infinity if none is.
+double next_face(std::span<const Box> obstacles, double bottom, double after, double step_height,
+                 double skip) noexcept {
+    double next = std::numeric_limits<double>::infinity();
+    const auto consider = [&](double face) {
+        const double height = face - bottom;
+        if (height > after + collision_tolerance && height <= step_height + collision_tolerance &&
+            std::abs(height - skip) > collision_tolerance) {
+            next = std::min(next, height);
+        }
+    };
+    for (const Box& obstacle : obstacles) {
+        consider(obstacle.min.y);
+        consider(obstacle.max.y);
+    }
+    return next;
 }
 
 } // namespace
@@ -106,6 +131,35 @@ Move clip_move(const Box& box, Vec3d wanted, std::span<const Box> obstacles) noe
         motion.x = step(Axis::x);
     }
     return collided(wanted, motion);
+}
+
+Move clip_move_stepping(const Box& box, Vec3d wanted, bool started_on_ground, double step_height,
+                        std::span<const Box> obstacles) noexcept {
+    const Move plain = clip_move(box, wanted, obstacles);
+    if (!(step_height > 0.0) || !plain.horizontal_collision() ||
+        !(started_on_ground || plain.on_ground)) {
+        return plain;
+    }
+    // From where the box landed, if it did.
+    const double landed = plain.on_ground ? plain.motion.y : 0.0;
+    const Box base = moved(box, {.x = 0.0, .y = landed, .z = 0.0});
+    const double reached = plain.motion.y - landed;
+    const double plain_distance = horizontal_squared(plain.motion);
+    // Faces from the bottom up: 0 too, unless the plain move reached it.
+    double candidate = -2.0 * collision_tolerance;
+    while (true) {
+        candidate = next_face(obstacles, base.min.y, candidate, step_height, reached);
+        if (!std::isfinite(candidate)) {
+            return plain;
+        }
+        const Move raised =
+            clip_move(base, {.x = wanted.x, .y = candidate, .z = wanted.z}, obstacles);
+        if (horizontal_squared(raised.motion) > plain_distance) {
+            return collided(
+                wanted,
+                {.x = raised.motion.x, .y = landed + raised.motion.y, .z = raised.motion.z});
+        }
+    }
 }
 
 Move move_box(const Box& box, Vec3d wanted, const BlockBoxes& world, std::vector<Box>& scratch) {
