@@ -15,7 +15,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
 
 TEST_CASE("the fuzz target takes every test archive and every input fuzzing saved") {
     // Inputs that once stopped the fuzzer, each fixed since, in
-    // tests/fuzz/inputs, with the test archives the fuzzer starts from.
+    // tests/fuzz/inputs/archive, with the test archives the fuzzer starts from.
     std::size_t inputs = 0;
     for (const char* folder : {VX_ARCHIVES_DIR, VX_FUZZ_INPUTS_DIR}) {
         for (const std::filesystem::directory_entry& file :

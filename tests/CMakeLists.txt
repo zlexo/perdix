@@ -34,7 +34,7 @@ target_link_libraries(vx_core_tests PRIVATE vx::core doctest::doctest)
 # archive tests (RFC 0009).
 target_compile_definitions(vx_core_tests PRIVATE
     VX_ARCHIVES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/core/archives"
-    VX_FUZZ_INPUTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fuzz/inputs")
+    VX_FUZZ_INPUTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fuzz/inputs/archive")
 vx_target_warnings(vx_core_tests)
 doctest_discover_tests(vx_core_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 
