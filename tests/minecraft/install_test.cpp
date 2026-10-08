@@ -7,6 +7,9 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <chrono>
+#include <cstddef>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -593,4 +596,39 @@ TEST_CASE("without a path, a named version is looked for in the launcher's folde
     CHECK(path_of(find(query)) == jar_of(flathub, "26.2"));
     add_version(launcher, "26.2", release("2026-06-16T12:03:33+00:00"));
     CHECK(path_of(find(query)) == jar_of(launcher, "26.2"));
+}
+
+TEST_CASE("the player's own Minecraft is found, when asked") {
+    // A local check against the real game, never in CI: with the variable
+    // set, finding no jar fails the test.
+    if (std::getenv("VX_TEST_MINECRAFT") == nullptr) {
+        MESSAGE(
+            "skipped: VX_TEST_MINECRAFT is not set, so the player's Minecraft is not looked for");
+        return;
+    }
+    vx::minecraft::InstallQuery query;
+#ifdef _WIN32
+    const char* home = std::getenv("USERPROFILE");
+    if (const char* appdata = std::getenv("APPDATA")) {
+        query.appdata = fs::path(appdata);
+    }
+#else
+    const char* home = std::getenv("HOME");
+#endif
+    if (home != nullptr) {
+        query.home = home;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const Found found = find(query);
+    const auto took = std::chrono::steady_clock::now() - start;
+    for (const std::string& diagnostic : found.diagnostics) {
+        MESSAGE(diagnostic);
+    }
+    if (!found.install.has_value()) {
+        FAIL(found.install.error().message);
+    }
+    const vx::minecraft::Install& install = found.install.value();
+    MESSAGE("Minecraft ", install.version, " from ", utf8(install.path), ", ", install.jar.size(),
+            " entries, found and opened in ",
+            std::chrono::duration<double, std::milli>(took).count(), " ms");
 }
