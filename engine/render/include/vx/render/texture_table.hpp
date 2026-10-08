@@ -12,9 +12,12 @@ namespace vx::render {
 // RFC 0001's bindless textures: the one descriptor set every pipeline binds
 // as set 0. Binding 0 is an array of sampled images, partially bound, that
 // shaders index by the push constant's `texture`; binding 1 is a sampler with
-// nearest filtering, fixed in the layout. Textures are added before any frame
-// that uses the set is in flight: changing a set in use needs update-after-
-// bind, which the feature floor does not include.
+// nearest filtering, fixed in the layout. Binding 2 is RFC 0004's block
+// texture array, whose layers a quad selects as a third coordinate, and
+// binding 3 its sampler: linear, repeating and trilinear, fixed in the
+// layout too. Textures are added before any frame that uses the set is in
+// flight: changing a set in use needs update-after-bind, which the feature
+// floor does not include.
 class TextureTable {
 public:
     [[nodiscard]] static Result<TextureTable> create(const Device& device);
@@ -28,13 +31,18 @@ public:
     // Puts `view`, of an image in the layout shaders read, into the next
     // slot; the slot's index, for the push constant.
     [[nodiscard]] Result<std::uint32_t> add(VkImageView view);
+    // Puts `view`, of the block texture array in the layout shaders read,
+    // into binding 2, in place of any array before it.
+    void set_block_textures(VkImageView view);
 
     [[nodiscard]] VkDescriptorSetLayout layout() const noexcept { return layout_; }
     [[nodiscard]] VkDescriptorSet set() const noexcept { return set_; }
     [[nodiscard]] std::uint32_t size() const noexcept { return size_; }
     // 1024 slots, or fewer where the device's limits say so: MoltenVK allows
-    // 256 sampled images a shader stage.
+    // 256 sampled images a shader stage, one of them the block texture array.
     [[nodiscard]] std::uint32_t capacity() const noexcept { return capacity_; }
+    // The capacity a device with `limits` gets.
+    [[nodiscard]] static std::uint32_t capacity_for(const VkPhysicalDeviceLimits& limits) noexcept;
 
 private:
     TextureTable() = default;
@@ -42,6 +50,7 @@ private:
 
     VkDevice device_ = VK_NULL_HANDLE;
     VkSampler sampler_ = VK_NULL_HANDLE;
+    VkSampler block_sampler_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout layout_ = VK_NULL_HANDLE;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
     VkDescriptorSet set_ = VK_NULL_HANDLE; // freed with the pool

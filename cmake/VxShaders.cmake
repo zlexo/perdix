@@ -27,9 +27,11 @@ FetchContent_Declare(slang
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR sources-only)
 FetchContent_MakeAvailable(slang)
-find_program(VX_SLANGC slangc PATHS "${slang_SOURCE_DIR}/bin" NO_DEFAULT_PATH NO_CACHE REQUIRED)
-
-set(VX_EMBED_SPIRV "${CMAKE_CURRENT_LIST_DIR}/VxEmbedSpirv.cmake")
+find_program(vx_slangc slangc PATHS "${slang_SOURCE_DIR}/bin" NO_DEFAULT_PATH NO_CACHE REQUIRED)
+# A global property, not a variable: a variable set here is seen only in the
+# directory that included this file, and vx_add_shaders is called from
+# others too, where an empty compiler path compiled nothing without a word.
+set_property(GLOBAL PROPERTY VX_SLANGC "${vx_slangc}")
 
 # vx_add_shaders(<target> <source.slang>...)
 #
@@ -41,6 +43,8 @@ set(VX_EMBED_SPIRV "${CMAKE_CURRENT_LIST_DIR}/VxEmbedSpirv.cmake")
 # <vx/shaders/triangle.hpp>. A shader rebuilds when its source or anything it
 # imports changes.
 function(vx_add_shaders target)
+    get_property(slangc GLOBAL PROPERTY VX_SLANGC)
+    set(embed "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/VxEmbedSpirv.cmake")
     set(include_dir "${CMAKE_CURRENT_BINARY_DIR}/shaders/include")
     foreach(source IN LISTS ARGN)
         cmake_path(GET source STEM name)
@@ -55,7 +59,7 @@ function(vx_add_shaders target)
 
         add_custom_command(
             OUTPUT "${spirv}"
-            COMMAND "${VX_SLANGC}" "${source_path}" -target spirv -fvk-use-entrypoint-name
+            COMMAND "${slangc}" "${source_path}" -target spirv -fvk-use-entrypoint-name
                 -matrix-layout-column-major -warnings-as-errors all -depfile "${spirv}.d"
                 -o "${spirv}"
             DEPENDS "${source_path}"
@@ -65,8 +69,8 @@ function(vx_add_shaders target)
         add_custom_command(
             OUTPUT "${header}"
             COMMAND "${CMAKE_COMMAND}" "-DSPIRV=${spirv}" "-DHEADER=${header}" "-DNAME=${name}"
-                -P "${VX_EMBED_SPIRV}"
-            DEPENDS "${spirv}" "${VX_EMBED_SPIRV}"
+                -P "${embed}"
+            DEPENDS "${spirv}" "${embed}"
             COMMENT "Embedding shader ${name}"
             VERBATIM)
         target_sources(${target} PRIVATE "${header}")

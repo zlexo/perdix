@@ -2,8 +2,11 @@
 // Linux CI runs these on Mesa's lavapipe; on macOS, source the Vulkan SDK's
 // setup-env.sh first.
 
+#include "block_texture_probe.hpp"
+
 #include <vx/render/camera.hpp>
 #include <vx/render/renderer.hpp>
+#include <vx/render/texture_table.hpp>
 
 #include <doctest/doctest.h>
 #include <glm/ext/vector_double3.hpp>
@@ -84,6 +87,25 @@ std::size_t pixels_off(const std::vector<std::uint8_t>& pixels, std::uint32_t wi
 }
 
 } // namespace
+
+TEST_CASE("the renderer's set 0 holds the block texture array, the checker until the pack") {
+    vx::Result<vx::render::Renderer> renderer = headless_renderer();
+    INFO((renderer.has_value() ? std::string() : renderer.error().message));
+    REQUIRE(renderer.has_value());
+    const vx::render::TextureTable& textures = renderer.value().textures();
+    vx::Result<vx::test::BlockTextureProbe> probe =
+        vx::test::BlockTextureProbe::create(renderer.value().context().device(), textures.layout());
+    INFO((probe.has_value() ? std::string() : probe.error().message));
+    REQUIRE(probe.has_value());
+    // Layer 0's first level: magenta and black squares of 8 texels.
+    constexpr float texel = 1.0F / 16.0F;
+    CHECK(near(probe.value().sample(textures.set(), {.u = 0.5F * texel, .v = 0.5F * texel}),
+               {255, 0, 255, 255}));
+    CHECK(near(probe.value().sample(textures.set(), {.u = 8.5F * texel, .v = 0.5F * texel}),
+               {0, 0, 0, 255}));
+    CHECK(renderer.value().context().instance().validation_counts().errors == 0);
+    CHECK(renderer.value().context().instance().validation_counts().warnings == 0);
+}
 
 TEST_CASE("the sky shows around a cube, in the color it was given") {
     vx::Result<vx::render::Renderer> created = headless_renderer();

@@ -124,6 +124,9 @@ public:
     [[nodiscard]] const FrameTimes& frame_times() const noexcept { return times_; }
 
     [[nodiscard]] const Context& context() const noexcept { return context_; }
+    // Set 0, for whatever else draws with it: tools and tests now, and the
+    // chunk renderer (RFC 0007).
+    [[nodiscard]] const TextureTable& textures() const noexcept { return textures_; }
     // Null when headless.
     [[nodiscard]] const Swapchain* swapchain() const noexcept {
         return swapchain_.has_value() ? &swapchain_.value() : nullptr;
@@ -140,10 +143,10 @@ private:
     };
 
     Renderer(Context context, std::optional<Swapchain> swapchain, std::optional<Image> offscreen,
-             Image depth, TextureTable textures, Cube cube, Extent framebuffer,
-             PresentMode present_mode);
+             Image depth, TextureTable textures, Image block_textures, Cube cube,
+             Extent framebuffer, PresentMode present_mode);
     [[nodiscard]] Result<void> create_frame_objects();
-    [[nodiscard]] Result<void> upload_cube();
+    [[nodiscard]] Result<void> upload_at_startup();
     [[nodiscard]] Result<void> add_rendered_semaphores();
     [[nodiscard]] Result<void> recreate_target();
     [[nodiscard]] Result<void> start_overlay(ImGuiContext* overlay);
@@ -154,6 +157,9 @@ private:
     std::optional<Image> offscreen_;
     Image depth_;           // beside either target, the size of its images
     TextureTable textures_; // RFC 0001's one global descriptor set
+    // RFC 0004's block texture array, in the set's binding 2: the checker
+    // alone until the core pack brings block textures.
+    Image block_textures_;
     Cube cube_;
     Extent framebuffer_;
     Extent target_framebuffer_; // the size the target was made for

@@ -50,6 +50,7 @@ add_executable(vx_render_tests
     render/feature_floor_test.cpp
     render/projection_test.cpp
     render/swapchain_choice_test.cpp
+    render/texture_table_capacity_test.cpp
     render/timestamp_test.cpp)
 target_link_libraries(vx_render_tests PRIVATE vx::render doctest::doctest)
 # Block texture files for RFC 0004's texture tests, laid out as a pack:
@@ -82,6 +83,8 @@ add_executable(vx_render_vulkan_tests
     render/texture_table_test.cpp
     render/upload_test.cpp)
 target_link_libraries(vx_render_vulkan_tests PRIVATE vx::render doctest::doctest)
+# A shader that samples the block texture array through set 0, for its tests.
+vx_add_shaders(vx_render_vulkan_tests render/shaders/block_texture_probe.slang)
 # The block texture test files, for the array's readback test.
 target_compile_definitions(vx_render_vulkan_tests PRIVATE VX_BLOCK_TEXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/render/block_textures")
 vx_target_warnings(vx_render_vulkan_tests)

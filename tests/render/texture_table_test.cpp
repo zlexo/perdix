@@ -2,22 +2,81 @@
 // Linux CI runs these on Mesa's lavapipe; on macOS, source the Vulkan SDK's
 // setup-env.sh first.
 
+#include "block_texture_probe.hpp"
+#include "one_shot.hpp"
+
+#include <vx/render/block_texture_array.hpp>
+#include <vx/render/block_textures.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/image.hpp>
 #include <vx/render/pipeline.hpp>
 #include <vx/render/texture_table.hpp>
+#include <vx/render/upload.hpp>
 #include <vx/shaders/triangle.hpp>
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <initializer_list>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
 vx::Result<vx::render::Context> create_context() {
     return vx::render::Context::create({.surface = std::nullopt, .validation = true});
+}
+
+using Pixel = std::array<std::uint8_t, 4>;
+
+// Within one step in every channel, a margin for how drivers round while
+// encoding to sRGB.
+bool near(const Pixel& pixel, const Pixel& expected) {
+    for (std::size_t channel = 0; channel < 4; ++channel) {
+        if (std::abs(int{pixel.at(channel)} - int{expected.at(channel)}) > 1) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Two layers, laid out as upload_image takes them, made for telling
+// filtering modes apart. Layer 0: levels 0 and 1 checkers of single white
+// and black texels, the other levels white. Layer 1: level 0 black, level 1
+// white, the others a dark red stored as sRGB 128, which reads back as 128
+// only if the array is sampled as sRGB: read as UNORM, it would be light
+// 0.5 and come out as 188.
+std::vector<std::byte> probe_layers() {
+    constexpr std::size_t layers = 2;
+    std::vector<std::byte> bytes(layers * vx::render::block_texture_layer_bytes);
+    for (std::size_t level = 0; level < 5; ++level) {
+        const std::size_t side = std::size_t{16} >> level;
+        for (std::size_t layer = 0; layer < layers; ++layer) {
+            for (std::size_t texel = 0; texel < side * side; ++texel) {
+                Pixel color{255, 255, 255, 255};
+                if (layer == 0 && level <= 1 && (texel % side + texel / side) % 2 == 1) {
+                    color = {0, 0, 0, 255};
+                } else if (layer == 1 && level == 0) {
+                    color = {0, 0, 0, 255};
+                } else if (layer == 1 && level >= 2) {
+                    color = {128, 0, 0, 255};
+                }
+                const std::size_t at =
+                    4 * ((layers * vx::render::block_texture_level_start.at(level)) +
+                         (layer * side * side) + texel);
+                for (std::size_t channel = 0; channel < 4; ++channel) {
+                    bytes.at(at + channel) = std::byte{color.at(channel)};
+                }
+            }
+        }
+    }
+    return bytes;
 }
 
 vx::Result<vx::render::Image> texture(const vx::render::Device& device) {
@@ -73,6 +132,115 @@ TEST_CASE("a full texture table says so, rather than writing past its end") {
     CHECK(beyond.error().message ==
           "the texture table is full, at " + std::to_string(capacity) + " textures");
     CHECK(created.value().instance().validation_counts().errors == 0);
+}
+
+TEST_CASE("set 0 samples the block texture array given to it, and a new one in its place") {
+    vx::Result<vx::render::Context> created = create_context();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    const vx::render::Device& device = created.value().device();
+    vx::Result<vx::render::TextureTable> table = vx::render::TextureTable::create(device);
+    REQUIRE(table.has_value());
+    // The array counts against the stage's sampled images, beside the slots.
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(device.physical_device(), &properties);
+    CHECK(table.value().capacity() + 1 <= properties.limits.maxPerStageDescriptorSampledImages);
+
+    // Two arrays: one layer of gray, stored as sRGB 128, then three layers
+    // of which the last is white. A one-layer array's view is an array too,
+    // as the probe's shader declares it.
+    std::vector<vx::render::Image> arrays;
+    vx::render::UploadContext uploads(device);
+    vx::test::OneShot shot(device);
+    for (const std::uint32_t layers : {1U, 3U}) {
+        vx::Result<vx::render::Image> array =
+            vx::render::create_block_texture_array(device, layers);
+        REQUIRE(array.has_value());
+        std::vector<std::byte> bytes(layers * vx::render::block_texture_layer_bytes,
+                                     layers == 1 ? std::byte{128} : std::byte{0});
+        if (layers == 3) {
+            // Layer 2 of every level white: level by level, the last layer
+            // ends each level's run.
+            for (std::size_t level = 0; level < 5; ++level) {
+                const std::size_t texels = (std::size_t{16} >> level) * (std::size_t{16} >> level);
+                const std::size_t start =
+                    4 * ((layers * vx::render::block_texture_level_start.at(level)) + (2 * texels));
+                std::fill_n(bytes.begin() + static_cast<std::ptrdiff_t>(start), 4 * texels,
+                            std::byte{255});
+            }
+        }
+        REQUIRE(
+            vx::render::upload_image(uploads, shot.commands(), array.value(), bytes).has_value());
+        arrays.push_back(std::move(array).value());
+    }
+    shot.submit_and_wait();
+    vx::Result<vx::test::BlockTextureProbe> probe =
+        vx::test::BlockTextureProbe::create(device, table.value().layout());
+    INFO((probe.has_value() ? std::string() : probe.error().message));
+    REQUIRE(probe.has_value());
+
+    table.value().set_block_textures(arrays[0].view());
+    CHECK(near(probe.value().sample(table.value().set(), {.u = 0.5F, .v = 0.5F}),
+               {128, 128, 128, 128}));
+    // The new array replaces the first: its layer 2 is white, where the
+    // first array, holding one layer, would give its gray.
+    table.value().set_block_textures(arrays[1].view());
+    CHECK(near(probe.value().sample(table.value().set(), {.u = 0.5F, .v = 0.5F, .layer = 2.0F}),
+               {255, 255, 255, 255}));
+    CHECK(created.value().instance().validation_counts().errors == 0);
+    CHECK(created.value().instance().validation_counts().warnings == 0);
+}
+
+TEST_CASE("binding 3 samples the array linearly between texels and levels, and repeats") {
+    vx::Result<vx::render::Context> created = create_context();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    const vx::render::Device& device = created.value().device();
+    vx::Result<vx::render::TextureTable> table = vx::render::TextureTable::create(device);
+    REQUIRE(table.has_value());
+    vx::Result<vx::render::Image> array = vx::render::create_block_texture_array(device, 2);
+    REQUIRE(array.has_value());
+    {
+        vx::render::UploadContext uploads(device);
+        vx::test::OneShot shot(device);
+        REQUIRE(vx::render::upload_image(uploads, shot.commands(), array.value(), probe_layers())
+                    .has_value());
+        shot.submit_and_wait();
+    }
+    table.value().set_block_textures(array.value().view());
+    vx::Result<vx::test::BlockTextureProbe> probe =
+        vx::test::BlockTextureProbe::create(device, table.value().layout());
+    INFO((probe.has_value() ? std::string() : probe.error().message));
+    REQUIRE(probe.has_value());
+    const auto at = [&](float u, float v, float layer, float level) {
+        return probe.value().sample(table.value().set(),
+                                    {.u = u, .v = v, .layer = layer, .level = level});
+    };
+    constexpr Pixel white = {255, 255, 255, 255};
+    constexpr Pixel black = {0, 0, 0, 255};
+    // Half white and half black in linear light, which sRGB stores as 188.
+    constexpr Pixel half = {188, 188, 188, 255};
+    constexpr float texel = 1.0F / 16.0F;
+
+    // At a texel's center, that texel; on the edge between two, both. At
+    // level 0 that is the magnification filter.
+    CHECK(near(at(0.5F * texel, 0.5F * texel, 0.0F, 0.0F), white));
+    CHECK(near(at(1.5F * texel, 0.5F * texel, 0.0F, 0.0F), black));
+    CHECK(near(at(1.0F * texel, 0.5F * texel, 0.0F, 0.0F), half));
+    // At level 1 alone the minification filter, the one distant ground
+    // uses: on the edge between two of level 1's texels, both again.
+    CHECK(near(at(2.0F * texel, 1.0F * texel, 0.0F, 1.0F), half));
+    // Past the right edge, the left one again, and past the bottom, the top:
+    // clamping would read texel 15 of the row or the column, which is black.
+    CHECK(near(at(1.0F + (0.5F * texel), 0.5F * texel, 0.0F, 0.0F), white));
+    CHECK(near(at(0.5F * texel, 1.0F + (0.5F * texel), 0.0F, 0.0F), white));
+    // Halfway between level 0, black, and level 1, white; then each layer's
+    // level 2, layer 1's dark red read back as stored, so as sRGB.
+    CHECK(near(at(0.5F, 0.5F, 1.0F, 0.5F), half));
+    CHECK(near(at(0.5F, 0.5F, 1.0F, 2.0F), {128, 0, 0, 255}));
+    CHECK(near(at(0.5F, 0.5F, 0.0F, 2.0F), white));
+    CHECK(created.value().instance().validation_counts().errors == 0);
+    CHECK(created.value().instance().validation_counts().warnings == 0);
 }
 
 TEST_CASE("a pipeline takes the texture table as its set 0") {
