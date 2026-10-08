@@ -91,9 +91,11 @@ TEST_CASE("sprinting from rest tops out at 5.612 blocks a second") {
 
 TEST_CASE("sneaking from rest tops out at 1.295 blocks a second") {
     const vx::test::FlatWorld world;
+    // Crouched from the start, with Shift held to stay so.
     vx::Player player = at_rest();
     player.pose = vx::Pose::crouching;
-    const std::vector<double> moved = run_along_z(player, forward, 100, world);
+    const std::vector<double> moved =
+        run_along_z(player, {.forward = true, .sneak = true}, 100, world);
     check_vector(moved, {0.029400, 0.045452, 0.054217, 0.059002, 0.061615, 0.063042, 0.063821,
                          0.064246, 0.064478, 0.064605, 0.064674, 0.064712});
     CHECK(moved.back() == doctest::Approx(0.064758).epsilon(tolerance));
@@ -107,12 +109,14 @@ TEST_CASE("a diagonal is 2% faster walking and 41% faster sneaking, as in the ga
     const auto top_speed = [&](vx::Pose pose) {
         vx::Player player = at_rest();
         player.pose = pose;
+        const bool crouching = pose == vx::Pose::crouching;
         std::vector<Box> scratch;
         Vec3d before;
         for (int i = 0; i < 100; ++i) {
             before = player.position;
-            vx::tick(player, {.held = {.forward = true, .left = true}, .yaw = 0.0F}, world, numbers,
-                     scratch);
+            vx::tick(player,
+                     {.held = {.forward = true, .left = true, .sneak = crouching}, .yaw = 0.0F},
+                     world, numbers, scratch);
         }
         const Vec3d last = player.position - before;
         return std::hypot(last.x, last.z);

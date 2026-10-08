@@ -86,6 +86,26 @@ bool grazed(Vec3d wished, Vec3d moved, double degrees) {
     return cosine > std::cos(degrees * std::numbers::pi / 180.0);
 }
 
+// The pose for the next tick (RFC 0010): crouching while Shift is held, or
+// where the standing box does not fit and the crouching one does, as under
+// a ceiling lower than 1.8; standing otherwise. A position that is not
+// finite has no blocks around it, and the world is not asked, as for a move.
+Pose next_pose(Vec3d position, bool sneak, const BlockBoxes& world, std::vector<Box>& scratch) {
+    if (sneak) {
+        return Pose::crouching;
+    }
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) {
+        return Pose::standing;
+    }
+    const auto fits = [&](Pose pose) {
+        const Box box = body_box(position, pose);
+        scratch.clear();
+        world.collect(box, scratch);
+        return !overlaps_any(box, scratch);
+    };
+    return !fits(Pose::standing) && fits(Pose::crouching) ? Pose::crouching : Pose::standing;
+}
+
 } // namespace
 
 Box body_box(Vec3d position, Pose pose) noexcept {
@@ -95,6 +115,10 @@ Box body_box(Vec3d position, Pose pose) noexcept {
             .max = {.x = position.x + half_width,
                     .y = position.y + height,
                     .z = position.z + half_width}};
+}
+
+double eye_height(Pose pose) noexcept {
+    return pose == Pose::crouching ? 1.27 : 1.62;
 }
 
 double ground_acceleration(double slipperiness, bool sprinting,
@@ -165,11 +189,12 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
     const Vec3d wished = (facing * keys.forward) + (left * keys.strafe);
     velocity = velocity + (wished * acceleration);
 
-    // The move, with step-up; what a block cut short stops.
+    // The move, with step-up, held back at an edge while Shift is held; what
+    // a block cut short stops.
     const Move move = move_box(body_box(player.position, player.pose), velocity, world, scratch,
                                {.step_height = numbers.step_height,
                                 .started_on_ground = started_on_ground,
-                                .edge_drop = 0.0});
+                                .edge_drop = input.held.sneak ? numbers.step_height : 0.0});
     player.position = player.position + move.motion;
     if (move.x_collision) {
         velocity.x = 0.0;
@@ -191,6 +216,7 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
     velocity.x *= drag;
     velocity.z *= drag;
 
+    player.pose = next_pose(player.position, input.held.sneak, world, scratch);
     player.last_held = input.held;
 }
 

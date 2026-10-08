@@ -23,6 +23,7 @@ add_executable(vx_bench
     render/block_textures_bench.cpp
     world/block_registry_bench.cpp
     world/chunk_storage_bench.cpp
+    world/movement_bench.cpp
     world/packed_array_bench.cpp)
 target_link_libraries(vx_bench PRIVATE vx::world vx::mesh vx::render vx_nanobench)
 # The leaves of the texture tests, copied 1,000 times into a pack.
