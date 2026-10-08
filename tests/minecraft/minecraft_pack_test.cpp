@@ -1,5 +1,6 @@
 #include "../core/png_bytes.hpp"
 #include "../core/zip_bytes.hpp"
+#include "player_minecraft.hpp"
 
 #include <vx/core/diagnostic.hpp>
 #include <vx/core/file.hpp>
@@ -12,10 +13,13 @@
 #include <vx/world/block_registry.hpp>
 
 #include <doctest/doctest.h>
+#include <stb_image.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -28,6 +32,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -349,4 +354,113 @@ TEST_CASE("a jar missing one texture leaves it to the core pack's own file, and 
         }
     }
     CHECK(found);
+}
+
+namespace {
+
+// An image of the player's jar, decoded apart from make_textures, by stb_image
+// straight, as RGBA8 of any size.
+struct Decoded {
+    int width = 0;
+    int height = 0;
+    std::vector<std::uint8_t> rgba;
+};
+
+Decoded decode_entry(const vx::Archive& jar, const std::string& entry) {
+    const vx::Result<std::vector<std::byte>> bytes = jar.read(entry);
+    REQUIRE_MESSAGE(bytes.has_value(), entry);
+    Decoded image;
+    int channels = 0;
+    stbi_uc* const pixels = stbi_load_from_memory(
+        reinterpret_cast<const stbi_uc*>(bytes.value().data()),
+        static_cast<int>(bytes.value().size()), &image.width, &image.height, &channels, 4);
+    REQUIRE_MESSAGE(pixels != nullptr, entry);
+    image.rgba.assign(pixels, pixels + (static_cast<std::size_t>(image.width) *
+                                        static_cast<std::size_t>(image.height) * 4));
+    stbi_image_free(pixels);
+    return image;
+}
+
+// A 16 by 16 texture of the jar as texels.
+BlockImage block_texture(const vx::Archive& jar, const std::string& name) {
+    const Decoded image = decode_entry(jar, "assets/minecraft/textures/block/" + name + ".png");
+    REQUIRE(image.width == 16);
+    REQUIRE(image.height == 16);
+    BlockImage texels{};
+    std::memcpy(texels.data(), image.rgba.data(), sizeof(texels));
+    return texels;
+}
+
+// A color map's texel at plains, (50, 173), as RFC 0009 works it out.
+Texel plains(const vx::Archive& jar, const std::string& color_map) {
+    const Decoded image =
+        decode_entry(jar, "assets/minecraft/textures/colormap/" + color_map + ".png");
+    REQUIRE(image.width == 256);
+    REQUIRE(image.height == 256);
+    const std::size_t at = 4 * ((173 * 256) + 50);
+    return {.r = image.rgba[at], .g = image.rgba[at + 1], .b = image.rgba[at + 2], .a = 255};
+}
+
+} // namespace
+
+TEST_CASE("the core pack draws with the player's own Minecraft, when asked") {
+    // RFC 0009's local check against the real game, never in CI: with the
+    // variable set, finding no jar fails the test.
+    if (!vx::test::player_minecraft_asked()) {
+        MESSAGE(vx::test::not_asked);
+        return;
+    }
+    const vx::minecraft::InstallQuery query = vx::test::player_query();
+    std::vector<vx::Diagnostic> diagnostics;
+    const vx::Result<vx::minecraft::Install> install =
+        vx::minecraft::find_install(query, diagnostics);
+    if (!install.has_value()) {
+        FAIL(install.error().message);
+    }
+    const vx::Archive& jar = install.value().jar;
+    vx::minecraft::TextureMapsLoad maps = vx::minecraft::load_texture_maps(VX_SHIPPED_PACK_DIR);
+    REQUIRE(maps.maps.size() == 1);
+    const vx::minecraft::TextureMap& map = maps.maps[0];
+    const auto start = std::chrono::steady_clock::now();
+    const std::vector<vx::MadeTexture> made =
+        vx::minecraft::make_textures(jar, install.value().version, map, diagnostics);
+    const auto took = std::chrono::steady_clock::now() - start;
+    INFO(listed(diagnostics));
+    CHECK(diagnostics.empty());
+    CHECK(made.size() == map.textures.size()); // 11 of 11
+
+    // Every texture worked out apart: each layer decoded by stb_image straight,
+    // tinted in floating point, and drawn over the one below where it passes
+    // the alpha test. The grass top and the leaves come out the color maps'
+    // texels at (50, 173); the grass side, its side file with the tinted
+    // overlay over it.
+    const Texel grass = plains(jar, "grass");
+    const Texel foliage = plains(jar, "foliage");
+    for (const vx::MadeTexture& texture : made) {
+        INFO(texture.name);
+        const std::string key = texture.name.substr(texture.name.find(':') + 1);
+        const auto& layers = map.textures.at(key).layers;
+        BlockImage expected{};
+        for (std::size_t index = 0; index < layers.size(); ++index) {
+            BlockImage layer = block_texture(jar, layers[index].texture);
+            if (const auto* const color_map = std::get_if<std::string>(&layers[index].tint)) {
+                const Texel color = plains(jar, *color_map);
+                for (Texel& texel : layer) {
+                    texel = tinted_by_hand(texel, color);
+                }
+            }
+            for (std::size_t texel = 0; texel < layer.size(); ++texel) {
+                if (index == 0 || layer[texel].a >= 128) {
+                    expected[texel] = layer[texel];
+                }
+            }
+        }
+        BlockImage actual{};
+        std::memcpy(actual.data(), texture.rgba.data(), sizeof(actual));
+        CHECK(actual == expected);
+    }
+    MESSAGE("Minecraft ", install.value().version, ": ", made.size(), " of ", map.textures.size(),
+            " core textures made in ", std::chrono::duration<double, std::milli>(took).count(),
+            " ms; plains grass ", int{grass.r}, " ", int{grass.g}, " ", int{grass.b}, ", foliage ",
+            int{foliage.r}, " ", int{foliage.g}, " ", int{foliage.b});
 }

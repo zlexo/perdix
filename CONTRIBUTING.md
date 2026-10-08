@@ -55,6 +55,7 @@ Scopes follow the source layout (`core`, `world`, `mesh`, `render`, `app`), plus
 - Fill in the template: what, why, how it was tested, and before and after numbers for anything on a hot path. Visual changes include a screenshot or a short clip.
 - CI must be green: build, tests, formatting and, once rendering exists, zero Vulkan validation errors.
 - Before pushing, run `scripts/ci-local.sh`. It runs every CI check this machine can run, with CI's pinned tool versions, and names the Linux jobs it cannot stand in for. Its header says how to install the pinned clang-format and clang-tidy.
+- With Minecraft installed, `VX_TEST_MINECRAFT=1` makes the minecraft tests check against your own game: the version found, and the core pack's textures made from it, each against the game's files. CI never has the game, so these are reported skipped there; with the variable set and no game found, they fail.
 - Pull requests are merged with a merge commit, never squashed, so the small commits stay in history and `git log --first-parent` reads as a list of pull requests.
 
 ## Performance claims

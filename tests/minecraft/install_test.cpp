@@ -1,4 +1,5 @@
 #include "../core/zip_bytes.hpp"
+#include "player_minecraft.hpp"
 
 #include <vx/core/diagnostic.hpp>
 #include <vx/core/result.hpp>
@@ -601,23 +602,11 @@ TEST_CASE("without a path, a named version is looked for in the launcher's folde
 TEST_CASE("the player's own Minecraft is found, when asked") {
     // A local check against the real game, never in CI: with the variable
     // set, finding no jar fails the test.
-    if (std::getenv("VX_TEST_MINECRAFT") == nullptr) {
-        MESSAGE(
-            "skipped: VX_TEST_MINECRAFT is not set, so the player's Minecraft is not looked for");
+    if (!vx::test::player_minecraft_asked()) {
+        MESSAGE(vx::test::not_asked);
         return;
     }
-    vx::minecraft::InstallQuery query;
-#ifdef _WIN32
-    const char* home = std::getenv("USERPROFILE");
-    if (const char* appdata = std::getenv("APPDATA")) {
-        query.appdata = fs::path(appdata);
-    }
-#else
-    const char* home = std::getenv("HOME");
-#endif
-    if (home != nullptr) {
-        query.home = home;
-    }
+    const vx::minecraft::InstallQuery query = vx::test::player_query();
     const auto start = std::chrono::steady_clock::now();
     const Found found = find(query);
     const auto took = std::chrono::steady_clock::now() - start;
