@@ -155,6 +155,7 @@ add_executable(vx_minecraft_tests
     minecraft/minecraft_pack_test.cpp
     minecraft/shipped_map_test.cpp
     minecraft/texture_map_test.cpp
+    minecraft/texture_maps_test.cpp
     minecraft/version_description_fuzz_test.cpp
     minecraft/version_description_test.cpp
     fuzz/version_description_fuzz.cpp)
