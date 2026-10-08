@@ -16,15 +16,17 @@ struct ChunkPush {
     float3 origin;            // offset 80: the chunk's lowest corner, from the camera's block
     float occlusion_strength; // offset 92: 0 leaves corners lit, 1 darkens them fully
     float3 camera_fraction;   // offset 96: the camera's place within its block
-    uint padding;             // offset 108
+    uint filter;              // offset 108: 0 sharpened, 1 sharpened without anisotropy, 2 nearest
 };
 
 [[vk::push_constant]] ConstantBuffer<ChunkPush> push;
 
-// Set 0 (RFC 0001, RFC 0004): the texture table's nearest sampler and the
-// block texture array.
+// Set 0 (RFC 0001, RFC 0004): the texture table's nearest sampler, the block
+// texture array, and its linear samplers, anisotropic and not.
 [[vk::binding(1, 0)]] SamplerState nearest;
 [[vk::binding(2, 0)]] Texture2DArray blocks;
+[[vk::binding(3, 0)]] SamplerState linear_anisotropic;
+[[vk::binding(4, 0)]] SamplerState linear;
 
 struct Varyings {
     float4 position : SV_Position;
@@ -102,9 +104,29 @@ Varyings vertex_main(uint vertex_index : SV_VulkanVertexID) {
     return out;
 }
 
+// A block texture's color at `uv` (RFC 0004). Sharpened: inside a texel,
+// its center; within half a pixel of a texel's edge, a blend across it, so up
+// close texels are crisp without crawling at their edges. Where texels are
+// smaller than pixels the coordinate is left alone, and mipmaps and
+// anisotropic filtering do the work, chosen by the true derivatives. Nearest
+// is the classic look, a toggle.
+float4 block_color(float3 uv) {
+    if (push.filter == 2u) {
+        return blocks.Sample(nearest, uv);
+    }
+    const float2 t = uv.xy * 16.0; // in texels
+    const float2 seam = floor(t + 0.5);
+    const float2 sharp = seam + clamp((t - seam) / clamp(fwidth(t), 1e-6, 1.0), -0.5, 0.5);
+    const float3 at = float3(sharp / 16.0, uv.z);
+    if (push.filter == 0u) {
+        return blocks.SampleGrad(linear_anisotropic, at, ddx(uv.xy), ddy(uv.xy));
+    }
+    return blocks.SampleGrad(linear, at, ddx(uv.xy), ddy(uv.xy));
+}
+
 [shader("fragment")]
 float4 fragment_opaque(Varyings in) : SV_Target {
-    const float4 color = blocks.Sample(nearest, in.uv);
+    const float4 color = block_color(in.uv);
     return float4(color.rgb * in.light, 1.0);
 }
 
@@ -113,7 +135,7 @@ float4 fragment_opaque(Varyings in) : SV_Target {
 // behind fragments that may be discarded.
 [shader("fragment")]
 float4 fragment_cutout(Varyings in) : SV_Target {
-    const float4 color = blocks.Sample(nearest, in.uv);
+    const float4 color = block_color(in.uv);
     if (color.a < 0.5) {
         discard;
     }

@@ -17,6 +17,21 @@ constexpr std::uint32_t wanted_capacity = 1024;
 // messages and GPU captures name them.
 constexpr std::string_view debug_name = "texture table";
 constexpr std::string_view block_sampler_name = "block texture sampler";
+constexpr std::string_view block_plain_sampler_name = "block texture sampler, no anisotropy";
+// The most samples anisotropic filtering takes along a footprint, where the
+// device allows that many (RFC 0004, open question 3: set by measurement).
+constexpr float block_max_anisotropy = 16.0F;
+
+// Makes `sampler` from `info`, named `name`.
+Result<void> make_sampler(VkDevice device, const VkSamplerCreateInfo& info, std::string_view name,
+                          VkSampler& sampler) {
+    if (const VkResult result = vkCreateSampler(device, &info, nullptr, &sampler);
+        result != VK_SUCCESS) {
+        return Error{"vkCreateSampler failed: " + vk_result_name(result)};
+    }
+    set_debug_name(device, sampler, name);
+    return {};
+}
 
 } // namespace
 
@@ -59,26 +74,37 @@ Result<TextureTable> TextureTable::create(const Device& device) {
         .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
         .unnormalizedCoordinates = VK_FALSE,
     };
-    if (const VkResult result =
-            vkCreateSampler(table.device_, &sampler_info, nullptr, &table.sampler_);
-        result != VK_SUCCESS) {
-        return Error{"vkCreateSampler failed: " + vk_result_name(result)};
+    if (const Result<void> made =
+            make_sampler(table.device_, sampler_info, debug_name, table.sampler_);
+        !made.has_value()) {
+        return made.error();
     }
-    set_debug_name(table.device_, table.sampler_, debug_name);
 
     // RFC 0004's block textures: linear filtering between texels and between
-    // mip levels, repeating, as merged quads repeat a texture. Anisotropic
-    // filtering and the sharpened coordinate come with item 8.
+    // mip levels, repeating, as merged quads repeat a texture; binding 4
+    // stays so, and binding 3 adds anisotropic filtering where the device
+    // offers it.
     VkSamplerCreateInfo block_sampler_info = sampler_info;
     block_sampler_info.magFilter = VK_FILTER_LINEAR;
     block_sampler_info.minFilter = VK_FILTER_LINEAR;
     block_sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    if (const VkResult result =
-            vkCreateSampler(table.device_, &block_sampler_info, nullptr, &table.block_sampler_);
-        result != VK_SUCCESS) {
-        return Error{"vkCreateSampler failed: " + vk_result_name(result)};
+    if (const Result<void> made =
+            make_sampler(table.device_, block_sampler_info, block_plain_sampler_name,
+                         table.block_plain_sampler_);
+        !made.has_value()) {
+        return made.error();
     }
-    set_debug_name(table.device_, table.block_sampler_, block_sampler_name);
+    if (device.optional().sampler_anisotropy) {
+        block_sampler_info.anisotropyEnable = VK_TRUE;
+        block_sampler_info.maxAnisotropy =
+            std::min(block_max_anisotropy, properties.limits.maxSamplerAnisotropy);
+        table.block_anisotropy_ = block_sampler_info.maxAnisotropy;
+    }
+    if (const Result<void> made = make_sampler(table.device_, block_sampler_info,
+                                               block_sampler_name, table.block_sampler_);
+        !made.has_value()) {
+        return made.error();
+    }
 
     const std::array bindings = {
         VkDescriptorSetLayoutBinding{
@@ -109,10 +135,17 @@ Result<TextureTable> TextureTable::create(const Device& device) {
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
             .pImmutableSamplers = &table.block_sampler_,
         },
+        VkDescriptorSetLayoutBinding{
+            .binding = 4,
+            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .pImmutableSamplers = &table.block_plain_sampler_,
+        },
     };
     // Slots no shader reads need not hold an image.
-    const std::array<VkDescriptorBindingFlags, 4> binding_flags = {
-        VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, 0, 0, 0};
+    const std::array<VkDescriptorBindingFlags, 5> binding_flags = {
+        VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, 0, 0, 0, 0};
     const VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
         .pNext = nullptr,
@@ -136,7 +169,7 @@ Result<TextureTable> TextureTable::create(const Device& device) {
     const std::array pool_sizes = {
         VkDescriptorPoolSize{.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                              .descriptorCount = table.capacity_ + 1},
-        VkDescriptorPoolSize{.type = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 2},
+        VkDescriptorPoolSize{.type = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 3},
     };
     const VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -217,10 +250,11 @@ TextureTable::TextureTable(TextureTable&& other) noexcept
     : device_(std::exchange(other.device_, VK_NULL_HANDLE)),
       sampler_(std::exchange(other.sampler_, VK_NULL_HANDLE)),
       block_sampler_(std::exchange(other.block_sampler_, VK_NULL_HANDLE)),
+      block_plain_sampler_(std::exchange(other.block_plain_sampler_, VK_NULL_HANDLE)),
       layout_(std::exchange(other.layout_, VK_NULL_HANDLE)),
       pool_(std::exchange(other.pool_, VK_NULL_HANDLE)),
       set_(std::exchange(other.set_, VK_NULL_HANDLE)), size_(std::exchange(other.size_, 0)),
-      capacity_(std::exchange(other.capacity_, 0)) {}
+      capacity_(std::exchange(other.capacity_, 0)), block_anisotropy_(other.block_anisotropy_) {}
 
 TextureTable& TextureTable::operator=(TextureTable&& other) noexcept {
     if (this != &other) {
@@ -228,11 +262,13 @@ TextureTable& TextureTable::operator=(TextureTable&& other) noexcept {
         device_ = std::exchange(other.device_, VK_NULL_HANDLE);
         sampler_ = std::exchange(other.sampler_, VK_NULL_HANDLE);
         block_sampler_ = std::exchange(other.block_sampler_, VK_NULL_HANDLE);
+        block_plain_sampler_ = std::exchange(other.block_plain_sampler_, VK_NULL_HANDLE);
         layout_ = std::exchange(other.layout_, VK_NULL_HANDLE);
         pool_ = std::exchange(other.pool_, VK_NULL_HANDLE);
         set_ = std::exchange(other.set_, VK_NULL_HANDLE);
         size_ = std::exchange(other.size_, 0);
         capacity_ = std::exchange(other.capacity_, 0);
+        block_anisotropy_ = other.block_anisotropy_;
     }
     return *this;
 }
@@ -258,6 +294,10 @@ void TextureTable::destroy() noexcept {
     if (block_sampler_ != VK_NULL_HANDLE) {
         vkDestroySampler(device_, block_sampler_, nullptr);
         block_sampler_ = VK_NULL_HANDLE;
+    }
+    if (block_plain_sampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(device_, block_plain_sampler_, nullptr);
+        block_plain_sampler_ = VK_NULL_HANDLE;
     }
 }
 

@@ -44,6 +44,8 @@ public:
     [[nodiscard]] VkQueue queue() const noexcept { return queue_; }
     [[nodiscard]] std::uint32_t queue_family() const noexcept { return queue_family_; }
     [[nodiscard]] VmaAllocator allocator() const noexcept { return allocator_; }
+    // The optional features it enabled: each one the device offers.
+    [[nodiscard]] const OptionalFeatures& optional() const noexcept { return optional_; }
 
 private:
     Device() = default;
@@ -54,6 +56,7 @@ private:
     VkQueue queue_ = VK_NULL_HANDLE;
     std::uint32_t queue_family_ = 0;
     VmaAllocator allocator_ = VK_NULL_HANDLE;
+    OptionalFeatures optional_;
 };
 
 } // namespace vx::render

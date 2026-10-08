@@ -300,3 +300,125 @@ TEST_CASE("a chunk is drawn where it is, and an empty mesh leaves nothing") {
     CHECK(renderer.context().instance().validation_counts().errors == 0);
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }
+
+namespace {
+
+// Block texture array bytes: layer 0 left empty, never drawn, and layer 1 a checker of single
+// black and white texels at every level but the last, which is their gray.
+std::vector<std::byte> single_texel_checker() {
+    std::vector<std::byte> bytes(2 * vx::render::block_texture_layer_bytes);
+    for (std::size_t level = 0; level < 5; ++level) {
+        const std::size_t side = std::size_t{16} >> level;
+        for (std::size_t texel = 0; texel < side * side; ++texel) {
+            const bool light = ((texel % side) + (texel / side)) % 2 == 0;
+            Pixel color = light ? white : Pixel{0, 0, 0, 255};
+            if (side == 1) {
+                color = {188, 188, 188, 255}; // half the light, in sRGB
+            }
+            const std::size_t at =
+                4 * ((2 * vx::render::block_texture_level_start.at(level)) + (side * side) + texel);
+            for (std::size_t channel = 0; channel < 4; ++channel) {
+                bytes[at + channel] = std::byte{color[channel]};
+            }
+        }
+    }
+    return bytes;
+}
+
+// How many pixels of a row mix red and green: the blend between the
+// texture's red and green quarters, which meet down the middle of a face
+// seen head on.
+int mixed_pixels(const std::vector<std::uint8_t>& pixels, std::uint32_t row) {
+    int mixed = 0;
+    for (std::uint32_t x = 0; x < image_size.width; ++x) {
+        const Pixel pixel = pixel_at(pixels, x, row);
+        mixed += pixel[0] > 40 && pixel[1] > 40 ? 1 : 0;
+    }
+    return mixed;
+}
+
+} // namespace
+
+TEST_CASE("up close, the sharpened filter keeps texels crisp, blending only at their edges") {
+    // Seen from 0.6 blocks, a texel spans about 5 pixels: plain linear
+    // filtering would blend red into green across about as many, nearest
+    // across none, and the sharpened filter across the one pixel the edge
+    // falls in, or two.
+    const std::array<Quarters, 1> layers = {Quarters{red, green, blue, white}};
+    const std::vector<std::byte> textures = texture_bytes(layers);
+    vx::Result<vx::render::Renderer> created = renderer_with(textures);
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    OneBlock block(vx::Opacity::opaque);
+    REQUIRE(renderer.set_chunk({.x = 0, .y = 0, .z = 0}, block.mesh()).has_value());
+    // A quarter of a pixel off the middle (a pixel is about 1/76 of a block
+    // here), so one pixel's center lies within half a pixel of the edge:
+    // with the edge exactly between two pixels, none would blend.
+    vx::render::Camera close = facing(vx::Face::pos_z);
+    close.position.z = 17.6;
+    close.position.x += 0.0033;
+
+    CHECK(renderer.block_filter() == vx::render::BlockFilter::sharpened);
+    for (const vx::render::BlockFilter filter :
+         {vx::render::BlockFilter::sharpened, vx::render::BlockFilter::sharpened_isotropic}) {
+        renderer.set_block_filter(filter);
+        const std::vector<std::uint8_t> pixels = draw(renderer, close);
+        INFO("filter ", static_cast<int>(filter));
+        CHECK(mixed_pixels(pixels, 16) >= 1);
+        CHECK(mixed_pixels(pixels, 16) <= 2);
+    }
+    renderer.set_block_filter(vx::render::BlockFilter::nearest);
+    CHECK(mixed_pixels(draw(renderer, close), 16) == 0);
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}
+
+TEST_CASE("binding 3 filters anisotropically where the device offers it, binding 4 does not") {
+    // A floor of black and white texels seen across, nearly edge on: the
+    // texels shrink far more along the view than across it, where
+    // anisotropic filtering keeps detail that trilinear filtering blurs.
+    vx::Result<vx::render::Renderer> created = renderer_with(single_texel_checker());
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    // A floor 32 by 32 at y = 0, its tops facing up.
+    std::vector<vx::BlockVisual> visuals(2);
+    visuals[1] = {.opacity = vx::Opacity::opaque, .cull_group = 0, .texture = {1, 1, 1, 1, 1, 1}};
+    auto padded = std::make_unique<vx::PaddedChunk>();
+    for (int z = 0; z < vx::chunk_size; ++z) {
+        for (int x = 0; x < vx::chunk_size; ++x) {
+            padded->blocks[vx::padded_index(x + 1, 1, z + 1)] = static_cast<vx::BlockState>(1);
+        }
+    }
+    vx::MeshScratch scratch;
+    REQUIRE(renderer
+                .set_chunk({.x = 0, .y = 0, .z = 0},
+                           vx::mesh_chunk(*padded, visuals, scratch, {.merge = false}))
+                .has_value());
+    vx::render::Camera across;
+    across.position = {16.0, 1.4, 31.5};
+    across.pitch = -0.12F;
+
+    renderer.set_block_filter(vx::render::BlockFilter::sharpened);
+    const std::vector<std::uint8_t> anisotropic = draw(renderer, across);
+    renderer.set_block_filter(vx::render::BlockFilter::sharpened_isotropic);
+    const std::vector<std::uint8_t> isotropic = draw(renderer, across);
+    // How far apart the two images are, on average, over the floor's far half.
+    long difference = 0;
+    for (std::uint32_t y = 26; y < 40; ++y) {
+        for (std::uint32_t x = 0; x < image_size.width; ++x) {
+            difference +=
+                std::abs(int{pixel_at(anisotropic, x, y)[0]} - int{pixel_at(isotropic, x, y)[0]});
+        }
+    }
+    const float anisotropy = renderer.textures().block_anisotropy();
+    INFO("anisotropy ", static_cast<double>(anisotropy), ", difference ", difference);
+    if (anisotropy > 1.0F) {
+        CHECK(difference > 2'000);
+    } else {
+        CHECK(difference == 0);
+    }
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}

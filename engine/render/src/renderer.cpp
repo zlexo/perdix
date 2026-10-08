@@ -192,6 +192,11 @@ Result<GraphicsPipeline> make_cube_pipeline(const Device& device, VkFormat color
                                     "cube");
 }
 
+// The vertex shader reads the chunk's push constants, and the fragment
+// shader its filter.
+constexpr VkShaderStageFlags chunk_push_stages =
+    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
 // The chunk shader's push constants (chunk.slang). Its float3s sit at
 // multiples of 16, as the shader lays them out.
 struct ChunkPush {
@@ -201,17 +206,17 @@ struct ChunkPush {
     glm::vec3 origin;          // offset 80: the chunk's lowest corner, from the camera's block
     float occlusion_strength;  // offset 92
     glm::vec3 camera_fraction; // offset 96
-    std::uint32_t padding_b;   // offset 108
+    std::uint32_t filter;      // offset 108: a BlockFilter, as chunk.slang numbers them
 };
 static_assert(sizeof(ChunkPush) == 112 && offsetof(ChunkPush, origin) == 80 &&
               offsetof(ChunkPush, occlusion_strength) == 92 &&
-              offsetof(ChunkPush, camera_fraction) == 96);
+              offsetof(ChunkPush, camera_fraction) == 96 && offsetof(ChunkPush, filter) == 108);
 
 // One frame's push constants for the chunk at `position`, on a target of
 // `extent`. The chunk's lowest corner is subtracted from the camera's block
 // in 64-bit integers, as cubes are, so the GPU only sees small numbers.
 ChunkPush make_chunk_push(const Camera& camera, const BlockAndFraction& split, VkExtent2D extent,
-                          VkDeviceAddress quads, ChunkPos position) {
+                          VkDeviceAddress quads, ChunkPos position, BlockFilter filter) {
     const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
     const glm::i64vec3 lowest =
         glm::i64vec3(position.x, position.y, position.z) * static_cast<std::int64_t>(chunk_size);
@@ -221,7 +226,7 @@ ChunkPush make_chunk_push(const Camera& camera, const BlockAndFraction& split, V
             .origin = relative_origin(lowest, split.block),
             .occlusion_strength = 1.0F,
             .camera_fraction = split.fraction,
-            .padding_b = 0};
+            .filter = static_cast<std::uint32_t>(filter)};
 }
 
 // Writes each cube's block, as seen from the camera's block, into a frame
@@ -258,7 +263,7 @@ Result<GraphicsPipeline> make_chunk_pipeline(const Device& device, VkFormat colo
                                      .cull_mode = VK_CULL_MODE_BACK_BIT,
                                      .set_layout = textures,
                                      .push_constant_size = sizeof(ChunkPush),
-                                     .push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT},
+                                     .push_constant_stages = chunk_push_stages},
                                     name);
 }
 
@@ -339,8 +344,8 @@ void record_chunk(VkCommandBuffer commands, VkDescriptorSet textures, const Chun
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle());
         vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout(), 0, 1,
                                 &textures, 0, nullptr);
-        vkCmdPushConstants(commands, pipeline.layout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
-                           sizeof(chunk.push), &chunk.push);
+        vkCmdPushConstants(commands, pipeline.layout(), chunk_push_stages, 0, sizeof(chunk.push),
+                           &chunk.push);
         vkCmdDrawIndexed(commands, 6 * quads, 1, 0, static_cast<std::int32_t>(4 * first), 0);
     };
     pass(*chunk.opaque_pipeline, 0, chunk.opaque);
@@ -816,10 +821,10 @@ Renderer::Renderer(Renderer&& other) noexcept
       offscreen_(std::move(other.offscreen_)), depth_(std::move(other.depth_)),
       textures_(std::move(other.textures_)), block_textures_(std::move(other.block_textures_)),
       cube_(std::move(other.cube_)), chunk_drawing_(std::move(other.chunk_drawing_)),
-      chunk_(std::move(other.chunk_)), framebuffer_(other.framebuffer_),
-      target_framebuffer_(other.target_framebuffer_), present_mode_(other.present_mode_),
-      swapchain_stale_(other.swapchain_stale_), slots_(std::exchange(other.slots_, {})),
-      origins_(std::move(other.origins_)),
+      chunk_(std::move(other.chunk_)), block_filter_(other.block_filter_),
+      framebuffer_(other.framebuffer_), target_framebuffer_(other.target_framebuffer_),
+      present_mode_(other.present_mode_), swapchain_stale_(other.swapchain_stale_),
+      slots_(std::exchange(other.slots_, {})), origins_(std::move(other.origins_)),
       image_rendered_(std::exchange(other.image_rendered_, {})),
       frames_done_(std::exchange(other.frames_done_, VK_NULL_HANDLE)), frame_(other.frame_),
       gpu_timer_(std::move(other.gpu_timer_)), times_(other.times_),
@@ -1130,7 +1135,7 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
                        .cutout = 0};
         if (chunk_.has_value()) {
             draw.push = make_chunk_push(inputs.camera, split, extent, chunk_->quads.address(),
-                                        chunk_->position);
+                                        chunk_->position, block_filter_);
             draw.opaque = chunk_->opaque;
             draw.cutout = chunk_->cutout;
         }

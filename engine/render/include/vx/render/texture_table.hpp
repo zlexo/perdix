@@ -14,10 +14,11 @@ namespace vx::render {
 // shaders index by the push constant's `texture`; binding 1 is a sampler with
 // nearest filtering, fixed in the layout. Binding 2 is RFC 0004's block
 // texture array, whose layers a quad selects as a third coordinate, and
-// binding 3 its sampler: linear, repeating and trilinear, fixed in the
-// layout too. Textures are added before any frame that uses the set is in
-// flight: changing a set in use needs update-after-bind, which the feature
-// floor does not include.
+// binding 3 its sampler: linear, repeating and trilinear, and anisotropic
+// where the device offers it, fixed in the layout too. Binding 4 is the same
+// sampler without anisotropic filtering, for the overlay's toggle. Textures are added before any
+// frame that uses the set is in flight: changing a set in use needs update-after-bind, which the
+// feature floor does not include.
 class TextureTable {
 public:
     [[nodiscard]] static Result<TextureTable> create(const Device& device);
@@ -41,6 +42,9 @@ public:
     // 1024 slots, or fewer where the device's limits say so: MoltenVK allows
     // 256 sampled images a shader stage, one of them the block texture array.
     [[nodiscard]] std::uint32_t capacity() const noexcept { return capacity_; }
+    // How many samples binding 3's sampler takes along a footprint: 1 where
+    // the device offers no anisotropic filtering.
+    [[nodiscard]] float block_anisotropy() const noexcept { return block_anisotropy_; }
     // The capacity a device with `limits` gets.
     [[nodiscard]] static std::uint32_t capacity_for(const VkPhysicalDeviceLimits& limits) noexcept;
 
@@ -51,11 +55,13 @@ private:
     VkDevice device_ = VK_NULL_HANDLE;
     VkSampler sampler_ = VK_NULL_HANDLE;
     VkSampler block_sampler_ = VK_NULL_HANDLE;
+    VkSampler block_plain_sampler_ = VK_NULL_HANDLE; // binding 4: no anisotropy
     VkDescriptorSetLayout layout_ = VK_NULL_HANDLE;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
     VkDescriptorSet set_ = VK_NULL_HANDLE; // freed with the pool
     std::uint32_t size_ = 0;
     std::uint32_t capacity_ = 0;
+    float block_anisotropy_ = 1.0F;
 };
 
 } // namespace vx::render

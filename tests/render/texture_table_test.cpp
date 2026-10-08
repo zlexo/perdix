@@ -263,3 +263,24 @@ TEST_CASE("a pipeline takes the texture table as its set 0") {
     CHECK(created.value().instance().validation_counts().errors == 0);
     CHECK(created.value().instance().validation_counts().warnings == 0);
 }
+
+TEST_CASE("binding 3's sampler is anisotropic as far as the device allows, up to 16") {
+    vx::Result<vx::render::Context> created = create_context();
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    const vx::render::Device& device = created.value().device();
+    vx::Result<vx::render::TextureTable> table = vx::render::TextureTable::create(device);
+    REQUIRE(table.has_value());
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(device.physical_device(), &properties);
+    // The device enables the feature wherever it offers it.
+    CHECK(device.optional().sampler_anisotropy ==
+          created.value().device_info().optional.sampler_anisotropy);
+    if (device.optional().sampler_anisotropy) {
+        CHECK(table.value().block_anisotropy() ==
+              std::min(16.0F, properties.limits.maxSamplerAnisotropy));
+    } else {
+        CHECK(table.value().block_anisotropy() == 1.0F);
+    }
+    CHECK(created.value().instance().validation_counts().errors == 0);
+}

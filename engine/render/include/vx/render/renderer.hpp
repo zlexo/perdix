@@ -68,6 +68,16 @@ struct FrameInputs {
     ImDrawData* overlay = nullptr;
 };
 
+// How block textures are filtered (RFC 0004).
+enum class BlockFilter : std::uint8_t {
+    // Texels crisp up close, mipmapped and anisotropic far away: the default.
+    sharpened,
+    // The same without anisotropic filtering, to see and measure what it adds.
+    sharpened_isotropic,
+    // The classic look: crisp up close, shimmering far away.
+    nearest,
+};
+
 enum class Frame : std::uint8_t {
     drawn,
     skipped, // the framebuffer has no area, as when the window is minimized
@@ -145,6 +155,9 @@ public:
     // read it, are done. An empty mesh leaves nothing to draw. RFC 0007
     // brings many chunks, in one buffer.
     [[nodiscard]] Result<void> set_chunk(ChunkPos position, const ChunkMesh& mesh);
+    // How the chunk's textures are filtered, from the next frame.
+    void set_block_filter(BlockFilter filter) noexcept { block_filter_ = filter; }
+    [[nodiscard]] BlockFilter block_filter() const noexcept { return block_filter_; }
     // Null when headless.
     [[nodiscard]] const Swapchain* swapchain() const noexcept {
         return swapchain_.has_value() ? &swapchain_.value() : nullptr;
@@ -197,6 +210,7 @@ private:
     Cube cube_;
     ChunkDrawing chunk_drawing_;
     std::optional<UploadedChunk> chunk_;
+    BlockFilter block_filter_ = BlockFilter::sharpened;
     Extent framebuffer_;
     Extent target_framebuffer_; // the size the target was made for
     PresentMode present_mode_;
