@@ -1,0 +1,6 @@
+slipperiness = 1.5
+
+[textures]
+all = "ice"
+# path: assets/core/blocks/ice.toml
+# expect: assets/core/blocks/ice.toml:1:16: error: slipperiness is a number above 0 and at most 1

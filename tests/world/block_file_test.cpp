@@ -98,6 +98,31 @@ TEST_CASE("a stone is two lines, and a cutout block says so") {
     CHECK(leaves.block->cull_group == "leaves");
 }
 
+TEST_CASE("a block collides as a full cube with a slipperiness of 0.6, unless its file says") {
+    // RFC 0010: the core pack's blocks write neither key.
+    const Parsed stone = parse("assets/core/blocks/stone.toml", "[textures]\nall = \"stone\"\n");
+    REQUIRE(stone.block.has_value());
+    CHECK(stone.block->collision == vx::Collision::full);
+    CHECK(stone.block->slipperiness == 0.6);
+
+    const Parsed flower =
+        parse("assets/core/blocks/poppy.toml",
+              "collision = \"none\"\nopacity = \"cutout\"\n[textures]\nall = \"poppy\"\n");
+    REQUIRE(flower.block.has_value());
+    CHECK(flower.block->collision == vx::Collision::none);
+
+    const Parsed ice = parse("assets/core/blocks/packed_ice.toml",
+                             "slipperiness = 0.98\n[textures]\nall = \"packed_ice\"\n");
+    REQUIRE(ice.block.has_value());
+    CHECK(ice.block->collision == vx::Collision::full);
+    CHECK(ice.block->slipperiness == 0.98);
+    // A whole number counts, as the most slippery there is.
+    const Parsed most = parse("assets/core/blocks/blue_ice.toml",
+                              "slipperiness = 1\n[textures]\nall = \"blue_ice\"\n");
+    REQUIRE(most.block.has_value());
+    CHECK(most.block->slipperiness == 1.0);
+}
+
 TEST_CASE("integer and boolean values become text, and properties come in name order") {
     const Parsed parsed = parse("assets/core/blocks/wheat.toml", R"(
 [properties]

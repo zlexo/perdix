@@ -1,0 +1,6 @@
+collision = "solid"
+
+[textures]
+all = "stone"
+# path: assets/core/blocks/stone.toml
+# expect: assets/core/blocks/stone.toml:1:13: error: collision is "full" or "none"
