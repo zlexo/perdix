@@ -26,8 +26,12 @@ struct MovementNumbers {
     double jump_speed = 0.42;             // the vertical speed a jump leaves, at least
     double sprint_jump_boost = 0.2;       // added along the facing, jumping while sprinting
     int jump_cooldown = 10;               // ticks between jumps while Space stays held
-    int double_tap_ticks = 7;             // the window for W's second press to sprint
+    int double_tap_ticks = 7;             // the window for a second press of W or Space
     double minor_collision_degrees = 8.0; // a wall hit at a smaller angle keeps a sprint
+    double fly_acceleration = 0.05;       // horizontal, flying
+    double fly_sprint_factor = 2.0;       // on the flying acceleration while sprinting
+    double fly_vertical_speed = 0.15;     // added by Space, or taken by Shift, flying
+    double fly_vertical_drag = 0.6;       // vertical speed kept after a flying move
 };
 
 // The keys held during a tick.
@@ -63,6 +67,9 @@ struct Player {
     bool minor_horizontal_collision = false;
     int jump_cooldown = 0;  // ticks before a held jump may jump again
     int sprint_window = 0;  // ticks left for W's second press to start a sprint
+    bool flying = false;    // in creative flight
+    bool may_fly = true;    // in creative mode: Space pressed twice toggles flight
+    int fly_window = 0;     // ticks left for Space's second press to toggle flight
     MovementKeys last_held; // the last tick's keys, to tell a fresh press
 };
 
@@ -92,17 +99,20 @@ struct Player {
 // again within 6 ticks of a press, in the air too, unless Shift was held the
 // tick before or S is; it stops when that push forward goes or when the last
 // move ran into a wall at more than 8 degrees from where the keys pointed, and
-// survives a crouch; speeds under the momentum threshold become 0; a player
-// that began the tick on the ground with Space held jumps, once the cooldown
-// since its last jump is over, and sprinting also pushes it along its facing;
-// the keys accelerate the player, on the ground or in the air, along the
-// facing the yaw gives; the box moves with collision and step-up, held back at
-// edges while Shift is held, and each component of the velocity a block cut
-// short becomes 0; then gravity, and drag, on the ground if the tick began
-// there. Last, the pose for the next tick: crouching while Shift is held, or
-// where only the crouching box fits. `scratch` holds the boxes a move gathers,
-// from one tick to the next. A yaw that is not finite gives no facing: the
-// tick then does nothing.
+// survives a crouch; Space pressed again within 6 ticks of a press toggles
+// creative flight; speeds under the momentum threshold become 0; a player that
+// began the tick on the ground with Space held jumps, once the cooldown since
+// its last jump is over, and sprinting also pushes it along its facing, while
+// a flying one rises with Space and sinks with Shift; the keys accelerate the
+// player, on the ground, in the air or flying, along the facing the yaw gives;
+// the box moves with collision and step-up, held back at edges while Shift is
+// held and the player walks, and each component of the velocity a block cut
+// short becomes 0; landing ends a flight; then gravity, and drag, on the
+// ground if the tick began there, or flight's own drag. Last, the pose for the
+// next tick: crouching while Shift is held and the player walks, or where only
+// the crouching box fits. `scratch` holds the boxes a move gathers, from one
+// tick to the next. A yaw that is not finite gives no facing: the tick then
+// does nothing.
 void tick(Player& player, const TickInput& input, const BlockBoxes& world,
           const MovementNumbers& numbers, std::vector<Box>& scratch);
 

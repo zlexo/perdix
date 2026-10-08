@@ -141,8 +141,11 @@ TEST_CASE(
             corridor.boxes.push_back(block_box(x, 2.0, z));
         }
     }
+    // A player that may not fly: in creative, Space pressed twice within 7
+    // ticks would start a flight instead.
     const auto jump_ticks = [&](const std::vector<vx::MovementKeys>& keys) {
         vx::Player player = at_rest();
+        player.may_fly = false;
         const std::vector<Step> steps = run(player, keys, corridor);
         std::vector<std::size_t> jumps;
         for (std::size_t i = 0; i < steps.size(); ++i) {
@@ -237,4 +240,17 @@ TEST_CASE("a jump never slows a faster rise: it leaves at least 0.42, as 26.2's 
     player.velocity.y = 0.6;
     const std::vector<Step> steps = run(player, {{.jump = true}}, world);
     CHECK(steps[0].height == doctest::Approx(0.6).epsilon(tolerance));
+}
+
+TEST_CASE("Shift held in the air does not change a walking jump's arc") {
+    // Flight's Shift sinks; a walking player's only crouches.
+    const vx::test::FlatWorld world;
+    vx::Player player = at_rest();
+    std::vector<vx::MovementKeys> keys = repeat({.sneak = true}, 12);
+    keys[0].jump = true;
+    const std::vector<Step> steps = run(player, keys, world);
+    for (std::size_t i = 0; i < jump_heights.size(); ++i) {
+        INFO("tick ", i + 1);
+        CHECK(steps[i].height == doctest::Approx(jump_heights[i]).epsilon(tolerance));
+    }
 }
