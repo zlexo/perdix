@@ -90,8 +90,16 @@ Overlay::~Overlay() {
     ImGui::DestroyContext(context_);
 }
 
-bool Overlay::take_event(const SDL_Event& event) {
-    if (!shown_) {
+bool Overlay::take_event(const SDL_Event& event, bool mouse_captured) {
+    // A captured mouse flies the camera, so ImGui sees it only release a
+    // button. The click that starts flying reaches ImGui pressed and ends
+    // while captured: missing the release, ImGui would hold that click, which
+    // began outside its window, for good, and so hover nothing and want no
+    // click, each of which would start flying again. Keys need no such rule:
+    // every key event carries the modifiers, so the Escape that frees the
+    // mouse also lets go of a Ctrl held to fly faster.
+    const bool released = event.type == SDL_EVENT_MOUSE_BUTTON_UP;
+    if ((!shown_ || mouse_captured) && !released) {
         return false;
     }
     ImGui::SetCurrentContext(context_);

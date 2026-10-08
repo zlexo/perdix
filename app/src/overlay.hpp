@@ -45,9 +45,11 @@ public:
     [[nodiscard]] bool shown() const noexcept { return shown_; }
     void toggle() noexcept { shown_ = !shown_; }
 
-    // Passes `event` to ImGui while the overlay shows. True when the overlay
-    // takes it from the app: a click on the overlay's window.
-    bool take_event(const SDL_Event& event);
+    // Passes `event` to ImGui while the overlay shows and the mouse is free.
+    // True when the overlay takes it from the app: a click on the overlay's
+    // window. A mouse button's release reaches ImGui always, hidden or
+    // captured: a press it saw that never ends stays held there for good.
+    bool take_event(const SDL_Event& event, bool mouse_captured);
 
     // Records a frame for the graphs, shown or not: `interval`, the time
     // since the frame before, and what the renderer measured of it. The
