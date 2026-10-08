@@ -42,6 +42,13 @@ target_compile_definitions(vx_world_tests PRIVATE VX_BAD_BLOCKS_DIR="${CMAKE_CUR
 vx_target_warnings(vx_world_tests)
 doctest_discover_tests(vx_world_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 
+add_executable(vx_mesh_tests
+    main.cpp
+    mesh/quad_test.cpp)
+target_link_libraries(vx_mesh_tests PRIVATE vx::mesh doctest::doctest)
+vx_target_warnings(vx_mesh_tests)
+doctest_discover_tests(vx_mesh_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
+
 add_executable(vx_render_tests
     main.cpp
     render/block_pack_test.cpp
