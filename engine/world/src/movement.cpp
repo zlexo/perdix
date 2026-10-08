@@ -163,15 +163,16 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
         velocity.y = 0.0;
     }
 
-    // The jump: from the ground, with Space held, once the cooldown is over.
-    // Sprinting, it also pushes the player along its facing, whatever the
-    // other keys. Letting go of Space ends the cooldown.
+    // The jump: from the ground, with Space held, once the cooldown is over,
+    // never slowing a faster rise, as 26.2's does (from its jar). Sprinting,
+    // it also pushes the player along its facing, whatever the other keys.
+    // Letting go of Space ends the cooldown.
     const auto yaw = static_cast<double>(input.yaw);
     const Vec3d facing{.x = -std::sin(yaw), .y = 0.0, .z = -std::cos(yaw)};
     if (!input.held.jump) {
         player.jump_cooldown = 0;
     } else if (started_on_ground && player.jump_cooldown == 0) {
-        velocity.y = numbers.jump_speed;
+        velocity.y = std::max(numbers.jump_speed, velocity.y);
         if (player.sprinting) {
             velocity = velocity + (facing * numbers.sprint_jump_boost);
         }

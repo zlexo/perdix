@@ -23,7 +23,7 @@ struct MovementNumbers {
     double vertical_drag = 0.98;          // vertical speed kept, after gravity
     double step_height = 0.6;             // the highest surface stepped onto without a jump
     double momentum_threshold = 0.003;    // speeds below it become 0
-    double jump_speed = 0.42;             // the vertical speed a jump sets
+    double jump_speed = 0.42;             // the vertical speed a jump leaves, at least
     double sprint_jump_boost = 0.2;       // added along the facing, jumping while sprinting
     int jump_cooldown = 10;               // ticks between jumps while Space stays held
     int double_tap_ticks = 7;             // the window for W's second press to sprint
