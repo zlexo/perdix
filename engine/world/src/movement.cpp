@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 #include <vector>
 
 namespace vx {
@@ -32,6 +33,57 @@ KeyInput key_input(const MovementKeys& keys, bool crouching, const MovementNumbe
         input.strafe /= length;
     }
     return input;
+}
+
+// Whether `keys` push the player forward: W without S, whatever A and D.
+bool pushes_forward(const MovementKeys& keys) {
+    return keys.forward && !keys.back;
+}
+
+// The sprint's rules (RFC 0010), read before the tick moves the player;
+// the double tap as Minecraft 26.2's jar has it.
+void update_sprint(Player& player, const MovementKeys& held, const MovementNumbers& numbers) {
+    // Shift held last tick, or S held now, closes the double tap's window.
+    if (player.last_held.sneak || held.back) {
+        player.sprint_window = 0;
+    }
+    // A sprint starts only with the player pushing forward and not crouched.
+    if (!player.sprinting && pushes_forward(held) && player.pose != Pose::crouching) {
+        // A fresh push forward opens the window, and one while it is open
+        // sprints, on the ground or not. The window then runs out on its
+        // own, so another push inside it sprints again.
+        if (!pushes_forward(player.last_held)) {
+            if (player.sprint_window > 0) {
+                player.sprinting = true;
+            } else {
+                player.sprint_window = numbers.double_tap_ticks;
+            }
+        }
+        if (held.sprint) {
+            player.sprinting = true;
+        }
+    }
+    // A sprint ends without a push forward, or after a move that ran into a
+    // wall rather than grazing it; a crouch keeps it, as 26.2's does. A
+    // sprint started against a wall ends here at once.
+    const bool hit_a_wall = player.horizontal_collision && !player.minor_horizontal_collision;
+    if (player.sprinting && (!pushes_forward(held) || hit_a_wall)) {
+        player.sprinting = false;
+    }
+}
+
+// Whether a move that hit a wall only grazed it: the way it went is less
+// than `degrees` from the way the keys pointed. A move that went nowhere,
+// stopped dead against the wall, has no way, and counts as a hit.
+bool grazed(Vec3d wished, Vec3d moved, double degrees) {
+    const double wished_length = std::hypot(wished.x, wished.z);
+    const double moved_length = std::hypot(moved.x, moved.z);
+    if (wished_length == 0.0 || moved_length == 0.0) {
+        return false;
+    }
+    const double cosine =
+        ((wished.x * moved.x) + (wished.z * moved.z)) / (wished_length * moved_length);
+    return cosine > std::cos(degrees * std::numbers::pi / 180.0);
 }
 
 } // namespace
@@ -68,6 +120,10 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
     }
     const bool started_on_ground = player.on_ground;
     Vec3d& velocity = player.velocity;
+    if (player.sprint_window > 0) {
+        --player.sprint_window;
+    }
+    update_sprint(player, input.held, numbers);
     if (player.jump_cooldown > 0) {
         --player.jump_cooldown;
     }
@@ -106,7 +162,8 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
             : numbers.air_acceleration * (player.sprinting ? numbers.sprint_factor : 1.0);
     const KeyInput keys = key_input(input.held, player.pose == Pose::crouching, numbers);
     const Vec3d left{.x = -std::cos(yaw), .y = 0.0, .z = std::sin(yaw)};
-    velocity = velocity + (((facing * keys.forward) + (left * keys.strafe)) * acceleration);
+    const Vec3d wished = (facing * keys.forward) + (left * keys.strafe);
+    velocity = velocity + (wished * acceleration);
 
     // The move, with step-up; what a block cut short stops.
     const Move move = move_box(body_box(player.position, player.pose), velocity, world, scratch,
@@ -125,12 +182,16 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
     }
     player.on_ground = move.on_ground;
     player.horizontal_collision = move.horizontal_collision();
+    player.minor_horizontal_collision =
+        player.horizontal_collision && grazed(wished, move.motion, numbers.minor_collision_degrees);
 
     // Gravity, then drag: on the ground's terms if the tick began there.
     velocity.y = (velocity.y - numbers.gravity) * numbers.vertical_drag;
     const double drag = started_on_ground ? ground_drag(slipperiness, numbers) : numbers.air_drag;
     velocity.x *= drag;
     velocity.z *= drag;
+
+    player.last_held = input.held;
 }
 
 } // namespace vx
