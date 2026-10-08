@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -323,10 +324,13 @@ TEST_CASE("an encrypted, compressed or oversized entry is refused before it is r
     put16(locked.bytes, hello + 8, 1); // flags: encrypted
     CHECK(why_not(must(from(locked.bytes)), "hello.txt") == "test.zip: 'hello.txt' is encrypted");
 
-    vx::test::Zip deflated = good;
-    put16(deflated.bytes, hello + 10, 8); // method: deflate
-    CHECK(why_not(must(from(deflated.bytes)), "hello.txt") ==
-          "test.zip: 'hello.txt' uses compression method 8, and only stored entries are read");
+    for (const std::uint16_t method : {std::uint16_t{12}, std::uint16_t{14}, std::uint16_t{93}}) {
+        vx::test::Zip other = good; // bzip2, LZMA, Zstandard
+        put16(other.bytes, hello + 10, method);
+        CHECK(why_not(must(from(other.bytes)), "hello.txt") ==
+              "test.zip: 'hello.txt' uses compression method " + std::to_string(method) +
+                  ", which is neither stored (0) nor deflate (8)");
+    }
 
     vx::test::Zip huge = good;
     put32(huge.bytes, hello + 20, (16U << 20U) + 1);
@@ -410,7 +414,8 @@ TEST_CASE("threads reading one archive in a file at once each get whole entries"
     std::vector<ZipEntry> entries;
     for (int index = 0; index < 16; ++index) {
         entries.push_back({.name = "entry" + std::to_string(index),
-                           .data = std::string(4096, static_cast<char>('a' + index))});
+                           .data = std::string(4096, static_cast<char>('a' + index)),
+                           .deflate = index % 2 == 1});
     }
     const TemporaryFile file(vx::test::make_zip(entries).bytes);
     {
@@ -483,4 +488,177 @@ TEST_CASE("an archive as large as Minecraft's jar reads back every entry") {
         }
     }
     CHECK(wrong == 0);
+}
+
+namespace {
+
+// The contents make_archives.py deflated into deflated.zip, made the same way.
+std::string fixture_text() {
+    std::string text;
+    for (int copy = 0; copy < 40; ++copy) {
+        text += "Minecraft's textures, read from the player's own install. ";
+    }
+    return text;
+}
+
+std::string fixture_pattern() {
+    std::string bytes;
+    for (int index = 0; index < 65'536; ++index) {
+        bytes.push_back(static_cast<char>((index * 7 + index / 256) & 0xFF));
+    }
+    return bytes;
+}
+
+std::string fixture_noise() {
+    std::uint32_t x = 2'463'534'242U; // xorshift32, the low byte of each step
+    std::string bytes;
+    for (int index = 0; index < 4096; ++index) {
+        x ^= x << 13U;
+        x ^= x >> 17U;
+        x ^= x << 5U;
+        bytes.push_back(static_cast<char>(x & 0xFFU));
+    }
+    return bytes;
+}
+
+} // namespace
+
+TEST_CASE("deflated entries read back exactly, whatever blocks zlib chose") {
+    // zlib wrote dynamic Huffman blocks for the text and the pattern, a stored
+    // block for the noise, and fixed Huffman for one byte and for nothing.
+    const vx::Archive archive =
+        must(vx::Archive::open(std::filesystem::path(VX_ARCHIVES_DIR) / "deflated.zip"));
+    CHECK(read_text(archive, "text.txt") == fixture_text());
+    CHECK(read_text(archive, "pattern.bin") == fixture_pattern());
+    CHECK(read_text(archive, "noise.bin") == fixture_noise());
+    CHECK(read_text(archive, "tiny.txt") == "a");
+    CHECK(read_text(archive, "empty.txt").empty());
+
+    // Stored deflate blocks of up to 65,535 bytes each, several to an entry.
+    std::vector<ZipEntry> entries = three;
+    entries.push_back({.name = "large.bin", .data = fixture_pattern() + fixture_pattern()});
+    for (ZipEntry& entry : entries) {
+        entry.deflate = true;
+        entry.flags = 8;
+    }
+    const vx::Archive built = must(from(vx::test::make_zip(entries).bytes));
+    for (const ZipEntry& entry : entries) {
+        CHECK(read_text(built, entry.name) == entry.data);
+    }
+}
+
+TEST_CASE("a deflated entry that is damaged, ends early, or inflates to another size is refused") {
+    const std::vector<ZipEntry> one = {
+        {.name = "d.bin", .data = std::string(1000, 'd'), .deflate = true}};
+    const vx::test::Zip good = vx::test::make_zip(one);
+    const std::size_t central = good.central_headers[0];
+    const std::size_t stream = good.local_headers[0] + 30 + 5; // after the name
+    REQUIRE(read_text(must(from(good.bytes)), "d.bin") == one[0].data);
+
+    vx::test::Zip block_type = good; // a final block of type 3, which does not exist
+    block_type.bytes[stream] = std::byte{0x07};
+    CHECK(why_not(must(from(block_type.bytes)), "d.bin") ==
+          "test.zip: 'd.bin' does not inflate to its 1000 bytes");
+
+    vx::test::Zip inverted = good; // the stored block's length and its inverse disagree
+    inverted.bytes[stream + 3] ^= std::byte{1};
+    CHECK(why_not(must(from(inverted.bytes)), "d.bin") ==
+          "test.zip: 'd.bin' does not inflate to its 1000 bytes");
+
+    vx::test::Zip cut = good; // the stream ends 10 bytes early
+    put32(cut.bytes, central + 20, 1005 - 10);
+    CHECK(why_not(must(from(cut.bytes)), "d.bin") ==
+          "test.zip: 'd.bin' does not inflate to its 1000 bytes");
+
+    vx::test::Zip more = good; // the stream holds more than the directory says
+    put32(more.bytes, central + 24, 999);
+    CHECK(why_not(must(from(more.bytes)), "d.bin") ==
+          "test.zip: 'd.bin' does not inflate to its 999 bytes");
+
+    vx::test::Zip fewer = good; // and fewer
+    put32(fewer.bytes, central + 24, 1001);
+    CHECK(why_not(must(from(fewer.bytes)), "d.bin") ==
+          "test.zip: 'd.bin' does not inflate to its 1001 bytes");
+
+    // Nothing, said the directory, while the stream holds 1000 bytes: found
+    // by fuzzing, when stb added the length to an empty buffer's null pointer
+    // (UndefinedBehaviorSanitizer stops on that).
+    vx::test::Zip none = good;
+    put32(none.bytes, central + 24, 0);
+    CHECK(why_not(must(from(none.bytes)), "d.bin") ==
+          "test.zip: 'd.bin' does not inflate to its 0 bytes");
+    vx::test::Zip no_stream = good; // and 1000 bytes from no stream at all
+    put32(no_stream.bytes, central + 20, 0);
+    CHECK(why_not(must(from(no_stream.bytes)), "d.bin") ==
+          "test.zip: 'd.bin' does not inflate to its 1000 bytes");
+
+    vx::test::Zip crc = good; // inflates, but not to what was stored
+    put32(crc.bytes, central + 16, vx::test::crc_of(one[0].data) ^ 1U);
+    CHECK(why_not(must(from(crc.bytes)), "d.bin") == "test.zip: 'd.bin' fails its CRC-32 check");
+}
+
+TEST_CASE("a compressed size larger than any 16 MiB entry needs is refused before it is read") {
+    const std::vector<ZipEntry> one = {{.name = "d.bin", .data = "d", .deflate = true}};
+    const vx::test::Zip good = vx::test::make_zip(one);
+    // 16 MiB and a sixteenth: the most deflate can need for 16 MiB.
+    vx::test::Zip largest = good;
+    put32(largest.bytes, good.central_headers[0] + 20, (16U << 20U) + (1U << 20U));
+    CHECK(why_not(must(from(largest.bytes)), "d.bin") ==
+          "test.zip: 'd.bin' runs past the start of the central directory");
+    vx::test::Zip larger = good;
+    put32(larger.bytes, good.central_headers[0] + 20, (16U << 20U) + (1U << 20U) + 1);
+    CHECK(why_not(must(from(larger.bytes)), "d.bin") ==
+          "test.zip: 'd.bin' is larger than 17 MiB compressed");
+}
+
+TEST_CASE("an archive lists its entries' names in byte order") {
+    const vx::Archive archive = must(from(vx::test::make_zip(three).bytes));
+    const std::vector<std::string_view> names = archive.names();
+    CHECK(names == std::vector<std::string_view>{"folder/", "folder/bytes.bin", "hello.txt"});
+}
+
+TEST_CASE("every entry of the player's Minecraft jar reads back, when one is named") {
+    // A local check against the real game, never in CI: the jar is Mojang's.
+    // With the variable set, a jar that cannot be read fails the test.
+    const char* jar = std::getenv("VX_TEST_MINECRAFT_JAR");
+    if (jar == nullptr) {
+        MESSAGE("skipped: VX_TEST_MINECRAFT_JAR does not name a Minecraft client jar");
+        return;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const vx::Result<vx::Archive> open = vx::Archive::open(jar);
+    if (!open.has_value()) {
+        FAIL(open.error().message);
+    }
+    const vx::Archive& archive = open.value();
+    const auto opened = std::chrono::steady_clock::now();
+    std::size_t failed = 0;
+    std::uint64_t bytes = 0;
+    for (const std::string_view name : archive.names()) {
+        const vx::Result<std::vector<std::byte>> entry = archive.read(name);
+        if (entry.has_value()) {
+            bytes += entry.value().size();
+        } else {
+            ++failed;
+            MESSAGE(entry.error().message);
+        }
+    }
+    const auto read = std::chrono::steady_clock::now();
+    // The block textures alone, which RFC 0009 reads, once more.
+    std::size_t textures = 0;
+    for (const std::string_view name : archive.names()) {
+        if (name.starts_with("assets/minecraft/textures/block/") && name.ends_with(".png")) {
+            textures += archive.read(name).has_value() ? 1 : 0;
+        }
+    }
+    const auto read_textures = std::chrono::steady_clock::now();
+    CHECK(archive.size() > 0);
+    CHECK(failed == 0);
+    CHECK(textures > 0);
+    const auto milliseconds = [](auto duration) {
+        return std::chrono::duration<double, std::milli>(duration).count();
+    };
+    MESSAGE(archive.size(), " entries, ", bytes, " bytes; opened in ", milliseconds(opened - start),
+            " ms, every entry read in ", milliseconds(read - opened), " ms, the ", textures,
+            " block textures in ", milliseconds(read_textures - read), " ms");
 }

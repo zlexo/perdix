@@ -13,7 +13,11 @@ include("${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake")
 # its own, so ctest can run, filter and report each case. An entry whose run
 # executes no test case fails: a name CMake splits at a semicolon, for one,
 # registers halves that match nothing, run nothing and would pass.
-set(VX_DOCTEST_PROPERTIES FAIL_REGULAR_EXPRESSION "test cases: +0 [|]")
+# A case that cannot run here says why after "skipped: ", and CTest reports
+# it skipped, not passed.
+set(VX_DOCTEST_PROPERTIES
+    FAIL_REGULAR_EXPRESSION "test cases: +0 [|]"
+    SKIP_REGULAR_EXPRESSION "MESSAGE: skipped: ")
 
 add_executable(vx_core_tests
     main.cpp

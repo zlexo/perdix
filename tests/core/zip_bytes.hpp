@@ -2,6 +2,7 @@
 
 #include <vx/core/crc32.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -11,7 +12,7 @@
 
 namespace vx::test {
 
-// An entry for make_zip, stored as it is: its CRC is worked out.
+// An entry for make_zip: its sizes and CRC are worked out.
 struct ZipEntry {
     std::string name;
     std::string data;
@@ -23,6 +24,8 @@ struct ZipEntry {
     std::string local_extra{};
     std::string central_extra{};
     std::string comment{};
+    // Written deflated (method 8), as deflate_stored gives the data.
+    bool deflate = false;
 };
 
 // An archive built byte by byte, with where each record starts, so that a
@@ -64,7 +67,28 @@ inline std::uint32_t crc_of(std::string_view text) {
     return vx::crc32(std::as_bytes(std::span(text.data(), text.size())));
 }
 
-// A zip archive of stored entries, laid out as APPNOTE.TXT gives it: each
+// Raw deflate (RFC 1951) made of stored blocks: each holds up to 65,535
+// bytes after a header byte, which marks the last block, and its length
+// twice, the second inverted. Every inflater reads it; it only skips the
+// compressing.
+inline std::string deflate_stored(std::string_view data) {
+    std::string out;
+    std::size_t at = 0;
+    do {
+        const std::size_t length = std::min<std::size_t>(data.size() - at, 0xFFFF);
+        const std::size_t inverted = ~length & 0xFFFFU;
+        out.push_back(at + length == data.size() ? '\x01' : '\x00');
+        out.push_back(static_cast<char>(length & 0xFFU));
+        out.push_back(static_cast<char>(length >> 8U));
+        out.push_back(static_cast<char>(inverted & 0xFFU));
+        out.push_back(static_cast<char>(inverted >> 8U));
+        out.append(data.substr(at, length));
+        at += length;
+    } while (at < data.size());
+    return out;
+}
+
+// A zip archive of these entries, laid out as APPNOTE.TXT gives it: each
 // local header, name and data (and a data descriptor with flag bit 3), then
 // the central directory, then the end record with its comment.
 inline Zip make_zip(std::span<const ZipEntry> entries, std::string_view comment = {}) {
@@ -72,26 +96,28 @@ inline Zip make_zip(std::span<const ZipEntry> entries, std::string_view comment 
     std::vector<std::byte>& out = zip.bytes;
     for (const ZipEntry& entry : entries) {
         const bool described = (entry.flags & 8U) != 0;
+        const std::string written = entry.deflate ? deflate_stored(entry.data) : entry.data;
         const auto size = static_cast<std::uint32_t>(entry.data.size());
+        const auto compressed = static_cast<std::uint32_t>(written.size());
         const std::uint32_t crc = crc_of(entry.data);
         zip.local_headers.push_back(out.size());
         append32(out, 0x0403'4b50);
         append16(out, 20);          // version needed: 2.0
         append16(out, entry.flags); // flags
-        append16(out, 0);           // method: stored
-        append32(out, 0);           // time and date
+        append16(out, entry.deflate ? 8 : 0);
+        append32(out, 0); // time and date
         append32(out, described ? 0 : crc);
-        append32(out, described ? 0 : size); // compressed size
+        append32(out, described ? 0 : compressed);
         append32(out, described ? 0 : size);
         append16(out, static_cast<std::uint32_t>(entry.name.size()));
         append16(out, static_cast<std::uint32_t>(entry.local_extra.size()));
         append_text(out, entry.name);
         append_text(out, entry.local_extra);
-        append_text(out, entry.data);
+        append_text(out, written);
         if (described) {
             append32(out, 0x0807'4b50);
             append32(out, crc);
-            append32(out, size);
+            append32(out, compressed);
             append32(out, size);
         }
     }
@@ -99,15 +125,17 @@ inline Zip make_zip(std::span<const ZipEntry> entries, std::string_view comment 
     for (std::size_t index = 0; index < entries.size(); ++index) {
         const ZipEntry& entry = entries[index];
         const auto size = static_cast<std::uint32_t>(entry.data.size());
+        const auto compressed = static_cast<std::uint32_t>(
+            entry.deflate ? deflate_stored(entry.data).size() : entry.data.size());
         zip.central_headers.push_back(out.size());
         append32(out, 0x0201'4b50);
         append16(out, 20); // version made by
         append16(out, 20); // version needed
         append16(out, entry.flags);
-        append16(out, 0); // method: stored
+        append16(out, entry.deflate ? 8 : 0);
         append32(out, 0); // time and date
         append32(out, crc_of(entry.data));
-        append32(out, size); // compressed size
+        append32(out, compressed);
         append32(out, size);
         append16(out, static_cast<std::uint32_t>(entry.name.size()));
         append16(out, static_cast<std::uint32_t>(entry.central_extra.size()));

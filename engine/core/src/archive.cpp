@@ -3,6 +3,7 @@
 #include <vx/core/crc32.hpp>
 #include <vx/core/result.hpp>
 
+#include <stb_image.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -34,10 +35,14 @@ constexpr std::size_t central_header_size = 46;
 constexpr std::size_t end_record_size = 22;
 constexpr std::size_t longest_comment = 0xFFFF;
 constexpr std::uint16_t encrypted = 1U << 0U; // general purpose flag bit 0
-constexpr std::uint16_t stored = 0;           // compression method
+constexpr std::uint16_t stored = 0;           // compression methods
+constexpr std::uint16_t deflated = 8;
 // A larger entry is refused before anything is allocated for it: Minecraft's
 // largest block texture is 122 KiB, the largest entry in its jar 4.5 MiB.
 constexpr std::uint64_t largest_entry = std::uint64_t{16} << 20U;
+// Deflate grows what it cannot compress by 5 bytes a 64 KiB block, so no
+// entry under the limit needs more than this, compressed.
+constexpr std::uint64_t largest_compressed = largest_entry + (largest_entry >> 4U);
 // A field at its largest says that the real value is in a zip64 record.
 constexpr std::uint16_t in_zip64_16 = 0xFFFF;
 constexpr std::uint32_t in_zip64_32 = 0xFFFF'FFFF;
@@ -87,6 +92,21 @@ std::string utf8_name(const std::filesystem::path& path) {
     return {reinterpret_cast<const char*>(name.data()), name.size()};
 }
 
+// Raw deflate (RFC 1951) into exactly out.size() bytes, through the decoder
+// stb_image already inflates every PNG with. False for a stream that is
+// damaged, ends early, or holds more or fewer bytes than that. stb's sizes
+// are ints; entries are far smaller.
+bool inflate(std::span<const std::byte> in, std::span<std::byte> out) noexcept {
+    // stb adds a block's length to its buffer pointers before comparing them
+    // with the ends, which is undefined for the null pointer an empty vector
+    // may hold: an empty buffer is handed over as one byte of length 0.
+    std::byte none{};
+    const int got = stbi_zlib_decode_noheader_buffer(
+        reinterpret_cast<char*>(out.empty() ? &none : out.data()), static_cast<int>(out.size()),
+        reinterpret_cast<const char*>(in.empty() ? &none : in.data()), static_cast<int>(in.size()));
+    return got >= 0 && static_cast<std::size_t>(got) == out.size();
+}
+
 } // namespace
 
 struct Archive::State {
@@ -128,6 +148,15 @@ struct Archive::State {
         return seek(file.get(), offset) &&
                std::fread(out.data(), 1, out.size(), file.get()) == out.size();
     }
+
+    // Why the entry cannot be read, found from the directory alone, before
+    // anything is allocated for it; nothing when it can be.
+    [[nodiscard]] static std::optional<std::string> refusal(const Entry& entry);
+    // Where its data starts, past its local header, which must lie before the
+    // directory and agree with it on the method and the name.
+    [[nodiscard]] Result<std::uint64_t> data_start(const Entry& entry);
+    // Its bytes from there, inflated if need be, checked against its CRC-32.
+    [[nodiscard]] Result<std::vector<std::byte>> contents(const Entry& entry, std::uint64_t data);
 };
 
 Result<Archive> Archive::open(const std::filesystem::path& path) {
@@ -273,6 +302,82 @@ bool Archive::contains(std::string_view name) const noexcept {
     return std::ranges::binary_search(state_->entries, name, {}, &State::Entry::name);
 }
 
+std::vector<std::string_view> Archive::names() const {
+    std::vector<std::string_view> names;
+    names.reserve(state_->entries.size());
+    for (const State::Entry& entry : state_->entries) {
+        names.push_back(entry.name);
+    }
+    return names;
+}
+
+std::optional<std::string> Archive::State::refusal(const Entry& entry) {
+    if ((entry.flags & encrypted) != 0) {
+        return "is encrypted";
+    }
+    if (entry.method != stored && entry.method != deflated) {
+        return "uses compression method " + std::to_string(entry.method) +
+               ", which is neither stored (0) nor deflate (8)";
+    }
+    if (entry.size > largest_entry) {
+        return "is larger than 16 MiB";
+    }
+    if (entry.compressed_size > largest_compressed) {
+        return "is larger than 17 MiB compressed";
+    }
+    if (entry.method == stored && entry.compressed_size != entry.size) {
+        return "is stored, but its compressed and uncompressed sizes differ";
+    }
+    return std::nullopt;
+}
+
+Result<std::uint64_t> Archive::State::data_start(const Entry& entry) {
+    // Its CRC and sizes are not compared: with a data descriptor after the
+    // data, as in Minecraft's jars, they are zeros.
+    std::vector<std::byte> local(local_header_size + entry.name.size());
+    if (entry.local_header > directory_offset ||
+        directory_offset - entry.local_header < local.size()) {
+        return Error{"has a local header outside the archive's entries"};
+    }
+    if (!read(entry.local_header, local)) {
+        return Error{"cannot be read"};
+    }
+    if (field32(local, 0) != local_header_signature) {
+        return Error{"has a damaged local header"};
+    }
+    const auto local_name = std::span<const std::byte>(local).subspan(local_header_size);
+    if (field16(local, 8) != entry.method || field16(local, 26) != entry.name.size() ||
+        !std::ranges::equal(local_name, std::as_bytes(std::span(entry.name)))) {
+        return Error{"has a local header that disagrees with the central directory"};
+    }
+    const std::uint64_t data = entry.local_header + local.size() + field16(local, 28);
+    if (data > directory_offset || directory_offset - data < entry.compressed_size) {
+        return Error{"runs past the start of the central directory"};
+    }
+    return data;
+}
+
+Result<std::vector<std::byte>> Archive::State::contents(const Entry& entry, std::uint64_t data) {
+    std::vector<std::byte> bytes(static_cast<std::size_t>(entry.size));
+    if (entry.method == stored) {
+        if (!read(data, bytes)) {
+            return Error{"cannot be read"};
+        }
+    } else {
+        std::vector<std::byte> compressed(static_cast<std::size_t>(entry.compressed_size));
+        if (!read(data, compressed)) {
+            return Error{"cannot be read"};
+        }
+        if (!inflate(compressed, bytes)) {
+            return Error{"does not inflate to its " + std::to_string(entry.size) + " bytes"};
+        }
+    }
+    if (crc32(bytes) != entry.crc32) {
+        return Error{"fails its CRC-32 check"};
+    }
+    return bytes;
+}
+
 Result<std::vector<std::byte>> Archive::read(std::string_view name) const {
     State& state = *state_;
     const auto problem = [&state, name](std::string_view what) {
@@ -287,49 +392,16 @@ Result<std::vector<std::byte>> Archive::read(std::string_view name) const {
         return problem("appears twice");
     }
     const State::Entry& entry = *found;
-    if ((entry.flags & encrypted) != 0) {
-        return problem("is encrypted");
+    if (const std::optional<std::string> why = State::refusal(entry)) {
+        return problem(*why);
     }
-    if (entry.method != stored) {
-        return problem("uses compression method " + std::to_string(entry.method) +
-                       ", and only stored entries are read");
+    const Result<std::uint64_t> data = state.data_start(entry);
+    if (!data) {
+        return problem(data.error().message);
     }
-    if (entry.size > largest_entry) {
-        return problem("is larger than 16 MiB");
-    }
-    if (entry.compressed_size != entry.size) {
-        return problem("is stored, but its compressed and uncompressed sizes differ");
-    }
-
-    // The local header, before the directory, agreeing with it on the method
-    // and the name. Its CRC and sizes are not compared: with a data
-    // descriptor after the data, as in Minecraft's jars, they are zeros.
-    std::vector<std::byte> local(local_header_size + entry.name.size());
-    if (entry.local_header > state.directory_offset ||
-        state.directory_offset - entry.local_header < local.size()) {
-        return problem("has a local header outside the archive's entries");
-    }
-    if (!state.read(entry.local_header, local)) {
-        return problem("cannot be read");
-    }
-    if (field32(local, 0) != local_header_signature) {
-        return problem("has a damaged local header");
-    }
-    const auto local_name = std::span<const std::byte>(local).subspan(local_header_size);
-    if (field16(local, 8) != entry.method || field16(local, 26) != entry.name.size() ||
-        !std::ranges::equal(local_name, std::as_bytes(std::span(entry.name)))) {
-        return problem("has a local header that disagrees with the central directory");
-    }
-    const std::uint64_t data = entry.local_header + local.size() + field16(local, 28);
-    if (data > state.directory_offset || state.directory_offset - data < entry.compressed_size) {
-        return problem("runs past the start of the central directory");
-    }
-    std::vector<std::byte> bytes(static_cast<std::size_t>(entry.size));
-    if (!state.read(data, bytes)) {
-        return problem("cannot be read");
-    }
-    if (crc32(bytes) != entry.crc32) {
-        return problem("fails its CRC-32 check");
+    Result<std::vector<std::byte>> bytes = state.contents(entry, data.value());
+    if (!bytes) {
+        return problem(bytes.error().message);
     }
     return bytes;
 }
