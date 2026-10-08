@@ -151,6 +151,7 @@ doctest_discover_tests(vx_render_allocation_tests PROPERTIES ${VX_VULKAN_DOCTEST
 add_executable(vx_minecraft_tests
     main.cpp
     minecraft/install_test.cpp
+    minecraft/made_textures_test.cpp
     minecraft/shipped_map_test.cpp
     minecraft/texture_map_test.cpp
     minecraft/version_description_fuzz_test.cpp
