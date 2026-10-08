@@ -68,6 +68,9 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
     }
     const bool started_on_ground = player.on_ground;
     Vec3d& velocity = player.velocity;
+    if (player.jump_cooldown > 0) {
+        --player.jump_cooldown;
+    }
 
     // Speeds left from the last tick that are too small to matter stop: the
     // horizontal one as a whole, since 1.21.5, and the vertical one alone.
@@ -80,6 +83,21 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
         velocity.y = 0.0;
     }
 
+    // The jump: from the ground, with Space held, once the cooldown is over.
+    // Sprinting, it also pushes the player along its facing, whatever the
+    // other keys. Letting go of Space ends the cooldown.
+    const auto yaw = static_cast<double>(input.yaw);
+    const Vec3d facing{.x = -std::sin(yaw), .y = 0.0, .z = -std::cos(yaw)};
+    if (!input.held.jump) {
+        player.jump_cooldown = 0;
+    } else if (started_on_ground && player.jump_cooldown == 0) {
+        velocity.y = numbers.jump_speed;
+        if (player.sprinting) {
+            velocity = velocity + (facing * numbers.sprint_jump_boost);
+        }
+        player.jump_cooldown = numbers.jump_cooldown;
+    }
+
     // The keys accelerate the player along the facing the yaw gives.
     const double slipperiness = numbers.default_slipperiness;
     const double acceleration =
@@ -87,8 +105,6 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
             ? ground_acceleration(slipperiness, player.sprinting, numbers)
             : numbers.air_acceleration * (player.sprinting ? numbers.sprint_factor : 1.0);
     const KeyInput keys = key_input(input.held, player.pose == Pose::crouching, numbers);
-    const auto yaw = static_cast<double>(input.yaw);
-    const Vec3d facing{.x = -std::sin(yaw), .y = 0.0, .z = -std::cos(yaw)};
     const Vec3d left{.x = -std::cos(yaw), .y = 0.0, .z = std::sin(yaw)};
     velocity = velocity + (((facing * keys.forward) + (left * keys.strafe)) * acceleration);
 
