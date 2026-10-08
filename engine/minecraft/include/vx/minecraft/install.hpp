@@ -57,7 +57,9 @@ struct InstallQuery {
 struct Install {
     Archive jar;
     std::filesystem::path path; // of the jar
-    std::string version;        // "26.2"
+    // "26.2": the id in the jar's version.json, which jars have had since
+    // 1.14, or else the name of the jar's folder.
+    std::string version;
 };
 
 // The jar to read (RFC 0009), or why there is none. In a game folder, the

@@ -1,10 +1,14 @@
 #include <vx/minecraft/install.hpp>
 
+#include "json.hpp"
+
 #include <vx/core/archive.hpp>
 #include <vx/core/diagnostic.hpp>
 #include <vx/core/file.hpp>
 #include <vx/core/result.hpp>
 #include <vx/minecraft/version_description.hpp>
+
+#include <yyjson.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -123,6 +127,57 @@ std::string without_path(const std::string& message, const fs::path& jar) {
     return message.starts_with(path) ? message.substr(path.size()) : message;
 }
 
+// A version's name as the startup report shows it: printable ASCII, as all
+// 915 of Mojang's version ids are, and no longer than a name needs to be.
+bool is_printable_name(std::string_view name) {
+    return !name.empty() && name.size() <= 64 &&
+           std::ranges::all_of(name, [](char c) { return c >= ' ' && c <= '~'; });
+}
+
+// The id in a jar's version.json, which jars have had since release 1.14:
+// nothing for an older jar, and nothing, with a warning, for one whose
+// version.json cannot be read.
+std::optional<std::string> jar_version(const Archive& jar, const fs::path& path,
+                                       const std::string& name,
+                                       std::vector<Diagnostic>& diagnostics) {
+    if (!jar.contains("version.json")) {
+        return std::nullopt;
+    }
+    const std::string shown = "; the version shown is " + name + ", from its name";
+    const Result<std::vector<std::byte>> bytes = jar.read("version.json");
+    if (!bytes) {
+        warn(diagnostics, path, without_path(bytes.error().message, path) + shown);
+        return std::nullopt;
+    }
+    const JsonRead json =
+        read_json({reinterpret_cast<const char*>(bytes.value().data()), bytes.value().size()});
+    if (json.document == nullptr) {
+        warn(diagnostics, path, "its version.json is not JSON: " + json.problem + shown);
+        return std::nullopt;
+    }
+    const std::optional<std::string_view> id =
+        string_member(yyjson_doc_get_root(json.document.get()), "id");
+    if (!id || id->empty()) {
+        warn(diagnostics, path, "its version.json gives no id as a string" + shown);
+        return std::nullopt;
+    }
+    // The report shows it as it is.
+    if (!is_printable_name(*id)) {
+        warn(diagnostics, path,
+             "its version.json gives an id that is not a version's name" + shown);
+        return std::nullopt;
+    }
+    return std::string(*id);
+}
+
+// An open jar, shown as the version its version.json says it is, or else by
+// `name`, its folder's or its file's.
+Install make_install(Archive jar, const fs::path& path, const std::string& name,
+                     std::vector<Diagnostic>& diagnostics) {
+    std::optional<std::string> version = jar_version(jar, path, name, diagnostics);
+    return {.jar = std::move(jar), .path = path, .version = version ? *std::move(version) : name};
+}
+
 // What a game folder gives: the newest release whose jar opens, and how many
 // releases with a jar it holds, whether or not one opened.
 struct Choice {
@@ -136,8 +191,8 @@ Choice choose_release(const fs::path& game, std::vector<Diagnostic>& diagnostics
     for (const Candidate& candidate : candidates) {
         Result<Archive> jar = Archive::open(candidate.jar);
         if (jar) {
-            choice.install = Install{
-                .jar = std::move(jar).value(), .path = candidate.jar, .version = candidate.id};
+            choice.install =
+                make_install(std::move(jar).value(), candidate.jar, candidate.id, diagnostics);
             break;
         }
         warn(diagnostics, candidate.jar,

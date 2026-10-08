@@ -64,10 +64,21 @@ void write(const fs::path& file, std::string_view bytes) {
     std::ofstream(file, std::ios::binary) << bytes;
 }
 
-// A jar that opens: an archive with nothing in it.
-std::string empty_jar() {
-    const vx::test::Zip zip = vx::test::make_zip({});
+std::string text_of(const vx::test::Zip& zip) {
     return {reinterpret_cast<const char*>(zip.bytes.data()), zip.bytes.size()};
+}
+
+// A jar that opens: an archive with nothing in it, as old as 1.8.9's in that
+// it does not say which version it is.
+std::string empty_jar() {
+    return text_of(vx::test::make_zip({}));
+}
+
+// A jar that says which version it is, as jars have since 1.14.
+std::string jar_saying(std::string_view version_json) {
+    const std::vector<vx::test::ZipEntry> entries = {
+        {.name = "version.json", .data = std::string(version_json)}};
+    return text_of(vx::test::make_zip(entries));
 }
 
 std::string release(std::string_view time) {
@@ -442,4 +453,49 @@ TEST_CASE("each system's folder is where find_install looks") {
     CHECK(version_of(find(query(System::macos))) == "26.2");
     CHECK(version_of(find(query(System::windows))) == "26.1.2");
     CHECK(why(find({})) == "no home folder to look for Minecraft in");
+}
+
+TEST_CASE("the version shown is the one the jar's version.json gives") {
+    const TemporaryFolder game;
+    // The Modrinth App keeps a modded profile with no inheritsFrom, and in it
+    // the jar of the version it builds on.
+    add_version(game.path(), "1.21.1-21.1.243", release("2026-07-22T12:37:28.579491528Z"),
+                jar_saying(R"({"id": "1.21.1", "name": "1.21.1", "world_version": 3955})"));
+    Found found = find(named(game.path()));
+    CHECK(version_of(found) == "1.21.1");
+    CHECK(path_of(found) == jar_of(game.path(), "1.21.1-21.1.243"));
+    CHECK(found.diagnostics.empty());
+
+    // A jar from before 1.14 says nothing, and its folder's name is shown.
+    add_version(game.path(), "1.8.9", release("2026-08-01T00:00:00+00:00"));
+    found = find(named(game.path()));
+    CHECK(version_of(found) == "1.8.9");
+    CHECK(found.diagnostics.empty());
+}
+
+TEST_CASE("a version.json that cannot be read is a warning, and the folder's name is shown") {
+    vx::test::Zip damaged = vx::test::make_zip(
+        std::vector<vx::test::ZipEntry>{{.name = "version.json", .data = R"({"id": "26.2"})"}});
+    vx::test::put32(damaged.bytes, damaged.central_headers[0] + 16, 0);
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {jar_saying(R"({"id": )"), "its version.json is not JSON: unexpected end of data"},
+        {jar_saying(R"({"id": 26.2})"), "its version.json gives no id as a string"},
+        {jar_saying(R"({"id": ""})"), "its version.json gives no id as a string"},
+        {text_of(damaged), "'version.json' fails its CRC-32 check"},
+        // The report shows the id as it is.
+        {jar_saying(R"({"id": "26.2\nfake.json:1:1: error: spoofed"})"),
+         "its version.json gives an id that is not a version's name"},
+        {jar_saying(R"({"id": ")" + std::string(65, '2') + R"("})"),
+         "its version.json gives an id that is not a version's name"},
+    };
+    for (const auto& [jar, problem] : cases) {
+        CAPTURE(problem);
+        const TemporaryFolder game;
+        add_version(game.path(), "26.2", release("2026-06-16T12:03:33+00:00"), jar);
+        const Found found = find(named(game.path()));
+        CHECK(version_of(found) == "26.2");
+        CHECK(found.diagnostics ==
+              std::vector<std::string>{utf8(jar_of(game.path(), "26.2")) + ": warning: " + problem +
+                                       "; the version shown is 26.2, from its name"});
+    }
 }
