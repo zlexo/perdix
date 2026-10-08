@@ -27,6 +27,7 @@ add_executable(vx_core_tests
     core/diagnostic_test.cpp
     core/file_test.cpp
     core/result_test.cpp
+    core/vec3d_test.cpp
     core/version_test.cpp
     fuzz/archive_fuzz.cpp)
 target_link_libraries(vx_core_tests PRIVATE vx::core doctest::doctest)
@@ -47,6 +48,7 @@ add_executable(vx_world_tests
     world/block_state_test.cpp
     world/chunk_conversion_test.cpp
     world/chunk_storage_test.cpp
+    world/collision_test.cpp
     world/coordinates_test.cpp
     world/names_test.cpp
     world/packed_array_test.cpp)
