@@ -1,0 +1,9 @@
+{
+  "arguments": {"game": ["--username", "${auth_player_name}", "--version", "${version_name}"]},
+  "id": "26.2",
+  "libraries": [{"name": "com.mojang:blocklist:1.0.10"}],
+  "mainClass": "net.minecraft.client.main.Main",
+  "releaseTime": "2026-06-16T12:03:33+00:00",
+  "time": "2026-06-16T12:03:33+00:00",
+  "type": "release"
+}

@@ -89,14 +89,15 @@ For a glance without Tracy, in any build, F3 shows the overlay, and `--overlay` 
 
 ## Fuzzing
 
-Code that reads files from outside the project, such as the zip archives of RFC 0009, gets a libFuzzer target in `tests/fuzz/`. `scripts/fuzz.sh [seconds]` builds it from a configured debug build and runs it, seeded with the test archives, with UndefinedBehaviorSanitizer, the standard library's bounds checks, and a check of every heap read: AddressSanitizer on Linux, and on macOS, where it does not run, Guard Malloc, which crashes on a read even one byte past an allocation.
+Code that reads files from outside the project, such as the zip archives and the launcher's version descriptions of RFC 0009, gets a libFuzzer target in `tests/fuzz/`. `scripts/fuzz.sh [seconds] [target]` builds one from a configured debug build and runs it, seeded with the files its tests read (`archive`, the default, or `version_description`), with UndefinedBehaviorSanitizer, the standard library's bounds checks, and a check of every heap read: AddressSanitizer on Linux, and on macOS, where it does not run, Guard Malloc, which crashes on a read even one byte past an allocation.
 
 ```sh
 brew install llvm        # libFuzzer comes with LLVM's Clang, not Apple's
 scripts/fuzz.sh 300
+scripts/fuzz.sh 300 version_description
 ```
 
-An input that stops it is kept in `build/fuzz` as `crash-<hash>`. The bug gets a test that reproduces it, then its fix, in the pull request that brought the code, and the input joins `tests/fuzz/inputs/`, which every test build replays through the target.
+An input that stops it is kept in `build/fuzz/<target>` as `crash-<hash>`. The bug gets a test that reproduces it, then its fix, in the pull request that brought the code, and the input joins `tests/fuzz/inputs/<target>/`, which every test build replays through the target.
 
 ## Code style
 

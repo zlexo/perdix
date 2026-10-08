@@ -34,7 +34,7 @@ target_link_libraries(vx_core_tests PRIVATE vx::core doctest::doctest)
 # archive tests (RFC 0009).
 target_compile_definitions(vx_core_tests PRIVATE
     VX_ARCHIVES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/core/archives"
-    VX_FUZZ_INPUTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fuzz/inputs")
+    VX_FUZZ_INPUTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fuzz/inputs/archive")
 vx_target_warnings(vx_core_tests)
 doctest_discover_tests(vx_core_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 
@@ -150,7 +150,15 @@ doctest_discover_tests(vx_render_allocation_tests PROPERTIES ${VX_VULKAN_DOCTEST
 add_executable(vx_minecraft_tests
     main.cpp
     minecraft/install_test.cpp
-    minecraft/version_description_test.cpp)
+    minecraft/version_description_fuzz_test.cpp
+    minecraft/version_description_test.cpp
+    fuzz/version_description_fuzz.cpp)
 target_link_libraries(vx_minecraft_tests PRIVATE vx::minecraft doctest::doctest)
+# Version descriptions and release times, and inputs fuzzing saved, read by
+# the description fuzz target's replay test (RFC 0009).
+target_compile_definitions(vx_minecraft_tests PRIVATE
+    VX_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/minecraft/descriptions"
+    VX_RELEASE_TIMES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/minecraft/release_times"
+    VX_DESCRIPTION_FUZZ_INPUTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fuzz/inputs/version_description")
 vx_target_warnings(vx_minecraft_tests)
 doctest_discover_tests(vx_minecraft_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
