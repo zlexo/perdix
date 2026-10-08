@@ -209,6 +209,19 @@ Error none_in(const std::vector<fs::path>& games, std::size_t releases) {
     return Error{"no Minecraft release with a jar in " + listed(games)};
 }
 
+// A jar the query named: one that does not open is an error, not a version
+// passed over.
+Result<Install> open_named(const fs::path& jar, const std::string& name,
+                           std::vector<Diagnostic>& diagnostics) {
+    Result<Archive> archive = Archive::open(jar);
+    if (!archive) {
+        return archive.error();
+    }
+    return make_install(std::move(archive).value(), jar, name, diagnostics);
+}
+
+// A path the query names: a client jar, which skips the choice, or a game
+// folder, searched like the launcher's.
 Result<Install> find_in_named(const fs::path& path, std::vector<Diagnostic>& diagnostics) {
     if (path.empty()) {
         return Error{"an empty path names no game folder and no jar"};
@@ -220,6 +233,9 @@ Result<Install> find_in_named(const fs::path& path, std::vector<Diagnostic>& dia
     }
     if (error) {
         return Error{utf8(path) + " cannot be read (" + error.message() + ")"};
+    }
+    if (fs::is_regular_file(status)) {
+        return open_named(path, utf8(path.stem()), diagnostics);
     }
     if (!fs::is_directory(status) || !fs::is_directory(path / "versions", error)) {
         return Error{utf8(path) + " is not a game folder: it holds no versions folder"};

@@ -389,9 +389,6 @@ TEST_CASE("a named path that is not a game folder is an error saying why") {
     // A folder with no versions in it, such as the versions folder itself.
     CHECK(why(find(named(folder.path()))) ==
           utf8(folder.path()) + " is not a game folder: it holds no versions folder");
-    write(folder.path() / "notes.txt", "");
-    CHECK(why(find(named(folder.path() / "notes.txt"))) ==
-          utf8(folder.path() / "notes.txt") + " is not a game folder: it holds no versions folder");
 }
 
 TEST_CASE("without a path, the launcher's folders are looked in, in order") {
@@ -498,4 +495,26 @@ TEST_CASE("a version.json that cannot be read is a warning, and the folder's nam
               std::vector<std::string>{utf8(jar_of(game.path(), "26.2")) + ": warning: " + problem +
                                        "; the version shown is 26.2, from its name"});
     }
+}
+
+TEST_CASE("a client jar named as the path skips the choice") {
+    const TemporaryFolder folder;
+    // Prism Launcher's name for the jar of 1.20.1.
+    const fs::path prism = folder.path() / "minecraft-1.20.1-client.jar";
+    write(prism, jar_saying(R"({"id": "1.20.1"})"));
+    const Found found = find(named(prism));
+    CHECK(version_of(found) == "1.20.1");
+    CHECK(path_of(found) == prism);
+    CHECK(found.diagnostics.empty());
+    // A jar too old to say is shown by its file's name.
+    write(folder.path() / "1.8.9.jar", empty_jar());
+    CHECK(version_of(find(named(folder.path() / "1.8.9.jar"))) == "1.8.9");
+}
+
+TEST_CASE("a named file that does not open as a jar is an error saying why") {
+    const TemporaryFolder folder;
+    const fs::path notes = folder.path() / "notes.txt";
+    write(notes, "not a zip archive");
+    CHECK(why(find(named(notes))) ==
+          utf8(notes) + ": not a zip archive: it has no end of central directory record");
 }
