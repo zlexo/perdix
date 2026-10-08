@@ -156,9 +156,11 @@ add_executable(vx_minecraft_tests
     minecraft/version_description_test.cpp
     fuzz/version_description_fuzz.cpp)
 target_link_libraries(vx_minecraft_tests PRIVATE vx::minecraft doctest::doctest)
-# Version descriptions and release times, and inputs fuzzing saved, read by
-# the description fuzz target's replay test (RFC 0009).
+# RFC 0009's corpus of bad texture maps; version descriptions and release
+# times, and inputs fuzzing saved, read by the description fuzz target's
+# replay test.
 target_compile_definitions(vx_minecraft_tests PRIVATE
+    VX_BAD_MAPS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/minecraft/bad_maps"
     VX_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/minecraft/descriptions"
     VX_RELEASE_TIMES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/minecraft/release_times"
     VX_DESCRIPTION_FUZZ_INPUTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fuzz/inputs/version_description")

@@ -1,0 +1,4 @@
+# A key is a texture of this namespace, named without it.
+"core:stone" = "stone"
+# path: assets/core/minecraft.toml
+# expect: assets/core/minecraft.toml:2:1: error: texture name 'core:stone' uses characters other than a to z, 0 to 9 and _

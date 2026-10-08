@@ -4,8 +4,12 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -240,4 +244,39 @@ mango = { texture = "Mango", shade = 1 }
             "assets/core/minecraft.toml:3:21: error: Minecraft texture name 'Mango' uses "
             "characters other than a to z, 0 to 9 and _",
             "assets/core/minecraft.toml:3:30: error: unknown key 'shade'"});
+}
+
+TEST_CASE("every file in the corpus of bad maps gives exactly the messages it expects") {
+    // RFC 0009's test plan: a bad file for each error, so every check is
+    // shown to fire. Each file ends in comments that give the path it stands
+    // for and every message it must give, in order.
+    std::vector<std::filesystem::path> files;
+    for (const std::filesystem::directory_entry& entry :
+         std::filesystem::directory_iterator(VX_BAD_MAPS_DIR)) {
+        if (entry.path().extension() == ".toml") {
+            files.push_back(entry.path());
+        }
+    }
+    std::ranges::sort(files);
+    REQUIRE_FALSE(files.empty());
+    for (const std::filesystem::path& file : files) {
+        INFO(file.filename().string());
+        std::ifstream stream(file);
+        std::stringstream text;
+        text << stream.rdbuf();
+        std::string path;
+        std::vector<std::string> expected;
+        std::istringstream lines(text.str());
+        for (std::string line; std::getline(lines, line);) {
+            if (line.starts_with("# path: ")) {
+                path = line.substr(8);
+            } else if (line.starts_with("# expect: ")) {
+                expected.push_back(line.substr(10));
+            }
+        }
+        const Read got = read(text.str(), path);
+        CHECK_FALSE(got.map.has_value());
+        CHECK_FALSE(expected.empty());
+        CHECK(got.messages == expected);
+    }
 }

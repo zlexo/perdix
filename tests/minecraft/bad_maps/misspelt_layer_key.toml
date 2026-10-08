@@ -1,0 +1,4 @@
+# Block files name their faces under [textures]; a layer has one texture.
+grass_top = { textures = "grass_block_top", tint = "grass" }
+# path: assets/core/minecraft.toml
+# expect: assets/core/minecraft.toml:2:15: error: unknown key 'textures'; did you mean 'texture'?
