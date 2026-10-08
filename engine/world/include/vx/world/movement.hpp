@@ -23,6 +23,9 @@ struct MovementNumbers {
     double vertical_drag = 0.98;       // vertical speed kept, after gravity
     double step_height = 0.6;          // the highest surface stepped onto without a jump
     double momentum_threshold = 0.003; // speeds below it become 0
+    double jump_speed = 0.42;          // the vertical speed a jump sets
+    double sprint_jump_boost = 0.2;    // added along the facing, jumping while sprinting
+    int jump_cooldown = 10;            // ticks between jumps while Space stays held
 };
 
 // The keys held during a tick.
@@ -53,6 +56,7 @@ struct Player {
     bool sprinting = false;
     bool on_ground = false;            // the last move ended on the ground
     bool horizontal_collision = false; // the last move was cut short across x or z
+    int jump_cooldown = 0;             // ticks before a held jump may jump again
 };
 
 // The box of a body at `position` in `pose`: 0.6 wide, and 1.8 tall standing
@@ -73,12 +77,14 @@ struct Player {
 
 // Advances the player one tick (50 ms) with the input held during it, in
 // Minecraft's order (RFC 0010): speeds under the momentum threshold become
-// 0; the keys accelerate the player, on the ground or in the air, along the
-// facing the yaw gives; the box moves with collision and step-up, and each
-// component of the velocity a block cut short becomes 0; then gravity, and
-// drag, on the ground if the tick began there. `scratch` holds the boxes a
-// move gathers, from one tick to the next. A yaw that is not finite gives
-// no facing: the tick then does nothing.
+// 0; a player that began the tick on the ground with Space held jumps, once
+// the cooldown since its last jump is over, and sprinting also pushes it
+// along its facing; the keys accelerate the player, on the ground or in the
+// air, along the facing the yaw gives; the box moves with collision and
+// step-up, and each component of the velocity a block cut short becomes 0;
+// then gravity, and drag, on the ground if the tick began there. `scratch`
+// holds the boxes a move gathers, from one tick to the next. A yaw that is
+// not finite gives no facing: the tick then does nothing.
 void tick(Player& player, const TickInput& input, const BlockBoxes& world,
           const MovementNumbers& numbers, std::vector<Box>& scratch);
 
