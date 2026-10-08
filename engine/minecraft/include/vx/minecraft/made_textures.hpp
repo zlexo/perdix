@@ -1,8 +1,13 @@
 #pragma once
 
+#include <vx/core/archive.hpp>
+#include <vx/core/diagnostic.hpp>
+#include <vx/minecraft/texture_map.hpp>
 #include <vx/world/block_registry.hpp>
 
 #include <cstdint>
+#include <string_view>
+#include <vector>
 
 namespace vx::minecraft {
 
@@ -37,5 +42,18 @@ inline constexpr float plains_downfall = 0.4F;
 // `upper` that passes the engine's alpha test (alpha 128 or more) replaces
 // the one under it, alpha included; any other leaves it.
 void draw_over(Texels& lower, const Texels& upper) noexcept;
+
+// Level 0 of every texture in the map that the player's Minecraft can make
+// (RFC 0009): each layer read from the jar and decoded, 16 by 16, tinted
+// with the plains color of its color map, or its own color, and drawn over
+// the layers below it. A texture the jar cannot make, for a layer or a color
+// map that is missing, or that cannot be read or decoded, or has the wrong
+// size, is left out with a warning at the name in the map, and is then drawn
+// from its own file. The warnings come in the order of the file, and name
+// the game by `version`, such as an Install's: "Minecraft 26.2 has no
+// block texture 'grass_block_side_overlay'".
+[[nodiscard]] std::vector<MadeTexture> make_textures(const Archive& jar, std::string_view version,
+                                                     const TextureMap& map,
+                                                     std::vector<Diagnostic>& diagnostics);
 
 } // namespace vx::minecraft
