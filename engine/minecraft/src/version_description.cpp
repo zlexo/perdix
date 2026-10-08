@@ -1,11 +1,20 @@
 #include <vx/minecraft/version_description.hpp>
 
+#include "json.hpp"
+
+#include <vx/core/diagnostic.hpp>
+
+#include <yyjson.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace vx::minecraft {
 namespace {
@@ -82,6 +91,48 @@ std::optional<std::int64_t> parse_release_time(std::string_view text) {
     const auto days =
         static_cast<std::int64_t>(std::chrono::sys_days(date).time_since_epoch().count());
     return (days * 86'400) + (hour * 3'600) + (minute * 60) + second - (std::int64_t{offset} * 60);
+}
+
+std::optional<VersionDescription> read_version_description(std::string_view path,
+                                                           std::string_view text,
+                                                           std::vector<Diagnostic>& diagnostics) {
+    const auto pass_over = [&](std::string why, std::uint32_t line = 0, std::uint32_t column = 0) {
+        diagnostics.push_back({.severity = Severity::warning,
+                               .file = std::string(path),
+                               .line = line,
+                               .column = column,
+                               .message = std::move(why) + "; the version is passed over"});
+        return std::optional<VersionDescription>();
+    };
+    const JsonRead json = read_json(text);
+    if (json.document == nullptr) {
+        return pass_over("not JSON: " + json.problem, json.line, json.column);
+    }
+    const yyjson_val* root = yyjson_doc_get_root(json.document.get());
+    if (!yyjson_is_obj(root)) {
+        return pass_over("a version's description is a JSON object");
+    }
+    // The version a modded profile builds on is a candidate of its own.
+    if (yyjson_obj_get(root, "inheritsFrom") != nullptr) {
+        return VersionDescription{.release = false};
+    }
+    const std::optional<std::string_view> type = string_member(root, "type");
+    if (!type) {
+        return pass_over("a version's description gives its type as a string, such as 'release'");
+    }
+    if (*type != "release") {
+        return VersionDescription{.release = false};
+    }
+    const std::optional<std::string_view> time = string_member(root, "releaseTime");
+    if (!time) {
+        return pass_over("a release's description gives its releaseTime as a string");
+    }
+    const std::optional<std::int64_t> seconds = parse_release_time(*time);
+    if (!seconds) {
+        return pass_over("releaseTime '" + std::string(*time) +
+                         "' is not a time such as 2026-06-16T12:03:33+00:00");
+    }
+    return VersionDescription{.release = true, .release_time = *seconds};
 }
 
 } // namespace vx::minecraft

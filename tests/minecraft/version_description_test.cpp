@@ -1,3 +1,4 @@
+#include <vx/core/diagnostic.hpp>
 #include <vx/minecraft/version_description.hpp>
 
 #include <doctest/doctest.h>
@@ -5,13 +6,43 @@
 #include <cstdint>
 #include <initializer_list>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
+
+using vx::minecraft::VersionDescription;
 
 // Seconds since 1970 in UTC, worked out apart from the parser, with Python's
 // datetime.
 constexpr std::int64_t release_26_2 = 1'781'611'413; // 2026-06-16T12:03:33+00:00
+
+// A description read from where the launcher keeps 26.2's, and what reading
+// it said, formatted.
+struct Read {
+    std::optional<VersionDescription> description;
+    std::vector<std::string> diagnostics;
+};
+
+Read read(std::string_view text) {
+    std::vector<vx::Diagnostic> diagnostics;
+    Read got{.description = vx::minecraft::read_version_description("versions/26.2/26.2.json", text,
+                                                                    diagnostics),
+             .diagnostics = {}};
+    for (const vx::Diagnostic& diagnostic : diagnostics) {
+        got.diagnostics.push_back(vx::format(diagnostic));
+    }
+    return got;
+}
+
+// The one warning a description that cannot be used gives.
+std::string passed_over(std::string_view text) {
+    const Read got = read(text);
+    CHECK_FALSE(got.description.has_value());
+    REQUIRE(got.diagnostics.size() == 1);
+    return got.diagnostics.front();
+}
 
 } // namespace
 
@@ -78,4 +109,91 @@ TEST_CASE("text that is not a release time is nothing") {
         CAPTURE(text);
         CHECK(parse_release_time(text) == std::nullopt);
     }
+}
+
+TEST_CASE("a release's description gives its release time") {
+    // Shaped like the launcher's own, which says much more.
+    const Read got = read(R"({
+  "arguments": {"game": ["--username", "${auth_player_name}"]},
+  "id": "26.2",
+  "libraries": [{"name": "com.mojang:blocklist:1.0.10"}],
+  "mainClass": "net.minecraft.client.main.Main",
+  "releaseTime": "2026-06-16T12:03:33+00:00",
+  "time": "2026-06-16T12:03:33+00:00",
+  "type": "release"
+})");
+    REQUIRE(got.description.has_value());
+    CHECK(got.description->release);
+    CHECK(got.description->release_time == release_26_2);
+    CHECK(got.diagnostics.empty());
+}
+
+TEST_CASE("snapshots, older kinds and modded profiles are not releases, and need no release time") {
+    for (const std::string_view text : {
+             R"({"id": "26.3-snapshot-1", "type": "snapshot", "releaseTime": "2026-07-01"})",
+             R"({"id": "b1.7.3", "type": "old_beta"})",
+             // Fabric's profile says it is a release, made when the profile was.
+             R"({"id": "fabric-loader-0.19.2-1.20.1", "inheritsFrom": "1.20.1",
+                 "type": "release", "releaseTime": "2026-04-29T06:16:13+0000"})",
+             R"({"inheritsFrom": "1.20.1"})",
+         }) {
+        CAPTURE(text);
+        const Read got = read(text);
+        REQUIRE(got.description.has_value());
+        CHECK_FALSE(got.description->release);
+        CHECK(got.diagnostics.empty());
+    }
+}
+
+TEST_CASE("a description that is not JSON is passed over, with a warning where it goes wrong") {
+    // Columns count characters: the bare word starts at the eleventh.
+    CHECK(passed_over("{\n  \"id\": \"26.2\",\n  \"type\": release\n}\n") ==
+          "versions/26.2/26.2.json:3:11: warning: not JSON: unexpected character, expected a "
+          "JSON value; the version is passed over");
+    // A character of two bytes before the problem counts once.
+    CHECK(passed_over("{\"id\": \"caf\xC3\xA9\", \"type\": release}") ==
+          "versions/26.2/26.2.json:1:24: warning: not JSON: unexpected character, expected a "
+          "JSON value; the version is passed over");
+    CHECK(passed_over(R"({"id": "26.2", "type": "release")") ==
+          "versions/26.2/26.2.json:1:33: warning: not JSON: unexpected end of data; the version "
+          "is passed over");
+    CHECK(passed_over("{\"type\": \"rel\xFF\"}") ==
+          "versions/26.2/26.2.json:1:14: warning: not JSON: invalid UTF-8 encoding in string; "
+          "the version is passed over");
+    CHECK(passed_over("{} {}") == "versions/26.2/26.2.json:1:4: warning: not JSON: unexpected "
+                                  "content after document; the version is passed over");
+    // Nothing in it is a problem of the whole file.
+    for (const std::string_view text : {"", " \n\t "}) {
+        CAPTURE(text);
+        CHECK(passed_over(text) == "versions/26.2/26.2.json: warning: not JSON: the text is "
+                                   "empty; the version is passed over");
+    }
+}
+
+TEST_CASE("a description without the fields a release needs is passed over, saying which") {
+    CHECK(passed_over(R"(["26.2", "release"])") ==
+          "versions/26.2/26.2.json: warning: a version's description is a JSON object; the "
+          "version is passed over");
+    for (const std::string_view text : {R"({"id": "26.2"})", R"({"type": 1})"}) {
+        CAPTURE(text);
+        CHECK(passed_over(text) == "versions/26.2/26.2.json: warning: a version's description "
+                                   "gives its type as a string, such as 'release'; the version "
+                                   "is passed over");
+    }
+    for (const std::string_view text :
+         {R"({"type": "release"})", R"({"type": "release", "releaseTime": 1781611413})"}) {
+        CAPTURE(text);
+        CHECK(passed_over(text) == "versions/26.2/26.2.json: warning: a release's description "
+                                   "gives its releaseTime as a string; the version is passed "
+                                   "over");
+    }
+    CHECK(passed_over(R"({"type": "release", "releaseTime": "2026-06-16"})") ==
+          "versions/26.2/26.2.json: warning: releaseTime '2026-06-16' is not a time such as "
+          "2026-06-16T12:03:33+00:00; the version is passed over");
+}
+
+TEST_CASE("a warning joins the diagnostics already given") {
+    std::vector<vx::Diagnostic> diagnostics(1);
+    CHECK_FALSE(vx::minecraft::read_version_description("a.json", "[]", diagnostics));
+    CHECK(diagnostics.size() == 2);
 }
