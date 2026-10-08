@@ -44,6 +44,7 @@ doctest_discover_tests(vx_world_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 
 add_executable(vx_mesh_tests
     main.cpp
+    mesh/mesh_chunk_test.cpp
     mesh/padded_chunk_test.cpp
     mesh/quad_test.cpp)
 target_link_libraries(vx_mesh_tests PRIVATE vx::mesh doctest::doctest)
