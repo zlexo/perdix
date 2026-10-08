@@ -90,6 +90,7 @@ target_include_directories(vx_glm SYSTEM INTERFACE "${glm_SOURCE_DIR}")
 target_compile_definitions(vx_glm INTERFACE GLM_FORCE_DEPTH_ZERO_TO_ONE)
 
 add_library(vx_render STATIC
+    src/block_texture_array.cpp
     src/block_textures.cpp
     src/buffer.cpp
     src/camera.cpp

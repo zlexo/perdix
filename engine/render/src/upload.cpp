@@ -5,8 +5,10 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace vx::render {
 namespace {
@@ -132,11 +134,44 @@ Result<void> upload_image(UploadContext& context, VkCommandBuffer commands, cons
     if (!four_bytes_a_texel(image.format())) {
         return Error{"upload_image takes images of four bytes a texel"};
     }
+    // A region per level, each level half the one before and 1 at least, its
+    // layers one after another.
     const VkExtent2D extent = image.extent();
-    const std::size_t expected = std::size_t{extent.width} * extent.height * 4;
+    std::vector<VkBufferImageCopy2> regions;
+    regions.reserve(image.levels());
+    std::size_t expected = 0;
+    for (std::uint32_t level = 0; level < image.levels(); ++level) {
+        const std::uint32_t width = std::max(extent.width >> level, 1U);
+        const std::uint32_t height = std::max(extent.height >> level, 1U);
+        regions.push_back({
+            .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+            .pNext = nullptr,
+            .bufferOffset = expected,
+            .bufferRowLength = 0, // rows with nothing between them
+            .bufferImageHeight = 0,
+            .imageSubresource =
+                {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .mipLevel = level,
+                    .baseArrayLayer = 0,
+                    .layerCount = image.layers(),
+                },
+            .imageOffset = {.x = 0, .y = 0, .z = 0},
+            .imageExtent = {.width = width, .height = height, .depth = 1},
+        });
+        expected += std::size_t{width} * height * 4 * image.layers();
+    }
     if (pixels.size() != expected) {
-        return Error{"an image of " + std::to_string(extent.width) + " by " +
-                     std::to_string(extent.height) + " takes " + std::to_string(expected) +
+        // "1 level", "5 levels".
+        const auto counted = [](std::uint32_t count, const std::string& noun) {
+            return std::to_string(count) + " " + noun + (count == 1 ? "" : "s");
+        };
+        std::string shape = std::to_string(extent.width) + " by " + std::to_string(extent.height);
+        if (image.levels() != 1 || image.layers() != 1) {
+            shape += ", " + counted(image.levels(), "level") + " and " +
+                     counted(image.layers(), "layer") + ",";
+        }
+        return Error{"an image of " + shape + " takes " + std::to_string(expected) +
                      " bytes of pixels, not " + std::to_string(pixels.size())};
     }
     const Result<VkBuffer> staging = context.stage(pixels);
@@ -148,38 +183,24 @@ Result<void> upload_image(UploadContext& context, VkCommandBuffer commands, cons
     // move, which discards what the image held.
     transition(commands, image.image(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_NONE,
                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    const VkBufferImageCopy2 region = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-        .pNext = nullptr,
-        .bufferOffset = 0,
-        .bufferRowLength = 0, // rows with nothing between them
-        .bufferImageHeight = 0,
-        .imageSubresource =
-            {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .mipLevel = 0,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        .imageOffset = {.x = 0, .y = 0, .z = 0},
-        .imageExtent = {.width = extent.width, .height = extent.height, .depth = 1},
-    };
+               VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+               VK_IMAGE_ASPECT_COLOR_BIT, image.levels(), image.layers());
     const VkCopyBufferToImageInfo2 copy = {
         .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
         .pNext = nullptr,
         .srcBuffer = staging.value(),
         .dstImage = image.image(),
         .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .regionCount = 1,
-        .pRegions = &region,
+        .regionCount = static_cast<std::uint32_t>(regions.size()),
+        .pRegions = regions.data(),
     };
     vkCmdCopyBufferToImage2(commands, &copy);
     // Shaders in any later command may sample it.
     transition(commands, image.image(), VK_PIPELINE_STAGE_2_COPY_BIT,
                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT, image.levels(),
+               image.layers());
     return {};
 }
 
