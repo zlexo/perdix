@@ -2,10 +2,16 @@
 
 #include <vx/core/result.hpp>
 
+#include <sys/stat.h>
+#include <sys/types.h>
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -38,9 +44,47 @@ std::uint32_t field32(std::span<const std::byte> bytes, std::size_t at) noexcept
            (static_cast<std::uint32_t>(field16(bytes, at + 2)) << 16U);
 }
 
+bool seek(std::FILE* file, std::uint64_t offset) noexcept {
+#ifdef _WIN32
+    return _fseeki64(file, static_cast<long long>(offset), SEEK_SET) == 0;
+#else
+    return fseeko(file, static_cast<off_t>(offset), SEEK_SET) == 0;
+#endif
+}
+
+// The size of the open file itself, not of whatever its path names by now,
+// or nothing when it is not a regular file, such as a folder, which opens
+// on some systems.
+std::optional<std::uint64_t> regular_file_size(std::FILE* file) noexcept {
+#ifdef _WIN32
+    struct _stat64 status{};
+    if (_fstat64(_fileno(file), &status) != 0 || (status.st_mode & _S_IFMT) != _S_IFREG) {
+        return std::nullopt;
+    }
+#else
+    struct stat status{};
+    if (fstat(fileno(file), &status) != 0 || !S_ISREG(status.st_mode)) {
+        return std::nullopt;
+    }
+#endif
+    return static_cast<std::uint64_t>(status.st_size);
+}
+
+// The path in UTF-8, for messages. On Windows, path::string() converts
+// through the system's code page and throws on a character it cannot map,
+// which engine code, built without exceptions, cannot catch.
+std::string utf8_name(const std::filesystem::path& path) {
+    const std::u8string name = path.u8string();
+    return {reinterpret_cast<const char*>(name.data()), name.size()};
+}
+
 } // namespace
 
 struct Archive::State {
+    struct Close {
+        void operator()(std::FILE* stream) const noexcept { std::fclose(stream); }
+    };
+
     // An entry as the central directory gives it.
     struct Entry {
         std::string_view name; // into `directory`
@@ -52,22 +96,55 @@ struct Archive::State {
         std::uint16_t flags = 0;
     };
 
-    std::string name;                   // for messages
-    std::vector<std::byte> memory;      // the whole archive
-    std::uint64_t size = 0;             // of the whole archive
-    std::vector<std::byte> directory;   // the central directory, which names point into
-    std::uint64_t directory_offset = 0; // where entries' data has to end
-    std::vector<Entry> entries;         // by name, in byte order
+    std::string name;                       // the path, or the name given, for messages
+    std::unique_ptr<std::FILE, Close> file; // the archive in a file; without one,
+    std::vector<std::byte> memory;          // the archive in memory
+    std::uint64_t size = 0;                 // of the whole archive
+    std::mutex reading;                     // a file has one position to read from
+    std::vector<std::byte> directory;       // the central directory, which names point into
+    std::uint64_t directory_offset = 0;     // where entries' data has to end
+    std::vector<Entry> entries;             // by name, in byte order
 
     // Exactly out.size() bytes from `offset`, or false.
-    [[nodiscard]] bool read(std::uint64_t offset, std::span<std::byte> out) const {
+    [[nodiscard]] bool read(std::uint64_t offset, std::span<std::byte> out) {
         if (offset > size || out.size() > size - offset) {
             return false;
         }
-        std::copy_n(memory.begin() + static_cast<std::ptrdiff_t>(offset), out.size(), out.begin());
-        return true;
+        if (file == nullptr) {
+            std::copy_n(memory.begin() + static_cast<std::ptrdiff_t>(offset), out.size(),
+                        out.begin());
+            return true;
+        }
+        const std::scoped_lock lock(reading);
+        return seek(file.get(), offset) &&
+               std::fread(out.data(), 1, out.size(), file.get()) == out.size();
     }
 };
+
+Result<Archive> Archive::open(const std::filesystem::path& path) {
+    auto state = std::make_unique<State>();
+    state->name = utf8_name(path);
+#ifdef _WIN32
+    // _wfopen_s, since the C runtime marks _wfopen deprecated. Others may
+    // read the file while it is open, not write it.
+    std::FILE* opened = nullptr;
+    if (_wfopen_s(&opened, path.c_str(), L"rb") != 0) {
+        opened = nullptr;
+    }
+    state->file.reset(opened);
+#else
+    state->file.reset(std::fopen(path.c_str(), "rb"));
+#endif
+    if (state->file == nullptr) {
+        return Error{state->name + ": cannot be opened"};
+    }
+    const std::optional<std::uint64_t> size = regular_file_size(state->file.get());
+    if (!size) {
+        return Error{state->name + ": cannot be read"};
+    }
+    state->size = *size;
+    return read_directory(std::move(state));
+}
 
 Result<Archive> Archive::from_bytes(std::string name, std::vector<std::byte> bytes) {
     auto state = std::make_unique<State>();
