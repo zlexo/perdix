@@ -1,0 +1,6 @@
+# Cutout, and faces between two glass blocks are culled.
+opacity = "cutout"
+cull_group = "glass"
+
+[textures]
+all = "glass"

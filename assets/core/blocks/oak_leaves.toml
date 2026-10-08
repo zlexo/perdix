@@ -1,0 +1,6 @@
+# Cutout, and faces between two leaves are culled (RFC 0003, open question 2).
+opacity = "cutout"
+cull_group = "leaves"
+
+[textures]
+all = "oak_leaves"

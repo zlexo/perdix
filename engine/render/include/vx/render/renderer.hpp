@@ -40,6 +40,10 @@ struct RendererDesc {
     // The ImGui context the overlay is built in, by the app, which keeps it
     // alive longer than the renderer; null when there is no overlay.
     ImGuiContext* overlay = nullptr;
+    // RFC 0004's block texture array: every layer at every level, as
+    // build_block_textures lays them out, such as a BlockPack's textures.
+    // Uploaded at startup; empty binds an array of one layer, the checker.
+    std::span<const std::byte> block_textures;
 };
 
 // A color in linear RGB, with alpha. The target's sRGB format encodes it.
@@ -127,6 +131,11 @@ public:
     // Set 0, for whatever else draws with it: tools and tests now, and the
     // chunk renderer (RFC 0007).
     [[nodiscard]] const TextureTable& textures() const noexcept { return textures_; }
+    // The layers of the block texture array in set 0: the pack's, or the
+    // checker's one.
+    [[nodiscard]] std::uint32_t block_texture_layers() const noexcept {
+        return block_textures_.layers();
+    }
     // Null when headless.
     [[nodiscard]] const Swapchain* swapchain() const noexcept {
         return swapchain_.has_value() ? &swapchain_.value() : nullptr;
@@ -146,7 +155,7 @@ private:
              Image depth, TextureTable textures, Image block_textures, Cube cube,
              Extent framebuffer, PresentMode present_mode);
     [[nodiscard]] Result<void> create_frame_objects();
-    [[nodiscard]] Result<void> upload_at_startup();
+    [[nodiscard]] Result<void> upload_at_startup(std::span<const std::byte> block_textures);
     [[nodiscard]] Result<void> add_rendered_semaphores();
     [[nodiscard]] Result<void> recreate_target();
     [[nodiscard]] Result<void> start_overlay(ImGuiContext* overlay);
@@ -157,8 +166,8 @@ private:
     std::optional<Image> offscreen_;
     Image depth_;           // beside either target, the size of its images
     TextureTable textures_; // RFC 0001's one global descriptor set
-    // RFC 0004's block texture array, in the set's binding 2: the checker
-    // alone until the core pack brings block textures.
+    // RFC 0004's block texture array, in the set's binding 2: the layers of
+    // RendererDesc::block_textures, or the checker alone without them.
     Image block_textures_;
     Cube cube_;
     Extent framebuffer_;

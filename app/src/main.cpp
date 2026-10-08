@@ -1,8 +1,11 @@
 #include "fly_controls.hpp"
 #include "overlay.hpp"
+#include "pack.hpp"
 #include "window.hpp"
 
+#include <vx/core/diagnostic.hpp>
 #include <vx/core/version.hpp>
+#include <vx/render/block_pack.hpp>
 #include <vx/render/camera.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/device_report.hpp>
@@ -20,7 +23,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -41,20 +46,28 @@ struct Options {
     std::uint64_t frames = 0;
     // Show the overlay from the first frame, not only once F3 is pressed.
     bool overlay = false;
+    // The folder holding the block pack's assets/; unset, it is found from
+    // where the executable is.
+    std::optional<std::string> pack;
 };
 
 vx::Result<Options> parse_options(std::span<char* const> args) {
     constexpr std::string_view frames_flag = "--frames=";
     constexpr std::string_view overlay_flag = "--overlay";
+    constexpr std::string_view pack_flag = "--pack=";
     Options options;
     for (const std::string_view arg : args) {
         if (arg == overlay_flag) {
             options.overlay = true;
             continue;
         }
+        if (arg.starts_with(pack_flag)) {
+            options.pack = std::string(arg.substr(pack_flag.size()));
+            continue;
+        }
         if (!arg.starts_with(frames_flag)) {
             return vx::Error{"unknown option \"" + std::string(arg) +
-                             "\": try --frames=N or --overlay"};
+                             "\": try --frames=N, --overlay or --pack=DIR"};
         }
         const std::string_view value = arg.substr(frames_flag.size());
         const auto [parsed_to, error] =
@@ -81,6 +94,30 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Perdix " << vx::version_string() << '\n';
 
+    // The block pack (RFC 0004), before anything opens: a bad block file or
+    // texture stops startup with every problem listed by file, line and column.
+    const vx::Result<std::filesystem::path> root = vx::app::find_pack(options.value().pack);
+    if (!root.has_value()) {
+        std::cerr << "error: " << root.error().message << '\n';
+        return 1;
+    }
+    const vx::render::BlockPack pack = vx::render::load_block_pack(root.value());
+    for (vx::Diagnostic diagnostic : pack.diagnostics) {
+        // Named under the root, so a terminal or an editor finds the file
+        // from whatever folder the program was started in.
+        if (const std::filesystem::path file(diagnostic.file); file.is_relative()) {
+            diagnostic.file = (root.value() / file).generic_string();
+        }
+        std::cerr << vx::format(diagnostic) << '\n';
+    }
+    // Any error leaves the pack without a registry or without textures.
+    if (vx::has_errors(pack.diagnostics) || !pack.registry) {
+        std::cerr << "error: the block pack in " << root.value().string() << " did not load\n";
+        return 1;
+    }
+    std::cout << "Block pack: " << root.value().string() << ", " << pack.registry->state_count()
+              << " states\n";
+
     // SDL loads a Vulkan library for the window's surface, and it must be the
     // engine's loader: a driver's library does not understand the loader's
     // instances (see Window::create).
@@ -104,11 +141,14 @@ int main(int argc, char* argv[]) {
                                       .framebuffer = window.value().framebuffer_size(),
                                       .validation = validation,
                                       .present_mode = vx::render::PresentMode::fifo,
-                                      .overlay = overlay.context()});
+                                      .overlay = overlay.context(),
+                                      .block_textures = pack.textures});
     if (!renderer.has_value()) {
         std::cerr << "error: " << renderer.error().message << '\n';
         return 1;
     }
+    // Counted on the GPU, so the report shows what the renderer holds.
+    std::cout << "Block texture array: " << renderer.value().block_texture_layers() << " layers\n";
     const vx::render::Context& context = renderer.value().context();
     std::cout << vx::render::format_device_report(context.device_info(),
                                                   context.portability_fallback());

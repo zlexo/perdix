@@ -44,6 +44,7 @@ doctest_discover_tests(vx_world_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 
 add_executable(vx_render_tests
     main.cpp
+    render/block_pack_test.cpp
     render/block_textures_test.cpp
     render/camera_relative_test.cpp
     render/camera_test.cpp
@@ -57,7 +58,9 @@ add_executable(vx_render_tests
 target_link_libraries(vx_render_tests PRIVATE vx::render doctest::doctest)
 # Block texture files for RFC 0004's texture tests, laid out as a pack:
 # <dir>/test/textures/blocks/<name>.png.
-target_compile_definitions(vx_render_tests PRIVATE VX_BLOCK_TEXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/render/block_textures")
+target_compile_definitions(vx_render_tests PRIVATE VX_BLOCK_TEXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/render/block_textures"
+    # The pack this repository ships, for RFC 0004's shipped-pack test.
+    VX_SHIPPED_PACK_DIR="${PROJECT_SOURCE_DIR}")
 vx_target_warnings(vx_render_tests)
 doctest_discover_tests(vx_render_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 

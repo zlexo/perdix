@@ -71,7 +71,9 @@ vx::Result<vx::render::Renderer> windowed_renderer() {
     return vx::render::Renderer::create({.surface = headless_surface(),
                                          .framebuffer = surface_size,
                                          .validation = true,
-                                         .present_mode = vx::render::PresentMode::fifo});
+                                         .present_mode = vx::render::PresentMode::fifo,
+                                         .overlay = nullptr,
+                                         .block_textures = {}});
 }
 
 // Draws `count` frames of one cube, failing the test at the first error.

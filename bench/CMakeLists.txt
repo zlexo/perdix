@@ -17,13 +17,16 @@ target_compile_features(vx_nanobench PUBLIC cxx_std_20)
 # every build's with --quick, which checks they still run and times nothing.
 add_executable(vx_bench
     main.cpp
+    render/block_pack_bench.cpp
     render/block_textures_bench.cpp
     world/block_registry_bench.cpp
     world/chunk_storage_bench.cpp
     world/packed_array_bench.cpp)
 target_link_libraries(vx_bench PRIVATE vx::world vx::render vx_nanobench)
 # The leaves of the texture tests, copied 1,000 times into a pack.
-target_compile_definitions(vx_bench PRIVATE VX_BENCH_LEAVES_PNG="${PROJECT_SOURCE_DIR}/tests/render/block_textures/test/textures/blocks/leaves.png")
+target_compile_definitions(vx_bench PRIVATE VX_BENCH_LEAVES_PNG="${PROJECT_SOURCE_DIR}/tests/render/block_textures/test/textures/blocks/leaves.png"
+    # The pack this repository ships, timed against RFC 0004's budget.
+    VX_SHIPPED_PACK_DIR="${PROJECT_SOURCE_DIR}")
 vx_target_warnings(vx_bench)
 
 if(VX_BUILD_TESTS)

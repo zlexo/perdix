@@ -81,7 +81,9 @@ TEST_CASE("after its first frames, a frame allocates nothing on the heap") {
         vx::render::Renderer::create({.surface = std::nullopt,
                                       .framebuffer = {.width = 64, .height = 32},
                                       .validation = false,
-                                      .present_mode = vx::render::PresentMode::fifo});
+                                      .present_mode = vx::render::PresentMode::fifo,
+                                      .overlay = nullptr,
+                                      .block_textures = {}});
     INFO((created.has_value() ? std::string() : created.error().message));
     REQUIRE(created.has_value());
     vx::render::Renderer& renderer = created.value();

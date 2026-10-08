@@ -551,6 +551,17 @@ VkExtent2D vk_extent(Extent extent) {
 
 Result<Renderer> Renderer::create(const RendererDesc& desc) {
     ZoneScopedN("Create renderer");
+    // The pack's layers, or the checker alone; bytes that are not whole
+    // layers are refused before anything is made.
+    if (desc.block_textures.size() % block_texture_layer_bytes != 0) {
+        return Error{"the block textures are " + std::to_string(desc.block_textures.size()) +
+                     " bytes, not whole layers of " + std::to_string(block_texture_layer_bytes)};
+    }
+    const std::size_t layers =
+        desc.block_textures.empty() ? 1 : desc.block_textures.size() / block_texture_layer_bytes;
+    if (layers > std::numeric_limits<std::uint32_t>::max()) {
+        return Error{"the block textures hold " + std::to_string(layers) + " layers"};
+    }
     Result<Context> context =
         Context::create({.surface = desc.surface, .validation = desc.validation});
     if (!context.has_value()) {
@@ -600,7 +611,8 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     if (!checker.has_value()) {
         return checker.error();
     }
-    Result<Image> block_textures = create_block_texture_array(context.value().device(), 1);
+    Result<Image> block_textures =
+        create_block_texture_array(context.value().device(), static_cast<std::uint32_t>(layers));
     if (!block_textures.has_value()) {
         return block_textures.error();
     }
@@ -622,7 +634,8 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     if (const Result<void> made = renderer.create_frame_objects(); !made.has_value()) {
         return made.error();
     }
-    if (const Result<void> uploaded = renderer.upload_at_startup(); !uploaded.has_value()) {
+    if (const Result<void> uploaded = renderer.upload_at_startup(desc.block_textures);
+        !uploaded.has_value()) {
         return uploaded.error();
     }
     if (desc.overlay != nullptr) {
@@ -752,7 +765,7 @@ Result<void> Renderer::add_rendered_semaphores() {
 // memory the vertices go through their buffer's mapping and nothing is
 // recorded for them. The images always stage: the copies are submitted, and
 // waited for before their staging buffers go away with `uploads`.
-Result<void> Renderer::upload_at_startup() {
+Result<void> Renderer::upload_at_startup(std::span<const std::byte> block_textures) {
     ZoneScopedN("Upload at startup");
     const Device& device = context_.device();
     UploadContext uploads(device);
@@ -763,7 +776,9 @@ Result<void> Renderer::upload_at_startup() {
     if (uploaded.has_value()) {
         uploaded = upload_image(uploads, commands, cube_.checker, make_checker());
     }
-    if (uploaded.has_value()) {
+    if (uploaded.has_value() && !block_textures.empty()) {
+        uploaded = upload_image(uploads, commands, block_textures_, block_textures);
+    } else if (uploaded.has_value()) {
         // Layer 0 alone, the checker: it reads no file.
         const std::array<TextureRef, 1> checker_only{};
         std::vector<Diagnostic> diagnostics;

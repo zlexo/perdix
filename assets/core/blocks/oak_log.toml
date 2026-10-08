@@ -1,0 +1,18 @@
+[properties]
+axis = ["y", "x", "z"]
+
+[textures]
+side = "oak_log"
+top = "oak_log_top"
+bottom = "oak_log_top"
+
+# Lying along x: the top turns to the north, then the north to the east.
+[[variant]]
+when = { axis = "x" }
+rotate_x = 90
+rotate_y = 90
+
+# Lying along z: the top turns to the north.
+[[variant]]
+when = { axis = "z" }
+rotate_x = 90

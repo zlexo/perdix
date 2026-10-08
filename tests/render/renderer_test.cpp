@@ -4,9 +4,12 @@
 
 #include "block_texture_probe.hpp"
 
+#include <vx/core/diagnostic.hpp>
+#include <vx/render/block_textures.hpp>
 #include <vx/render/camera.hpp>
 #include <vx/render/renderer.hpp>
 #include <vx/render/texture_table.hpp>
+#include <vx/world/block_registry.hpp>
 
 #include <doctest/doctest.h>
 #include <glm/ext/vector_double3.hpp>
@@ -18,6 +21,7 @@
 #include <cstdlib>
 #include <numbers>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,11 +39,13 @@ vx::render::Camera in_front() {
     return camera;
 }
 
-vx::Result<vx::render::Renderer> headless_renderer() {
+vx::Result<vx::render::Renderer> headless_renderer(std::span<const std::byte> block_textures = {}) {
     return vx::render::Renderer::create({.surface = std::nullopt,
                                          .framebuffer = image_size,
                                          .validation = true,
-                                         .present_mode = vx::render::PresentMode::fifo});
+                                         .present_mode = vx::render::PresentMode::fifo,
+                                         .overlay = nullptr,
+                                         .block_textures = block_textures});
 }
 
 using Pixel = std::array<std::uint8_t, 4>;
@@ -92,6 +98,7 @@ TEST_CASE("the renderer's set 0 holds the block texture array, the checker until
     vx::Result<vx::render::Renderer> renderer = headless_renderer();
     INFO((renderer.has_value() ? std::string() : renderer.error().message));
     REQUIRE(renderer.has_value());
+    CHECK(renderer.value().block_texture_layers() == 1);
     const vx::render::TextureTable& textures = renderer.value().textures();
     vx::Result<vx::test::BlockTextureProbe> probe =
         vx::test::BlockTextureProbe::create(renderer.value().context().device(), textures.layout());
@@ -105,6 +112,72 @@ TEST_CASE("the renderer's set 0 holds the block texture array, the checker until
                {0, 0, 0, 255}));
     CHECK(renderer.value().context().instance().validation_counts().errors == 0);
     CHECK(renderer.value().context().instance().validation_counts().warnings == 0);
+}
+
+TEST_CASE("given a pack's textures, the renderer's set 0 holds them") {
+    // Two layers, as a pack's array lays them out: the checker, then the
+    // texture tests' solid color.
+    const std::array<vx::TextureRef, 2> layers = {vx::TextureRef{},
+                                                  vx::TextureRef{.name = "test:solid",
+                                                                 .quarter_turns = 0,
+                                                                 .used_opaque = true,
+                                                                 .used_cutout = false,
+                                                                 .first_use = "a test"}};
+    std::vector<vx::Diagnostic> diagnostics;
+    const std::vector<std::byte> bytes =
+        vx::render::build_block_textures(layers, VX_BLOCK_TEXTURES_DIR, diagnostics);
+    REQUIRE(diagnostics.empty());
+    REQUIRE(bytes.size() == 2 * vx::render::block_texture_layer_bytes);
+
+    vx::Result<vx::render::Renderer> renderer = headless_renderer(bytes);
+    INFO((renderer.has_value() ? std::string() : renderer.error().message));
+    REQUIRE(renderer.has_value());
+    CHECK(renderer.value().block_texture_layers() == 2);
+    const vx::render::TextureTable& textures = renderer.value().textures();
+    vx::Result<vx::test::BlockTextureProbe> probe =
+        vx::test::BlockTextureProbe::create(renderer.value().context().device(), textures.layout());
+    INFO((probe.has_value() ? std::string() : probe.error().message));
+    REQUIRE(probe.has_value());
+    constexpr float texel = 1.0F / 16.0F;
+    // Layer 1's first texel at level 0, where the bytes put it: after level
+    // 0 of layer 0.
+    const std::size_t solid = 4 * 256;
+    const Pixel expected = {std::to_integer<std::uint8_t>(bytes[solid]),
+                            std::to_integer<std::uint8_t>(bytes[solid + 1]),
+                            std::to_integer<std::uint8_t>(bytes[solid + 2]),
+                            std::to_integer<std::uint8_t>(bytes[solid + 3])};
+    CHECK(near(
+        probe.value().sample(textures.set(),
+                             {.u = 0.5F * texel, .v = 0.5F * texel, .layer = 1.0F, .level = 0.0F}),
+        expected));
+    // Layer 0 is still the checker.
+    CHECK(near(probe.value().sample(textures.set(), {.u = 0.5F * texel, .v = 0.5F * texel}),
+               {255, 0, 255, 255}));
+    CHECK(renderer.value().context().instance().validation_counts().errors == 0);
+    CHECK(renderer.value().context().instance().validation_counts().warnings == 0);
+}
+
+TEST_CASE("the renderer refuses block textures that are not whole layers, before making anything") {
+    // A window's surface source that notes when it is asked for a surface,
+    // which the context does as soon as it has made an instance: a refusal
+    // after that point would have asked.
+    bool asked = false;
+    const vx::render::SurfaceSource surface{.instance_extensions = {},
+                                            .create = [&](VkInstance) -> vx::Result<VkSurfaceKHR> {
+                                                asked = true;
+                                                return vx::Error{"no surface in this test"};
+                                            }};
+    const std::vector<std::byte> bytes(vx::render::block_texture_layer_bytes + 1);
+    const vx::Result<vx::render::Renderer> renderer =
+        vx::render::Renderer::create({.surface = surface,
+                                      .framebuffer = image_size,
+                                      .validation = true,
+                                      .present_mode = vx::render::PresentMode::fifo,
+                                      .overlay = nullptr,
+                                      .block_textures = bytes});
+    REQUIRE_FALSE(renderer.has_value());
+    CHECK(renderer.error().message.find("not whole layers") != std::string::npos);
+    CHECK_FALSE(asked);
 }
 
 TEST_CASE("the sky shows around a cube, in the color it was given") {
