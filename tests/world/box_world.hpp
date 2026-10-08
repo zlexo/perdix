@@ -2,7 +2,10 @@
 
 #include <vx/core/vec3d.hpp>
 #include <vx/world/collision.hpp>
+#include <vx/world/movement.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <initializer_list>
 #include <vector>
 
@@ -52,6 +55,57 @@ public:
 
     void collect(const Box& region, std::vector<Box>& out) const override {
         regions.push_back(region);
+        for (const Box& box : boxes) {
+            if (box.max.x >= region.min.x && box.min.x <= region.max.x &&
+                box.max.y >= region.min.y && box.min.y <= region.max.y &&
+                box.max.z >= region.min.z && box.min.z <= region.max.z) {
+                out.push_back(box);
+            }
+        }
+    }
+};
+
+// A player at rest on the floor at the origin, as RFC 0010's vectors start:
+// on the ground, with gravity's step carried.
+inline Player at_rest() {
+    Player player;
+    player.velocity.y = -0.0784;
+    player.on_ground = true;
+    return player;
+}
+
+// A floor whose top is y = 0, a million blocks out each way, with loose
+// boxes on it, for the tick's tests: the floor's blocks are made as a
+// region asks for them.
+class FlatWorld final : public BlockBoxes {
+public:
+    // How far out the floor goes, in blocks.
+    static constexpr double reach = 1e6;
+
+    std::vector<Box> boxes;
+
+    void collect(const Box& region, std::vector<Box>& out) const override {
+        // The blocks under y = 0 that the region overlaps or touches, as far
+        // as the floor goes: clamped as doubles, so no cast overflows.
+        for (const double coordinate :
+             {region.min.x, region.min.y, region.min.z, region.max.x, region.max.y, region.max.z}) {
+            if (!std::isfinite(coordinate)) {
+                return;
+            }
+        }
+        const auto first = [](double low) {
+            return static_cast<int>(std::clamp(std::ceil(low - 1.0), -reach, reach));
+        };
+        const auto last = [](double high) {
+            return static_cast<int>(std::clamp(std::floor(high), -reach, reach));
+        };
+        for (int y = first(region.min.y); y <= std::min(last(region.max.y), -1); ++y) {
+            for (int z = first(region.min.z); z <= last(region.max.z); ++z) {
+                for (int x = first(region.min.x); x <= last(region.max.x); ++x) {
+                    out.push_back(block_box(x, y, z));
+                }
+            }
+        }
         for (const Box& box : boxes) {
             if (box.max.x >= region.min.x && box.min.x <= region.max.x &&
                 box.max.y >= region.min.y && box.min.y <= region.max.y &&
