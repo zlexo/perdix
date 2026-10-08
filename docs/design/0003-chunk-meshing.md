@@ -282,3 +282,15 @@ Pull request plan item 6, merging:
 | Quad output, typical terrain | under 32 KiB | 6.4 KiB | 11.4 KiB | |
 
   Merging itself costs little: the time goes into culling and into each face's occlusion and key, which both ways compute. The quad counts are the prototype's exactly.
+
+Pull request plan item 7, drawing one chunk:
+
+- **`Renderer::set_chunk` takes one chunk's mesh**, copies its quads to the GPU and draws them every frame after the cubes, waiting first for the frames in flight that may read the chunk it replaces. RFC 0007's arena replaces it with many chunks.
+- **Two pipelines from one shader**, `chunk.slang`: the opaque pass and the cutout pass, whose fragment shader discards texels below half alpha. Each pass is one indexed command over its six faces' ranges, which the mesher lays back to back; `vertexOffset` moves the indices to the pass's first quad, which the shader reads at `vertex_index >> 2`.
+- **One 32-bit index buffer**, 0, 1, 2, 2, 3, 0 per quad for the 196,608 quads a chunk can have, 4.5 MiB, made at startup.
+- **The shader picks each vertex's corner as `vertex_corner` does on the CPU**: the split along the brighter diagonal, and the corners taken backwards on +x, +y and -z faces, where they turn clockwise seen from outside. The CPU function is tested on all six faces and 256 patterns of occlusion, the shader on the GPU by a quad darkened at opposite corners each way.
+- **Each face shows its image unmirrored from outside** (RFC 0004): on the sides top edge up, on the top face north, on the bottom face south, at one image a block, repeating across merged quads. A GPU test reads a four-color texture back from each face seen head on.
+- **Faces are shaded by the way they look**, as Minecraft shades them without light: tops 1, north and south 0.8, east and west 0.6, bottoms 0.5, so a block's sides tell apart before M6. A look, the owner's to judge; the light RFC (M6) takes it over.
+- **Occlusion's four levels give 1, 0.8, 0.6 and 0.4 of the light**, as Minecraft's smooth lighting does, scaled by a strength in the push constants: 1 for now, the overlay's slider in item 8.
+- **Textures are sampled with the texture table's nearest sampler** until RFC 0004's item 8 brings the sharpened filter.
+- **The app draws a demo chunk** of the core pack (every block, the log's three ways, both cutouts): 275 quads, 51 of them cutout. The M2 scene takes 0.18 to 0.23 ms of GPU time a frame at 2560 by 1440 on KosmicKrisp and 0.14 to 0.17 ms on MoltenVK (medians of 300 headless frames, three runs each).

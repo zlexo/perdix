@@ -118,12 +118,12 @@ add_library(vx_render STATIC
 add_library(vx::render ALIAS vx_render)
 
 target_include_directories(vx_render PUBLIC include)
-target_link_libraries(vx_render PUBLIC vx::core vx::world vx_volk vx_vma vx_glm vx_imgui
+target_link_libraries(vx_render PUBLIC vx::core vx::world vx::mesh vx_volk vx_vma vx_glm vx_imgui
     PRIVATE vx_imgui_vulkan vx_stb_image)
 target_compile_features(vx_render PUBLIC cxx_std_20)
 vx_target_warnings(vx_render)
 vx_target_engine_options(vx_render)
-vx_add_shaders(vx_render shaders/cube.slang shaders/triangle.slang)
+vx_add_shaders(vx_render shaders/chunk.slang shaders/cube.slang shaders/triangle.slang)
 
 # macOS strips DYLD_LIBRARY_PATH from programs started through protected
 # binaries, so a loader that the SDK's setup script made findable by name can

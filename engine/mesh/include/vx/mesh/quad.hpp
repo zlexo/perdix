@@ -142,4 +142,28 @@ constexpr std::array<int, 3> quad_corner(const QuadFields& quad, int corner) noe
     return at;
 }
 
+// The two triangles of every quad are vertices 0, 1, 2 and 2, 3, 0 of the
+// shared index pattern (RFC 0003). Which corner of the quad each vertex is,
+// as the chunk's vertex shader picks it:
+//
+// - The split. The pattern splits a quad along the diagonal through the
+//   corners vertices 0 and 2 play. Where the diagonal through corners 1 and
+//   3 is the brighter one, every vertex plays the next corner, which moves
+//   the split onto it (Lysenko), so a lone dark corner keeps a triangle of
+//   its own. A tie keeps corners 0 and 2: equal sums mean both splits
+//   interpolate alike.
+// - The winding. Front faces turn counterclockwise seen from outside. Corners
+//   0, 1, 2, 3 do on -x, -y and +z faces; on +x, +y and -z they turn the
+//   other way, so the vertices take them backwards.
+constexpr bool corners_turn_clockwise(Face face) noexcept {
+    return face == Face::pos_x || face == Face::pos_y || face == Face::neg_z;
+}
+
+constexpr int vertex_corner(Face face, std::array<std::uint8_t, 4> occlusion, int vertex) noexcept {
+    assert(vertex >= 0 && vertex < 4);
+    const bool rotate = occlusion[1] + occlusion[3] > occlusion[0] + occlusion[2];
+    const int corner = (vertex + (rotate ? 1 : 0)) & 3;
+    return corners_turn_clockwise(face) ? (4 - corner) & 3 : corner;
+}
+
 } // namespace vx

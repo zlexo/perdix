@@ -86,6 +86,7 @@ add_executable(vx_render_vulkan_tests
     main.cpp
     render/block_texture_array_test.cpp
     render/buffer_test.cpp
+    render/chunk_test.cpp
     render/context_test.cpp
     render/gpu_timer_test.cpp
     render/instance_test.cpp

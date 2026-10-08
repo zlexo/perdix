@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vx/core/result.hpp>
+#include <vx/mesh/mesh_chunk.hpp>
 #include <vx/render/buffer.hpp>
 #include <vx/render/camera.hpp>
 #include <vx/render/context.hpp>
@@ -10,6 +11,7 @@
 #include <vx/render/swapchain.hpp>
 #include <vx/render/swapchain_choice.hpp>
 #include <vx/render/texture_table.hpp>
+#include <vx/world/coordinates.hpp>
 
 #include <glm/ext/vector_int3_sized.hpp>
 #include <volk.h>
@@ -136,6 +138,13 @@ public:
     [[nodiscard]] std::uint32_t block_texture_layers() const noexcept {
         return block_textures_.layers();
     }
+
+    // RFC 0003's milestone, one chunk: drawn every frame after the cubes, its
+    // opaque quads, then its cutout ones. Copies `mesh`'s quads to the GPU in
+    // place of the chunk before, once the frames in flight, which may still
+    // read it, are done. An empty mesh leaves nothing to draw. RFC 0007
+    // brings many chunks, in one buffer.
+    [[nodiscard]] Result<void> set_chunk(ChunkPos position, const ChunkMesh& mesh);
     // Null when headless.
     [[nodiscard]] const Swapchain* swapchain() const noexcept {
         return swapchain_.has_value() ? &swapchain_.value() : nullptr;
@@ -151,9 +160,25 @@ private:
         std::uint32_t checker_slot = 0;
     };
 
+    // What draws chunks (RFC 0003): a pipeline for each pass, from one
+    // shader, and the index buffer every chunk shares, 0, 1, 2, 2, 3, 0 for
+    // each quad, as many as a chunk can have.
+    struct ChunkDrawing {
+        GraphicsPipeline opaque;
+        GraphicsPipeline cutout;
+        Buffer indices;
+    };
+    // The chunk set_chunk gave: its quads, opaque then cutout.
+    struct UploadedChunk {
+        ChunkPos position;
+        Buffer quads;
+        std::uint32_t opaque = 0;
+        std::uint32_t cutout = 0;
+    };
+
     Renderer(Context context, std::optional<Swapchain> swapchain, std::optional<Image> offscreen,
              Image depth, TextureTable textures, Image block_textures, Cube cube,
-             Extent framebuffer, PresentMode present_mode);
+             ChunkDrawing chunk_drawing, Extent framebuffer, PresentMode present_mode);
     [[nodiscard]] Result<void> create_frame_objects();
     [[nodiscard]] Result<void> upload_at_startup(std::span<const std::byte> block_textures);
     [[nodiscard]] Result<void> add_rendered_semaphores();
@@ -170,6 +195,8 @@ private:
     // RendererDesc::block_textures, or the checker alone without them.
     Image block_textures_;
     Cube cube_;
+    ChunkDrawing chunk_drawing_;
+    std::optional<UploadedChunk> chunk_;
     Extent framebuffer_;
     Extent target_framebuffer_; // the size the target was made for
     PresentMode present_mode_;

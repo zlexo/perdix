@@ -1,3 +1,4 @@
+#include "demo_chunk.hpp"
 #include "fly_controls.hpp"
 #include "overlay.hpp"
 #include "pack.hpp"
@@ -5,6 +6,8 @@
 
 #include <vx/core/diagnostic.hpp>
 #include <vx/core/version.hpp>
+#include <vx/mesh/mesh_chunk.hpp>
+#include <vx/mesh/padded_chunk.hpp>
 #include <vx/render/block_pack.hpp>
 #include <vx/render/camera.hpp>
 #include <vx/render/context.hpp>
@@ -13,18 +16,19 @@
 #include <vx/render/renderer.hpp>
 #include <vx/render/swapchain.hpp>
 #include <vx/render/swapchain_choice.hpp>
+#include <vx/world/block_registry.hpp>
+#include <vx/world/chunk_storage.hpp>
 
-#include <glm/ext/vector_int3_sized.hpp>
 #include <tracy/Tracy.hpp>
 
 #include <algorithm>
-#include <array>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -77,6 +81,27 @@ vx::Result<Options> parse_options(std::span<char* const> args) {
         }
     }
     return options;
+}
+
+// RFC 0003's milestone: one chunk of the core pack, meshed and given to the
+// renderer, with air all around it. The startup report says its quads.
+vx::Result<void> draw_demo_chunk(const vx::BlockRegistry& registry,
+                                 vx::render::Renderer& renderer) {
+    const vx::Result<vx::ChunkStorage> chunk = vx::app::demo_chunk(registry);
+    if (!chunk.has_value()) {
+        return chunk.error();
+    }
+    auto padded = std::make_unique<vx::PaddedChunk>();
+    vx::assemble_padded(vx::ChunkNeighborhood(chunk.value()), *padded);
+    vx::MeshScratch scratch;
+    const vx::ChunkMesh mesh = vx::mesh_chunk(*padded, registry.visuals(), scratch);
+    if (const vx::Result<void> set = renderer.set_chunk({.x = 0, .y = 0, .z = 0}, mesh);
+        !set.has_value()) {
+        return set.error();
+    }
+    std::cout << "Chunk: " << mesh.all().size() << " quads, " << mesh.pass(vx::Pass::cutout).size()
+              << " of them cutout\n";
+    return {};
 }
 
 } // namespace
@@ -156,13 +181,19 @@ int main(int argc, char* argv[]) {
         std::cout << vx::render::format_swapchain_report(swapchain->choice());
     }
 
+    if (const vx::Result<void> drawn = draw_demo_chunk(*pack.registry, renderer.value());
+        !drawn.has_value()) {
+        std::cerr << "error: " << drawn.error().message << '\n';
+        return 1;
+    }
+
     // A daytime sky blue, #78A7FF in sRGB.
     constexpr vx::render::Color sky = {.r = 0.188F, .g = 0.386F, .b = 1.0F, .a = 1.0F};
-    // One cube to fly around, seen first from a little above and in front.
-    const std::array cubes = {glm::i64vec3(0, 0, 0)};
+    // The chunk seen first from above one corner, looking across it.
     vx::render::Camera camera;
-    camera.position = {0.5, 1.6, 3.0};
-    camera.pitch = -0.4F;
+    camera.position = {40.0, 19.0, 40.0};
+    camera.yaw = 0.785F;   // toward -x and -z, an eighth of a turn left of north
+    camera.pitch = -0.29F; // down at the middle of the chunk
     std::cout << "Click the window to fly: W A S D, Space and Shift for up and down, Ctrl "
                  "to go faster, the mouse to look; Escape releases the mouse. F3 shows the "
                  "overlay.\n";
@@ -190,8 +221,8 @@ int main(int argc, char* argv[]) {
         renderer.value().resize(window.value().framebuffer_size());
         ImDrawData* const shown =
             overlay.build(renderer.value(), camera, window.value().mouse_captured());
-        const vx::Result<vx::render::Frame> rendered = renderer.value().render(
-            {.sky = sky, .camera = camera, .cubes = cubes, .overlay = shown});
+        const vx::Result<vx::render::Frame> rendered =
+            renderer.value().render({.sky = sky, .camera = camera, .cubes = {}, .overlay = shown});
         if (!rendered.has_value()) {
             std::cerr << "error: " << rendered.error().message << '\n';
             return 1;

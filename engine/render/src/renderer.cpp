@@ -5,6 +5,8 @@
 #include "vk_result.hpp"
 
 #include <vx/core/diagnostic.hpp>
+#include <vx/mesh/mesh_chunk.hpp>
+#include <vx/mesh/quad.hpp>
 #include <vx/render/block_texture_array.hpp>
 #include <vx/render/block_textures.hpp>
 #include <vx/render/buffer.hpp>
@@ -12,6 +14,7 @@
 #include <vx/render/gpu_timer.hpp>
 #include <vx/render/texture_table.hpp>
 #include <vx/render/upload.hpp>
+#include <vx/shaders/chunk.hpp>
 #include <vx/shaders/cube.hpp>
 #include <vx/world/block_registry.hpp>
 
@@ -189,6 +192,107 @@ Result<GraphicsPipeline> make_cube_pipeline(const Device& device, VkFormat color
                                     "cube");
 }
 
+// The chunk shader's push constants (chunk.slang). Its float3s sit at
+// multiples of 16, as the shader lays them out.
+struct ChunkPush {
+    glm::mat4 view_projection; // offset 0: rotation and projection only
+    VkDeviceAddress quads;     // offset 64
+    std::uint64_t padding_a;   // offset 72
+    glm::vec3 origin;          // offset 80: the chunk's lowest corner, from the camera's block
+    float occlusion_strength;  // offset 92
+    glm::vec3 camera_fraction; // offset 96
+    std::uint32_t padding_b;   // offset 108
+};
+static_assert(sizeof(ChunkPush) == 112 && offsetof(ChunkPush, origin) == 80 &&
+              offsetof(ChunkPush, occlusion_strength) == 92 &&
+              offsetof(ChunkPush, camera_fraction) == 96);
+
+// One frame's push constants for the chunk at `position`, on a target of
+// `extent`. The chunk's lowest corner is subtracted from the camera's block
+// in 64-bit integers, as cubes are, so the GPU only sees small numbers.
+ChunkPush make_chunk_push(const Camera& camera, const BlockAndFraction& split, VkExtent2D extent,
+                          VkDeviceAddress quads, ChunkPos position) {
+    const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    const glm::i64vec3 lowest =
+        glm::i64vec3(position.x, position.y, position.z) * static_cast<std::int64_t>(chunk_size);
+    return {.view_projection = view_projection(camera, aspect),
+            .quads = quads,
+            .padding_a = 0,
+            .origin = relative_origin(lowest, split.block),
+            .occlusion_strength = 1.0F,
+            .camera_fraction = split.fraction,
+            .padding_b = 0};
+}
+
+// Writes each cube's block, as seen from the camera's block, into a frame
+// slot's buffer of origins: subtracted in 64-bit integers, then small
+// enough to be exact as floats.
+Result<void> write_cube_origins(VmaAllocator allocator, const Buffer& origins,
+                                std::span<const glm::i64vec3> cubes,
+                                const glm::i64vec3& camera_block) {
+    for (std::size_t cube = 0; cube < cubes.size(); ++cube) {
+        const glm::vec4 origin(relative_origin(cubes[cube], camera_block), 0.0F);
+        std::memcpy(origins.mapping().subspan(cube * sizeof(glm::vec4)).data(), &origin,
+                    sizeof(origin));
+    }
+    if (const VkResult result =
+            vmaFlushAllocation(allocator, origins.allocation(), 0, VK_WHOLE_SIZE);
+        result != VK_SUCCESS) {
+        return Error{"vmaFlushAllocation failed: " + vk_result_name(result)};
+    }
+    return {};
+}
+
+// One of the chunk shader's two pipelines: its fragment shader is
+// `fragment_entry`, the opaque one or the cutout one with its alpha test.
+// Back faces are culled: the mesher only emits faces seen from outside.
+Result<GraphicsPipeline> make_chunk_pipeline(const Device& device, VkFormat color_format,
+                                             VkDescriptorSetLayout textures,
+                                             const char* fragment_entry, std::string_view name) {
+    return GraphicsPipeline::create(device,
+                                    {.spirv = shaders::chunk,
+                                     .vertex_entry = "vertex_main",
+                                     .fragment_entry = fragment_entry,
+                                     .color_format = color_format,
+                                     .depth_format = depth_format,
+                                     .cull_mode = VK_CULL_MODE_BACK_BIT,
+                                     .set_layout = textures,
+                                     .push_constant_size = sizeof(ChunkPush),
+                                     .push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT},
+                                    name);
+}
+
+// Both of the chunk shader's pipelines, opaque then cutout.
+Result<std::pair<GraphicsPipeline, GraphicsPipeline>>
+make_chunk_pipelines(const Device& device, VkFormat color_format, VkDescriptorSetLayout textures) {
+    Result<GraphicsPipeline> opaque =
+        make_chunk_pipeline(device, color_format, textures, "fragment_opaque", "chunk, opaque");
+    if (!opaque.has_value()) {
+        return opaque.error();
+    }
+    Result<GraphicsPipeline> cutout =
+        make_chunk_pipeline(device, color_format, textures, "fragment_cutout", "chunk, cutout");
+    if (!cutout.has_value()) {
+        return cutout.error();
+    }
+    return std::pair(std::move(opaque).value(), std::move(cutout).value());
+}
+
+// The shared index buffer's contents: 0, 1, 2, 2, 3, 0 for the first quad,
+// then the same 4 higher for each next one, as many quads as a chunk can
+// have (RFC 0003). 32-bit, since 16-bit indices stop at 16,384 quads.
+std::vector<std::uint32_t> quad_indices() {
+    std::vector<std::uint32_t> indices;
+    indices.reserve(max_chunk_quads * 6);
+    for (std::uint32_t quad = 0; quad < max_chunk_quads; ++quad) {
+        const std::uint32_t first = quad * 4;
+        for (const std::uint32_t corner : {0U, 1U, 2U, 2U, 3U, 0U}) {
+            indices.push_back(first + corner);
+        }
+    }
+    return indices;
+}
+
 void begin_commands(VkCommandBuffer commands) {
     const VkCommandBufferBeginInfo begin = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -200,14 +304,48 @@ void begin_commands(VkCommandBuffer commands) {
 }
 
 // What a frame's passes draw, besides the target they draw into.
+// A chunk to draw: its pipelines, the shared index buffer, the push
+// constants, and how many quads each pass draws, opaque first.
+struct ChunkDraw {
+    const GraphicsPipeline* opaque_pipeline;
+    const GraphicsPipeline* cutout_pipeline;
+    VkBuffer indices;
+    ChunkPush push;
+    std::uint32_t opaque; // 0 draws nothing, as when there is no chunk
+    std::uint32_t cutout;
+};
+
 struct FrameDraw {
     Color clear;
     const GraphicsPipeline* pipeline;
     VkDescriptorSet textures; // set 0, the texture table
     DrawPush push;
     std::uint32_t cubes;
+    ChunkDraw chunk;
     ImDrawData* overlay; // null: no overlay
 };
+
+// Draws a chunk's quads through the shared index buffer, its opaque quads
+// and then its cutout ones, each pass one command over its six faces.
+// vertexOffset moves each command's vertex indices to its pass's first
+// quad, which the vertex shader reads at vertex_index >> 2.
+void record_chunk(VkCommandBuffer commands, VkDescriptorSet textures, const ChunkDraw& chunk) {
+    vkCmdBindIndexBuffer(commands, chunk.indices, 0, VK_INDEX_TYPE_UINT32);
+    const auto pass = [&](const GraphicsPipeline& pipeline, std::uint32_t first,
+                          std::uint32_t quads) {
+        if (quads == 0) {
+            return;
+        }
+        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle());
+        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout(), 0, 1,
+                                &textures, 0, nullptr);
+        vkCmdPushConstants(commands, pipeline.layout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
+                           sizeof(chunk.push), &chunk.push);
+        vkCmdDrawIndexed(commands, 6 * quads, 1, 0, static_cast<std::int32_t>(4 * first), 0);
+    };
+    pass(*chunk.opaque_pipeline, 0, chunk.opaque);
+    pass(*chunk.cutout_pipeline, chunk.opaque, chunk.cutout);
+}
 
 // Records the frame's one pass, inside the GPU zone Main pass: it clears the
 // target, draws the cubes, then the overlay over them when there is one. The
@@ -281,6 +419,7 @@ void record_main_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* g
     vkCmdPushConstants(commands, draw.pipeline->layout(), push_stages, 0, sizeof(draw.push),
                        &draw.push);
     vkCmdDraw(commands, static_cast<std::uint32_t>(cube_vertices.size()), draw.cubes, 0, 0);
+    record_chunk(commands, draw.textures, draw.chunk);
     if (draw.overlay != nullptr) {
         // Last in the pass, so it draws over everything else. Its pipeline
         // neither tests nor writes depth.
@@ -623,6 +762,17 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     if (!vertices.has_value()) {
         return vertices.error();
     }
+    Result<std::pair<GraphicsPipeline, GraphicsPipeline>> chunk_pipelines =
+        make_chunk_pipelines(context.value().device(), color_format, textures.value().layout());
+    if (!chunk_pipelines.has_value()) {
+        return chunk_pipelines.error();
+    }
+    Result<Buffer> indices = Buffer::create(
+        context.value().device(), max_chunk_quads * 6 * sizeof(std::uint32_t),
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT, BufferMemory::upload_target, "chunk indices");
+    if (!indices.has_value()) {
+        return indices.error();
+    }
 
     Renderer renderer(std::move(context).value(), std::move(swapchain), std::move(offscreen),
                       std::move(depth).value(), std::move(textures).value(),
@@ -630,6 +780,9 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
                       {.pipeline = std::move(pipeline).value(),
                        .vertices = std::move(vertices).value(),
                        .checker = std::move(checker).value()},
+                      {.opaque = std::move(chunk_pipelines.value().first),
+                       .cutout = std::move(chunk_pipelines.value().second),
+                       .indices = std::move(indices).value()},
                       desc.framebuffer, desc.present_mode);
     if (const Result<void> made = renderer.create_frame_objects(); !made.has_value()) {
         return made.error();
@@ -650,17 +803,20 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
 
 Renderer::Renderer(Context context, std::optional<Swapchain> swapchain,
                    std::optional<Image> offscreen, Image depth, TextureTable textures,
-                   Image block_textures, Cube cube, Extent framebuffer, PresentMode present_mode)
+                   Image block_textures, Cube cube, ChunkDrawing chunk_drawing, Extent framebuffer,
+                   PresentMode present_mode)
     : context_(std::move(context)), swapchain_(std::move(swapchain)),
       offscreen_(std::move(offscreen)), depth_(std::move(depth)), textures_(std::move(textures)),
-      block_textures_(std::move(block_textures)), cube_(std::move(cube)), framebuffer_(framebuffer),
+      block_textures_(std::move(block_textures)), cube_(std::move(cube)),
+      chunk_drawing_(std::move(chunk_drawing)), framebuffer_(framebuffer),
       target_framebuffer_(framebuffer), present_mode_(present_mode) {}
 
 Renderer::Renderer(Renderer&& other) noexcept
     : context_(std::move(other.context_)), swapchain_(std::move(other.swapchain_)),
       offscreen_(std::move(other.offscreen_)), depth_(std::move(other.depth_)),
       textures_(std::move(other.textures_)), block_textures_(std::move(other.block_textures_)),
-      cube_(std::move(other.cube_)), framebuffer_(other.framebuffer_),
+      cube_(std::move(other.cube_)), chunk_drawing_(std::move(other.chunk_drawing_)),
+      chunk_(std::move(other.chunk_)), framebuffer_(other.framebuffer_),
       target_framebuffer_(other.target_framebuffer_), present_mode_(other.present_mode_),
       swapchain_stale_(other.swapchain_stale_), slots_(std::exchange(other.slots_, {})),
       origins_(std::move(other.origins_)),
@@ -773,6 +929,11 @@ Result<void> Renderer::upload_at_startup(std::span<const std::byte> block_textur
     begin_commands(commands);
     Result<void> uploaded =
         upload(uploads, commands, cube_.vertices, 0, std::as_bytes(std::span(cube_vertices)));
+    const std::vector<std::uint32_t> indices = quad_indices();
+    if (uploaded.has_value()) {
+        uploaded =
+            upload(uploads, commands, chunk_drawing_.indices, 0, std::as_bytes(std::span(indices)));
+    }
     if (uploaded.has_value()) {
         uploaded = upload_image(uploads, commands, cube_.checker, make_checker());
     }
@@ -858,6 +1019,13 @@ Result<void> Renderer::recreate_target() {
                 return rebuilt.error();
             }
             cube_.pipeline = std::move(rebuilt).value();
+            Result<std::pair<GraphicsPipeline, GraphicsPipeline>> chunk_pipelines =
+                make_chunk_pipelines(context_.device(), format, textures_.layout());
+            if (!chunk_pipelines.has_value()) {
+                return chunk_pipelines.error();
+            }
+            chunk_drawing_.opaque = std::move(chunk_pipelines.value().first);
+            chunk_drawing_.cutout = std::move(chunk_pipelines.value().second);
             if (overlay_ != nullptr) {
                 ImGui::SetCurrentContext(overlay_);
                 const ImGui_ImplVulkan_PipelineInfo overlay_pipeline =
@@ -889,14 +1057,28 @@ void Renderer::set_present_mode(PresentMode mode) noexcept {
     }
 }
 
+namespace {
+
+// What a frame may ask for: at most max_cubes cubes, and an overlay only of
+// a renderer made with an overlay context.
+Result<void> check_frame_inputs(const FrameInputs& inputs, bool has_overlay) {
+    if (inputs.cubes.size() > Renderer::max_cubes) {
+        return Error{"a frame draws at most " + std::to_string(Renderer::max_cubes) +
+                     " cubes, not " + std::to_string(inputs.cubes.size())};
+    }
+    if (inputs.overlay != nullptr && !has_overlay) {
+        return Error{"a frame's overlay needs a renderer made with an overlay context"};
+    }
+    return {};
+}
+
+} // namespace
+
 Result<Frame> Renderer::render(const FrameInputs& inputs) {
     ZoneScopedN("Render");
-    if (inputs.cubes.size() > max_cubes) {
-        return Error{"a frame draws at most " + std::to_string(max_cubes) + " cubes, not " +
-                     std::to_string(inputs.cubes.size())};
-    }
-    if (inputs.overlay != nullptr && overlay_ == nullptr) {
-        return Error{"a frame's overlay needs a renderer made with an overlay context"};
+    if (const Result<void> valid = check_frame_inputs(inputs, overlay_ != nullptr);
+        !valid.has_value()) {
+        return valid.error();
     }
     if (framebuffer_.width == 0 || framebuffer_.height == 0) {
         return Frame::skipped;
@@ -929,21 +1111,31 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
     const VkSemaphoreSubmitInfo frame_done =
         semaphore_submit(frames_done_, frame, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
-    // The slot's origins are free with the slot. Each is a cube's block as
-    // seen from the camera's, subtracted in 64-bit integers.
+    // The slot's origins are free with the slot.
     const BlockAndFraction split = split_position(inputs.camera.position);
     const Buffer& origins = origins_[frame % frames_in_flight];
-    for (std::size_t cube = 0; cube < inputs.cubes.size(); ++cube) {
-        const glm::vec4 origin(relative_origin(inputs.cubes[cube], split.block), 0.0F);
-        std::memcpy(origins.mapping().subspan(cube * sizeof(glm::vec4)).data(), &origin,
-                    sizeof(origin));
-    }
-    if (const VkResult result = vmaFlushAllocation(context_.device().allocator(),
-                                                   origins.allocation(), 0, VK_WHOLE_SIZE);
-        result != VK_SUCCESS) {
-        return Error{"vmaFlushAllocation failed: " + vk_result_name(result)};
+    if (const Result<void> written =
+            write_cube_origins(context_.device().allocator(), origins, inputs.cubes, split.block);
+        !written.has_value()) {
+        return written.error();
     }
     const auto cubes = static_cast<std::uint32_t>(inputs.cubes.size());
+    // The chunk, if there is one, as a target of `extent` sees it.
+    const auto chunk_draw = [&](VkExtent2D extent) {
+        ChunkDraw draw{.opaque_pipeline = &chunk_drawing_.opaque,
+                       .cutout_pipeline = &chunk_drawing_.cutout,
+                       .indices = chunk_drawing_.indices.handle(),
+                       .push = {},
+                       .opaque = 0,
+                       .cutout = 0};
+        if (chunk_.has_value()) {
+            draw.push = make_chunk_push(inputs.camera, split, extent, chunk_->quads.address(),
+                                        chunk_->position);
+            draw.opaque = chunk_->opaque;
+            draw.cutout = chunk_->cutout;
+        }
+        return draw;
+    };
 
     if (offscreen_.has_value()) {
         vkResetCommandPool(device, slot.command_pool, 0);
@@ -961,6 +1153,7 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
                                              cube_.vertices.address(), origins.address(),
                                              cube_.checker_slot),
                       .cubes = cubes,
+                      .chunk = chunk_draw(offscreen_->extent()),
                       .overlay = inputs.overlay});
         if (const Result<void> submitted =
                 submit_frame(queue, slot.command_buffer, {}, std::span(&frame_done, 1), waited);
@@ -1001,6 +1194,7 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
          .push = make_draw_push(inputs.camera, split, swapchain.choice().extent,
                                 cube_.vertices.address(), origins.address(), cube_.checker_slot),
          .cubes = cubes,
+         .chunk = chunk_draw(swapchain.choice().extent),
          .overlay = inputs.overlay});
 
     const VkSemaphoreSubmitInfo wait =
@@ -1118,6 +1312,47 @@ Result<std::vector<std::uint8_t>> Renderer::capture() {
     std::vector<std::uint8_t> pixels(bytes.size());
     std::memcpy(pixels.data(), bytes.data(), bytes.size());
     return pixels;
+}
+
+Result<void> Renderer::set_chunk(ChunkPos position, const ChunkMesh& mesh) {
+    ZoneScopedN("Set chunk");
+    const Device& device = context_.device();
+    // The frames in flight may still read the chunk this one replaces.
+    vkDeviceWaitIdle(device.handle());
+    chunk_.reset();
+    const std::span<const Quad> quads = mesh.all();
+    if (quads.empty()) {
+        return {};
+    }
+    Result<Buffer> buffer = Buffer::create(device, quads.size_bytes(),
+                                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                           BufferMemory::upload_target, "chunk quads");
+    if (!buffer.has_value()) {
+        return buffer.error();
+    }
+    // Through frame slot 0's commands, which no frame uses after the wait.
+    const FrameSlot& slot = slots_[0];
+    vkResetCommandPool(device.handle(), slot.command_pool, 0);
+    begin_commands(slot.command_buffer);
+    UploadContext uploads(device);
+    const Result<void> uploaded =
+        upload(uploads, slot.command_buffer, buffer.value(), 0, std::as_bytes(quads));
+    uploads.finish(slot.command_buffer);
+    vkEndCommandBuffer(slot.command_buffer);
+    if (!uploaded.has_value()) {
+        return uploaded.error();
+    }
+    if (const Result<void> submitted = submit(device.queue(), slot.command_buffer, {}, {});
+        !submitted.has_value()) {
+        return submitted.error();
+    }
+    vkQueueWaitIdle(device.queue());
+    chunk_ = UploadedChunk{.position = position,
+                           .quads = std::move(buffer).value(),
+                           .opaque = static_cast<std::uint32_t>(mesh.pass(Pass::opaque).size()),
+                           .cutout = static_cast<std::uint32_t>(mesh.pass(Pass::cutout).size())};
+    return {};
 }
 
 void Renderer::destroy() noexcept {
