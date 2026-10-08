@@ -28,6 +28,7 @@ target_compile_definitions(vx_yyjson PUBLIC
 # files, starting with where the game is. Like world, it has no GPU or window
 # code (ADR 0003), so the web viewer can compile it to WebAssembly.
 add_library(vx_minecraft STATIC
+    src/install.cpp
     src/json.cpp
     src/version_description.cpp)
 add_library(vx::minecraft ALIAS vx_minecraft)
