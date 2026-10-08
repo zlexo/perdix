@@ -191,7 +191,10 @@ TEST_CASE("variants that are not tables are an error") {
 
 TEST_CASE("a block file belongs at assets/<namespace>/blocks/<name>.toml and names its textures") {
     for (const char* const path :
-         {"assets/core/stone.toml", "assets/core/blocks/stone.json", "blocks/.toml"}) {
+         {"assets/core/stone.toml", "assets/core/blocks/stone.json", "blocks/.toml",
+          // Exactly four parts, the first assets: not three, nor more.
+          "x/blocks/stone.toml", "pack/assets/core/blocks/stone.toml",
+          "assets/core/blocks/a/b.toml", "assets//blocks/stone.toml", "assets/core/blocks/.toml"}) {
         INFO(path);
         const Parsed parsed = parse(path, "[textures]\nall = \"stone\"\n");
         CHECK_FALSE(parsed.block.has_value());

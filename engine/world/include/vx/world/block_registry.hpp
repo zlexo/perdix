@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <span>
 #include <string>
@@ -49,6 +50,15 @@ public:
     // Block files given in memory: tests, and the loader that reads a pack.
     // Files are taken in path order, whatever order they come in.
     [[nodiscard]] static BlockLoad load(std::span<const SourceFile> files);
+    // A pack on disk: every assets/<namespace>/blocks/*.toml under `root`,
+    // loaded as the files above, their paths relative to `root`. Each
+    // texture file no block uses, assets/<namespace>/textures/blocks/*.png,
+    // is a warning. Names match exactly, as on Linux, whatever the file
+    // system: one that differs only in case is an error. So are no assets
+    // folder, no block file, and a folder or file that cannot be read; any
+    // error leaves no registry. Files whose names start with a dot are
+    // skipped.
+    [[nodiscard]] static BlockLoad load(const std::filesystem::path& root);
 
     // "core:furnace[lit=true]": properties left out take their defaults.
     [[nodiscard]] std::optional<BlockState> find(std::string_view key) const;
