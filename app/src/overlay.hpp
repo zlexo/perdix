@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 struct ImDrawData;
@@ -24,12 +25,21 @@ struct ChunkMeshing {
     std::size_t cutout = 0; // of the quads, those the cutout pass draws
 };
 
+// The player's movement, as the overlay shows it (RFC 0010).
+struct MovementReport {
+    bool noclip = false;         // RFC 0001's camera, or walking
+    double speed = 0.0;          // horizontally, in blocks a second
+    double vertical_speed = 0.0; // up, in blocks a second
+    bool on_ground = false;
+    bool sprinting = false;
+    std::uint64_t ticks = 0; // movement ticks run so far
+};
+
 // RFC 0001's debug overlay, built with Dear ImGui over the window: frame
 // time graphs, the GPU and driver, the present mode switch, RFC 0004's
-// texture filter switch, RFC 0003's meshing toggles, the camera's position
-// and the validation count. F3 shows and hides it. It owns the ImGui
-// context, which the renderer it is given to draws with, so it must outlive
-// that renderer.
+// texture filter switch, RFC 0003's meshing toggles, the camera's position,
+// the player's movement (RFC 0010) and the validation count. F3 shows and hides it. It owns the
+// ImGui context, which the renderer it is given to draws with, so it must outlive that renderer.
 class Overlay {
 public:
     // An overlay for `window`, shown from the start or not. `validation` says
@@ -63,6 +73,9 @@ public:
     [[nodiscard]] ImDrawData* build(render::Renderer& renderer, const render::Camera& camera,
                                     bool mouse_captured, ChunkMeshing& meshing);
 
+    // What the next build shows of the player's movement.
+    void set_movement(const MovementReport& movement) noexcept { movement_ = movement; }
+
 private:
     // A measure's last samples, in milliseconds, for its graph.
     struct History {
@@ -91,9 +104,11 @@ private:
     static void draw_block_filter(render::Renderer& renderer);
     static void draw_chunk(render::Renderer& renderer, ChunkMeshing& meshing);
     static void draw_camera(const render::Camera& camera);
+    static void draw_movement(const MovementReport& movement);
     void draw_validation(const render::Context& context) const;
 
     ImGuiContext* context_;
+    MovementReport movement_;
     bool validation_;
     bool shown_;
     History frame_;

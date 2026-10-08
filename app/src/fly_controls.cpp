@@ -33,4 +33,18 @@ render::FlyInput read_fly_controls(Window& window) {
     };
 }
 
+MovementKeys read_walking_keys(const Window& window) {
+    if (!window.mouse_captured()) {
+        return {};
+    }
+    const bool* keys = SDL_GetKeyboardState(nullptr);
+    return {.forward = keys[SDL_SCANCODE_W],
+            .back = keys[SDL_SCANCODE_S],
+            .left = keys[SDL_SCANCODE_A],
+            .right = keys[SDL_SCANCODE_D],
+            .jump = keys[SDL_SCANCODE_SPACE],
+            .sneak = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT],
+            .sprint = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]};
+}
+
 } // namespace vx::app

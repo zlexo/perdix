@@ -4,9 +4,11 @@
 #include "overlay.hpp"
 #include "pack.hpp"
 #include "startup_pack.hpp"
+#include "walking.hpp"
 #include "window.hpp"
 
 #include <vx/core/diagnostic.hpp>
+#include <vx/core/vec3d.hpp>
 #include <vx/core/version.hpp>
 #include <vx/mesh/mesh_chunk.hpp>
 #include <vx/mesh/padded_chunk.hpp>
@@ -20,7 +22,10 @@
 #include <vx/render/swapchain_choice.hpp>
 #include <vx/world/block_registry.hpp>
 #include <vx/world/block_visual.hpp>
+#include <vx/world/chunk_boxes.hpp>
 #include <vx/world/chunk_storage.hpp>
+#include <vx/world/collision.hpp>
+#include <vx/world/movement.hpp>
 
 #include <SDL3/SDL_stdinc.h>
 #include <tracy/Tracy.hpp>
@@ -71,8 +76,10 @@ vx::app::Environment read_environment() {
 }
 
 // RFC 0003's milestone: one chunk of the core pack, with air all around it,
-// kept padded so that the overlay's merge toggle can mesh it again.
+// kept padded so that the overlay's merge toggle can mesh it again, and kept
+// as blocks for the player to walk on (RFC 0010).
 struct DemoChunk {
+    vx::ChunkStorage blocks;                  // all air until draw_demo_chunk fills it
     std::span<const vx::BlockVisual> visuals; // the registry's, which outlives the chunk
     std::unique_ptr<vx::PaddedChunk> padded = std::make_unique<vx::PaddedChunk>();
     vx::MeshScratch scratch;
@@ -102,12 +109,13 @@ vx::Result<void> mesh_demo_chunk(DemoChunk& chunk, vx::render::Renderer& rendere
 // quads.
 vx::Result<void> draw_demo_chunk(const vx::BlockRegistry& registry, vx::render::Renderer& renderer,
                                  DemoChunk& demo) {
-    const vx::Result<vx::ChunkStorage> chunk = vx::app::demo_chunk(registry);
+    vx::Result<vx::ChunkStorage> chunk = vx::app::demo_chunk(registry);
     if (!chunk.has_value()) {
         return chunk.error();
     }
     demo.visuals = registry.visuals();
     vx::assemble_padded(vx::ChunkNeighborhood(chunk.value()), *demo.padded);
+    demo.blocks = std::move(chunk).value();
     if (const vx::Result<void> meshed = mesh_demo_chunk(demo, renderer); !meshed.has_value()) {
         return meshed.error();
     }
@@ -130,6 +138,58 @@ vx::Result<vx::render::Frame> draw_frame(vx::render::Renderer& renderer, vx::app
         return meshed.error();
     }
     return renderer.render({.sky = sky, .camera = camera, .cubes = {}, .overlay = shown});
+}
+
+// The player (RFC 0010): walking on the demo chunk, or flying RFC 0001's
+// noclip camera, which F4 switches between.
+struct Mover {
+    vx::app::Walking walking;
+    float field_of_view = 0.0F; // the camera's own, which sprinting widens
+    bool noclip = false;
+};
+
+// Whether a standing player fits with its feet at `feet`, inside no block.
+bool stands_free(const vx::BlockBoxes& blocks, vx::Vec3d feet) {
+    const vx::Box body = vx::body_box(feet, vx::Pose::standing);
+    std::vector<vx::Box> inside;
+    blocks.collect(body, inside);
+    return !vx::overlaps_any(body, inside);
+}
+
+// One frame of the player. F4 switches modes, landing the player where the
+// camera was, unless that is inside a block, where it could not move: there
+// F4 keeps flying. Walking, the mouse turns the camera every frame and the
+// keys move the player once a tick, the camera following it between ticks.
+void move_player(Mover& mover, vx::app::Window& window, vx::render::Camera& camera,
+                 const vx::BlockBoxes& blocks, std::chrono::nanoseconds elapsed, float seconds) {
+    if (window.take_noclip_toggle()) {
+        const vx::Vec3d feet{.x = camera.position.x,
+                             .y = camera.position.y - vx::app::Walking::eye_height,
+                             .z = camera.position.z};
+        if (!mover.noclip) {
+            mover.noclip = true;
+        } else if (stands_free(blocks, feet)) {
+            mover.noclip = false;
+            mover.walking.place(feet);
+        }
+    }
+    const vx::render::FlyInput fly_input = vx::app::read_fly_controls(window);
+    if (mover.noclip) {
+        vx::render::fly(camera, fly_input, seconds);
+        camera.fov_y = mover.field_of_view;
+        return;
+    }
+    vx::render::fly(camera,
+                    {.move = glm::vec3(0.0F),
+                     .yaw_turn = fly_input.yaw_turn,
+                     .pitch_turn = fly_input.pitch_turn,
+                     .fast = false},
+                    seconds);
+    mover.walking.advance(elapsed, {.held = vx::app::read_walking_keys(window), .yaw = camera.yaw},
+                          blocks);
+    const vx::Vec3d eye = mover.walking.eye();
+    camera.position = {eye.x, eye.y, eye.z};
+    camera.fov_y = mover.field_of_view * static_cast<float>(mover.walking.fov_factor());
 }
 
 // The block pack, found and loaded with the player's Minecraft where it can
@@ -244,14 +304,20 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // The chunk seen first from above one corner, looking across it.
+    // The player stands on the grass in one corner of the chunk, looking
+    // across it at the oak (RFC 0010); F4 switches to RFC 0001's noclip
+    // camera and back.
+    const vx::ChunkBoxes blocks(demo.blocks, {});
     vx::render::Camera camera;
-    camera.position = {40.0, 19.0, 40.0};
     camera.yaw = 0.785F;   // toward -x and -z, an eighth of a turn left of north
-    camera.pitch = -0.29F; // down at the middle of the chunk
-    std::cout << "Click the window to fly: W A S D, Space and Shift for up and down, Ctrl "
-                 "to go faster, the mouse to look; Escape releases the mouse. F3 shows the "
-                 "overlay.\n";
+    camera.pitch = -0.15F; // a little down, at the oak
+    Mover mover{.walking = vx::app::Walking(vx::app::demo_spawn, 0.0),
+                .field_of_view = camera.fov_y,
+                .noclip = false};
+    std::cout << "Click the window to walk: W A S D, Space to jump, Ctrl with W to sprint, "
+                 "the mouse to look. F4 flies through everything (W A S D, Space and Shift "
+                 "for up and down, Ctrl to go faster) and back. Escape releases the mouse; "
+                 "F3 shows the overlay.\n";
 
     using Clock = std::chrono::steady_clock;
     Clock::time_point last = Clock::now();
@@ -268,10 +334,18 @@ int main(int argc, char* argv[]) {
             overlay.record(now - last, renderer.value().frame_times());
         }
         // The time since the last frame, at most a tenth of a second, so a
-        // stall, such as dragging the window, does not fling the camera.
-        const float seconds = std::min(std::chrono::duration<float>(now - last).count(), 0.1F);
+        // stall, such as dragging the window, does not fling the camera. The
+        // walking clock catches up on its own, at most a second.
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - last);
+        const float seconds = std::min(std::chrono::duration<float>(elapsed).count(), 0.1F);
         last = now;
-        vx::render::fly(camera, vx::app::read_fly_controls(window.value()), seconds);
+        move_player(mover, window.value(), camera, blocks, elapsed, seconds);
+        overlay.set_movement({.noclip = mover.noclip,
+                              .speed = mover.walking.speed(),
+                              .vertical_speed = mover.walking.vertical_speed(),
+                              .on_ground = mover.walking.player().on_ground,
+                              .sprinting = mover.walking.player().sprinting,
+                              .ticks = mover.walking.ticks()});
 
         const vx::Result<vx::render::Frame> rendered =
             draw_frame(renderer.value(), overlay, window.value(), camera, demo);
