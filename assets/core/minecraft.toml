@@ -1,0 +1,17 @@
+# What each core texture is when the player's Minecraft is found (RFC 0009).
+# Names are the game's block textures, assets/minecraft/textures/block/<name>.png
+# in its jar, read from the player's own copy at startup; nothing of the
+# game's is in this repository. A tint is a color map in the jar, read where
+# plains are, or a color written #rrggbb. Layers are drawn bottom first.
+stone = "stone"
+cobblestone = "cobblestone"
+dirt = "dirt"
+sand = "sand"
+grass_top = { texture = "grass_block_top", tint = "grass" }
+# The side, with its tinted overlay drawn over it.
+grass_side = ["grass_block_side", { texture = "grass_block_side_overlay", tint = "grass" }]
+oak_log = "oak_log"
+oak_log_top = "oak_log_top"
+oak_planks = "oak_planks"
+oak_leaves = { texture = "oak_leaves", tint = "foliage" }
+glass = "glass"

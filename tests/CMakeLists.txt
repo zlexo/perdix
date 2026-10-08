@@ -151,16 +151,18 @@ doctest_discover_tests(vx_render_allocation_tests PROPERTIES ${VX_VULKAN_DOCTEST
 add_executable(vx_minecraft_tests
     main.cpp
     minecraft/install_test.cpp
+    minecraft/shipped_map_test.cpp
     minecraft/texture_map_test.cpp
     minecraft/version_description_fuzz_test.cpp
     minecraft/version_description_test.cpp
     fuzz/version_description_fuzz.cpp)
 target_link_libraries(vx_minecraft_tests PRIVATE vx::minecraft doctest::doctest)
-# RFC 0009's corpus of bad texture maps; version descriptions and release
-# times, and inputs fuzzing saved, read by the description fuzz target's
-# replay test.
+# RFC 0009's corpus of bad texture maps and the pack this repository ships,
+# for the shipped map's test; version descriptions and release times, and
+# inputs fuzzing saved, read by the description fuzz target's replay test.
 target_compile_definitions(vx_minecraft_tests PRIVATE
     VX_BAD_MAPS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/minecraft/bad_maps"
+    VX_SHIPPED_PACK_DIR="${PROJECT_SOURCE_DIR}"
     VX_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/minecraft/descriptions"
     VX_RELEASE_TIMES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/minecraft/release_times"
     VX_DESCRIPTION_FUZZ_INPUTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fuzz/inputs/version_description")
