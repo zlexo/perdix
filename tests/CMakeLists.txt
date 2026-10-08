@@ -51,7 +51,8 @@ add_executable(vx_world_tests
     world/collision_test.cpp
     world/coordinates_test.cpp
     world/names_test.cpp
-    world/packed_array_test.cpp)
+    world/packed_array_test.cpp
+    world/step_up_test.cpp)
 target_link_libraries(vx_world_tests PRIVATE vx::world doctest::doctest)
 # RFC 0004's corpus of bad block files, read by the block file tests.
 target_compile_definitions(vx_world_tests PRIVATE VX_BAD_BLOCKS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/world/bad_blocks")

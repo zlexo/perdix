@@ -73,6 +73,20 @@ struct Move {
 // move on the ground.
 [[nodiscard]] Move clip_move(const Box& box, Vec3d wanted, std::span<const Box> obstacles) noexcept;
 
+// clip_move with step-up (RFC 0010). When the plain move hit something
+// horizontally, and the box started it on the ground or landed during it,
+// the box may move onto a surface instead: each top or bottom face of
+// `obstacles` from 0 to `step_height` above the box's bottom (where it
+// landed, if it did) is tried, lowest first, skipping the height the plain
+// move reached, and the first move at that height that goes further
+// horizontally than the plain one wins, ending on that surface. The floor at
+// 0 counts, so a jump into a doorway walks in under the lintel. A full block
+// 1 above is never stepped onto, and a step height of 0 or less steps
+// nothing. What was cut short is told against `wanted`, as for the plain
+// move.
+[[nodiscard]] Move clip_move_stepping(const Box& box, Vec3d wanted, bool started_on_ground,
+                                      double step_height, std::span<const Box> obstacles) noexcept;
+
 // The blocks movement collides with.
 class BlockBoxes {
 public:
