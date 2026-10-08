@@ -60,6 +60,16 @@ double horizontal_squared(const Vec3d& v) noexcept {
     return (v.x * v.x) + (v.z * v.z);
 }
 
+// One of the edge guard's steps: 0.05 blocks back toward 0, or 0 from under
+// that.
+double step_back(double motion) noexcept {
+    constexpr double step = 0.05;
+    if (std::abs(motion) < step) {
+        return 0.0;
+    }
+    return motion > 0.0 ? motion - step : motion + step;
+}
+
 // The lowest height above `bottom` of a face of `obstacles` that is more than
 // `after` and at most `step_height`, leaving out `skip`; infinity if none is.
 double next_face(std::span<const Box> obstacles, double bottom, double after, double step_height,
@@ -162,16 +172,65 @@ Move clip_move_stepping(const Box& box, Vec3d wanted, bool started_on_ground, do
     }
 }
 
-Move move_box(const Box& box, Vec3d wanted, const BlockBoxes& world, std::vector<Box>& scratch) {
+bool overlaps_any(const Box& box, std::span<const Box> obstacles) noexcept {
+    return std::ranges::any_of(obstacles, [&box](const Box& obstacle) {
+        return overlap(box, obstacle, Axis::x) && overlap(box, obstacle, Axis::y) &&
+               overlap(box, obstacle, Axis::z);
+    });
+}
+
+Vec3d guard_edge(const Box& box, Vec3d wanted, double max_drop,
+                 std::span<const Box> obstacles) noexcept {
+    // The space under the moved box's bottom, down by the drop and a little
+    // more, so that a block exactly that far down still counts.
+    const auto supported = [&](double x, double z) {
+        const Box below{.min = {.x = box.min.x + x,
+                                .y = box.min.y - max_drop - (2.0 * collision_tolerance),
+                                .z = box.min.z + z},
+                        .max = {.x = box.max.x + x, .y = box.min.y, .z = box.max.z + z}};
+        return overlaps_any(below, obstacles);
+    };
+    // Moving up, or already over a deeper drop, there is no edge to hold the
+    // box back at.
+    if (wanted.y > 0.0 || !supported(0.0, 0.0)) {
+        return wanted;
+    }
+    constexpr int most_steps = 256;
+    const auto back = [](double motion, int steps) {
+        return steps < most_steps ? step_back(motion) : 0.0;
+    };
+    double x = wanted.x;
+    double z = wanted.z;
+    for (int steps = 0; x != 0.0 && !supported(x, 0.0); ++steps) {
+        x = back(x, steps);
+    }
+    for (int steps = 0; z != 0.0 && !supported(0.0, z); ++steps) {
+        z = back(z, steps);
+    }
+    for (int steps = 0; x != 0.0 && z != 0.0 && !supported(x, z); ++steps) {
+        x = back(x, steps);
+        z = back(z, steps);
+    }
+    return {.x = x, .y = wanted.y, .z = z};
+}
+
+Move move_box(const Box& box, Vec3d wanted, const BlockBoxes& world, std::vector<Box>& scratch,
+              const MoveRules& rules) {
     const auto finite = [](const Vec3d& v) {
         return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
     };
-    if (!finite(wanted) || !finite(box.min) || !finite(box.max)) {
+    if (!finite(wanted) || !finite(box.min) || !finite(box.max) ||
+        !std::isfinite(rules.step_height) || !std::isfinite(rules.edge_drop)) {
         return {};
     }
+    Box region = swept(box, wanted);
+    region.min.y -= std::max(rules.edge_drop, 0.0);
+    region.max.y += std::max(rules.step_height, 0.0);
     scratch.clear();
-    world.collect(swept(box, wanted), scratch);
-    return clip_move(box, wanted, scratch);
+    world.collect(region, scratch);
+    const Vec3d guarded =
+        rules.edge_drop > 0.0 ? guard_edge(box, wanted, rules.edge_drop, scratch) : wanted;
+    return clip_move_stepping(box, guarded, rules.started_on_ground, rules.step_height, scratch);
 }
 
 } // namespace vx

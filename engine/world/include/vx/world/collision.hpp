@@ -87,6 +87,27 @@ struct Move {
 [[nodiscard]] Move clip_move_stepping(const Box& box, Vec3d wanted, bool started_on_ground,
                                       double step_height, std::span<const Box> obstacles) noexcept;
 
+// Whether `box` overlaps one of `obstacles` by more than the tolerance on
+// every axis: whether it would be inside a block there.
+[[nodiscard]] bool overlaps_any(const Box& box, std::span<const Box> obstacles) noexcept;
+
+// The sneaking edge guard (RFC 0010). While the box is within `max_drop` of
+// the ground and not moving up, `wanted`'s horizontal motion is cut back in
+// steps of 0.05 blocks (to 0 once under 0.05) until the box, moved by it,
+// would still have an obstacle within `max_drop` below its bottom: x alone,
+// then z alone, then both together. A motion still over the edge after 256
+// steps (12.8 blocks, far beyond walking speed) becomes 0, so the guard
+// always ends.
+[[nodiscard]] Vec3d guard_edge(const Box& box, Vec3d wanted, double max_drop,
+                               std::span<const Box> obstacles) noexcept;
+
+// How a move treats steps and edges (RFC 0010); the defaults do neither.
+struct MoveRules {
+    double step_height = 0.0;       // the highest surface risen onto without a jump
+    bool started_on_ground = false; // step-up's other condition
+    double edge_drop = 0.0;         // the edge guard's drop, or 0 for no guard
+};
+
 // The blocks movement collides with.
 class BlockBoxes {
 public:
@@ -97,12 +118,14 @@ public:
     virtual void collect(const Box& region, std::vector<Box>& out) const = 0;
 };
 
-// clip_move against the world's blocks: the boxes the move could touch are
-// gathered into `scratch`, which keeps its memory from one move to the next,
-// so moves allocate only when they gather more boxes than any before them. A
-// move with a coordinate that is not finite does nothing, and asks the world
-// for nothing.
+// A move against the world's blocks. The boxes it could touch, down to the
+// edge guard's drop and up to the step's height, are gathered into
+// `scratch`, which keeps its memory from one move to the next, so moves
+// allocate only when they gather more boxes than any before them; then the
+// edge guard, if the rules ask for one, and clip_move_stepping. A move with a
+// coordinate or a rule that is not finite does nothing, and asks the world
+// for nothing; a negative drop or step height is none.
 [[nodiscard]] Move move_box(const Box& box, Vec3d wanted, const BlockBoxes& world,
-                            std::vector<Box>& scratch);
+                            std::vector<Box>& scratch, const MoveRules& rules = {});
 
 } // namespace vx
