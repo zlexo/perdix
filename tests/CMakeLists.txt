@@ -25,6 +25,7 @@ add_executable(vx_core_tests
     core/archive_test.cpp
     core/crc32_test.cpp
     core/diagnostic_test.cpp
+    core/file_test.cpp
     core/result_test.cpp
     core/version_test.cpp
     fuzz/archive_fuzz.cpp)

@@ -62,6 +62,7 @@ add_library(vx_core STATIC
     src/archive.cpp
     src/crc32.cpp
     src/diagnostic.cpp
+    src/file.cpp
     src/version.cpp)
 add_library(vx::core ALIAS vx_core)
 
