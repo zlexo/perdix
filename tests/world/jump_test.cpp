@@ -227,3 +227,14 @@ TEST_CASE("a jump into a slab steps onto it instead, as the game's jump cancel d
     CHECK(steps[5].along == doctest::Approx(0.131740).epsilon(tolerance));
     CHECK(steps[5].on_ground);
 }
+
+TEST_CASE("a jump never slows a faster rise: it leaves at least 0.42, as 26.2's does") {
+    // On the ground and already rising 0.6 a tick, as something pushing the
+    // player up would leave it: Space keeps the 0.6. Nothing in Perdix
+    // pushes a player up yet, so only this shows it.
+    const vx::test::FlatWorld world;
+    vx::Player player = at_rest();
+    player.velocity.y = 0.6;
+    const std::vector<Step> steps = run(player, {{.jump = true}}, world);
+    CHECK(steps[0].height == doctest::Approx(0.6).epsilon(tolerance));
+}
