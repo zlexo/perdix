@@ -47,6 +47,7 @@ add_executable(vx_world_tests
     world/block_registry_test.cpp
     world/block_state_test.cpp
     world/body_test.cpp
+    world/chunk_boxes_test.cpp
     world/chunk_conversion_test.cpp
     world/chunk_storage_test.cpp
     world/collision_test.cpp

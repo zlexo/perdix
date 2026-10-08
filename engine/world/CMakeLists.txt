@@ -30,6 +30,7 @@ add_library(vx_world STATIC
     src/block_data_pool.cpp
     src/block_file.cpp
     src/block_registry.cpp
+    src/chunk_boxes.cpp
     src/chunk_storage.cpp
     src/collision.cpp
     src/movement.cpp
