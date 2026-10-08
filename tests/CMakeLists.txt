@@ -51,6 +51,7 @@ add_executable(vx_world_tests
     world/collision_test.cpp
     world/coordinates_test.cpp
     world/edge_guard_test.cpp
+    world/move_rules_test.cpp
     world/names_test.cpp
     world/packed_array_test.cpp
     world/step_up_test.cpp)
