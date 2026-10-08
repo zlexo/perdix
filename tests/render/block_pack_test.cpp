@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -90,6 +91,27 @@ TEST_CASE("a pack whose texture is missing keeps its registry, has no bytes, and
     // Relative to the root, as a block file is named.
     CHECK(loaded.diagnostics[0].file == "assets/t/textures/blocks/rock.png");
     CHECK(loaded.diagnostics[0].message.find("no such file") != std::string::npos);
+}
+
+TEST_CASE("a pack takes made textures in place of its texture files") {
+    // No rock.png: the made texture stands in for it.
+    const TempPack pack;
+    pack.write("assets/t/blocks/rock.toml", "[textures]\nall = \"rock\"\n");
+    vx::MadeTexture rock{.name = "t:rock", .rgba = {}};
+    rock.rgba.fill(200);
+    const std::vector<vx::MadeTexture> made = {rock};
+    const vx::render::BlockPack loaded = vx::render::load_block_pack(pack.root(), made);
+    std::string problems;
+    for (const vx::Diagnostic& diagnostic : loaded.diagnostics) {
+        problems += vx::format(diagnostic) + "\n";
+    }
+    INFO(problems);
+    CHECK(loaded.diagnostics.empty());
+    REQUIRE(loaded.registry.has_value());
+    REQUIRE(loaded.textures.size() == 2 * vx::render::block_texture_layer_bytes);
+    // Level 0 of layer 1 comes right after the checker's.
+    const std::size_t level0 = 4 * 256;
+    CHECK(std::memcmp(&loaded.textures[level0], rock.rgba.data(), rock.rgba.size()) == 0);
 }
 
 TEST_CASE("a pack whose block file has an error builds no textures") {
