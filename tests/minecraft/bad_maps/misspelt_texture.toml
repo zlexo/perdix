@@ -1,0 +1,6 @@
+# A misspelt key: the texture it meant has no key, and no block uses the one it names.
+ston = "stone"
+# path: assets/core/minecraft.toml
+# uses: core:stone at assets/core/blocks/stone.toml:2:7
+# expect: assets/core/minecraft.toml: warning: core:stone has no key, and is drawn from its own file (used at assets/core/blocks/stone.toml:2:7)
+# expect: assets/core/minecraft.toml:2:1: warning: no block uses the texture core:ston; did you mean 'stone'?

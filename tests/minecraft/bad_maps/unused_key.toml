@@ -1,0 +1,6 @@
+stone = "stone"
+# The pack has no mossy stone, and nothing here says so but this warning.
+mossy_stone = "mossy_cobblestone"
+# path: assets/core/minecraft.toml
+# uses: core:stone at assets/core/blocks/stone.toml:2:7
+# expect: assets/core/minecraft.toml:3:1: warning: no block uses the texture core:mossy_stone

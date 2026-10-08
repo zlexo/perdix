@@ -1,0 +1,5 @@
+grass_top = { texture = "grass_block_top", tint = "grass" }
+# path: assets/core/minecraft.toml
+# uses: core:grass_side at assets/core/blocks/grass.toml:2:8
+# uses: core:grass_top at assets/core/blocks/grass.toml:3:7
+# expect: assets/core/minecraft.toml: warning: core:grass_side has no key, and is drawn from its own file (used at assets/core/blocks/grass.toml:2:8)
