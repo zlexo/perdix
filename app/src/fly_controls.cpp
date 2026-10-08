@@ -2,11 +2,16 @@
 
 #include <SDL3/SDL.h>
 
+#include <numbers>
+
 namespace vx::app {
 namespace {
 
-// About a quarter turn for 600 pixels of mouse motion.
-constexpr float radians_per_pixel = 0.0025F;
+// Minecraft 26.2's turn at its default mouse sensitivity, from its jar: the
+// setting, 0.5 at 100%, times 0.6 plus 0.2, cubed, times 8, times 0.15
+// degrees: 0.15 degrees for each count of mouse motion, a quarter turn for
+// 600.
+constexpr float radians_per_count = 0.15F * std::numbers::pi_v<float> / 180.0F;
 
 } // namespace
 
@@ -27,8 +32,8 @@ render::FlyInput read_fly_controls(Window& window) {
                  axis(SDL_SCANCODE_W, SDL_SCANCODE_S)},
         // Mouse right turns right, a negative yaw; mouse up, a negative y,
         // looks up.
-        .yaw_turn = -motion.x * radians_per_pixel,
-        .pitch_turn = -motion.y * radians_per_pixel,
+        .yaw_turn = -motion.x * radians_per_count,
+        .pitch_turn = -motion.y * radians_per_count,
         .fast = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL],
     };
 }
