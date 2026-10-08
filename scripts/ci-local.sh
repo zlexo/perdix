@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Runs the checks of .github/workflows/ci.yml that can run on this machine,
 # so that a push rarely meets a red CI. When a job in ci.yml changes, change
-# its check here too; the layering pattern and the tool versions are read
-# from ci.yml itself.
+# its check here too; the layering and Minecraft file patterns and the tool
+# versions are read from ci.yml itself.
 #
 #   scripts/ci-local.sh                every check below except ubsan
 #   scripts/ci-local.sh format tidy    only the checks named
 #
 # Checks:
 #   layering        no GPU or window headers in the GPU-free layers (ADR 0003)
+#   minecraft-files nothing of Minecraft's own committed: no assets/minecraft/
+#                   folder and no jar (RFC 0009)
 #   format          clang-format over every tracked .cpp and .hpp
 #   build           the debug preset: configure if needed, build, run the tests
 #   tidy            clang-tidy over every tracked engine and app .cpp
@@ -76,6 +78,36 @@ check_layering() {
         return 1
     elif [ "$status" -ne 1 ]; then
         fail "git grep failed with status $status, so nothing was checked"
+        return 1
+    fi
+}
+
+check_minecraft_files() {
+    # CI's own pattern, from its grep line, over the tracked paths written
+    # NUL-separated, as CI writes them: git quotes a path with an unusual
+    # character in a list of lines.
+    local line pattern tracked found status=0
+    line=$(grep -m 1 "grep -zinE" "$workflow")
+    pattern=$(printf '%s\n' "$line" | sed -nE "s/.*grep -zinE '([^']*)'.*/\1/p")
+    if [ -z "$pattern" ]; then
+        fail "could not read the Minecraft files pattern from $workflow, so nothing was checked"
+        return 1
+    fi
+    tracked=$(mktemp) || return 1
+    found=$(mktemp) || return 1
+    if ! git ls-files -z > "$tracked"; then
+        fail "git ls-files failed, so nothing was checked"
+        rm -f "$tracked" "$found"
+        return 1
+    fi
+    grep -zinE "$pattern" "$tracked" > "$found" || status=$?
+    tr '\0' '\n' < "$found"
+    rm -f "$tracked" "$found"
+    if [ "$status" -eq 0 ]; then
+        fail "Minecraft's own files are never committed (RFC 0009): they are read from the player's install"
+        return 1
+    elif [ "$status" -ne 1 ]; then
+        fail "grep failed with status $status, so nothing was checked"
         return 1
     fi
 }
@@ -205,8 +237,8 @@ check_ubsan() {
     build_and_test mac-ubsan
 }
 
-all=(layering format build tidy linux-warnings)
-known=" layering format build tidy linux-warnings ubsan "
+all=(layering minecraft-files format build tidy linux-warnings)
+known=" layering minecraft-files format build tidy linux-warnings ubsan "
 if [ "$#" -eq 0 ]; then
     set -- "${all[@]}"
 fi
