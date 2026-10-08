@@ -119,6 +119,15 @@ target_compile_definitions(vx_render_vulkan_tests PRIVATE VX_BLOCK_TEXTURES_DIR=
 vx_target_warnings(vx_render_vulkan_tests)
 doctest_discover_tests(vx_render_vulkan_tests PROPERTIES ${VX_VULKAN_DOCTEST_PROPERTIES})
 
+# The app's startup: the block pack loaded with the player's Minecraft (RFC
+# 0009), from packs and jars the tests write; no window, no GPU.
+add_executable(vx_app_tests
+    main.cpp
+    app/startup_pack_test.cpp)
+target_link_libraries(vx_app_tests PRIVATE vx_app_startup doctest::doctest)
+vx_target_warnings(vx_app_tests)
+doctest_discover_tests(vx_app_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
+
 # The app's overlay, fed input events in a hidden window of SDL's dummy video
 # driver and drawn by an offscreen renderer: Vulkan tests that need no display.
 add_executable(vx_app_vulkan_tests
