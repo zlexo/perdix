@@ -78,7 +78,7 @@ TEST_CASE("the camera follows the player smoothly between ticks, at eye height")
     // Just after a tick, the camera is where the tick began.
     const vx::Vec3d at_the_tick = walking.eye();
     const vx::Vec3d after_it = walking.player().position;
-    CHECK(at_the_tick.y == doctest::Approx(1.0 + vx::app::Walking::eye_height));
+    CHECK(at_the_tick.y == doctest::Approx(1.0 + 1.62));
     // Halfway to the next tick, it is halfway along the tick's move.
     walking.advance(25ms, walk, blocks);
     const vx::Vec3d halfway = walking.eye();
@@ -255,4 +255,37 @@ TEST_CASE("the vertical speed shown is the last tick's rise: 0 standing, 8.4 on 
     // The jump's first tick rises 0.42 blocks.
     walking.advance(50ms, {.held = {.jump = true}, .yaw = 0.0F}, blocks);
     CHECK(walking.vertical_speed() == doctest::Approx(0.42 * 20.0));
+}
+
+TEST_CASE("crouching, the eye eases down halfway each tick to 1.27, and back up to 1.62") {
+    const vx::ChunkStorage chunk = floor_chunk();
+    const vx::ChunkBoxes blocks(chunk, {});
+    vx::app::Walking walking(on_the_floor, 0.0);
+    walking.advance(1s, no_keys, blocks);
+    const vx::TickInput shift{.held = {.sneak = true}, .yaw = 0.0F};
+    // The tick with Shift crouches the player for the next, and the eye's
+    // target drops: halfway, 1.445. Halfway to the next tick, the camera is
+    // halfway there from 1.62.
+    walking.advance(50ms, shift, blocks);
+    CHECK(walking.player().pose == vx::Pose::crouching);
+    // Just after that tick, the camera is still where the tick began.
+    CHECK(walking.eye().y == doctest::Approx(1.0 + 1.62));
+    walking.advance(25ms, shift, blocks);
+    CHECK(walking.eye().y == doctest::Approx(1.0 + 1.5325));
+    walking.advance(1s, shift, blocks);
+    CHECK(walking.eye().y == doctest::Approx(1.0 + 1.27));
+    walking.advance(1s, no_keys, blocks);
+    CHECK(walking.player().pose == vx::Pose::standing);
+    CHECK(walking.eye().y == doctest::Approx(1.0 + 1.62));
+}
+
+TEST_CASE("placing the player stands it up, with the eye at 1.62 at once") {
+    const vx::ChunkStorage chunk = floor_chunk();
+    const vx::ChunkBoxes blocks(chunk, {});
+    vx::app::Walking walking(on_the_floor, 0.0);
+    walking.advance(1s, {.held = {.sneak = true}, .yaw = 0.0F}, blocks);
+    REQUIRE(walking.player().pose == vx::Pose::crouching);
+    walking.place(on_the_floor);
+    CHECK(walking.player().pose == vx::Pose::standing);
+    CHECK(walking.eye().y == doctest::Approx(1.0 + 1.62));
 }
