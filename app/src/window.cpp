@@ -34,13 +34,15 @@ Result<Window> Window::create(const char* title, int width, int height,
 }
 
 Window::Window(Window&& other) noexcept
-    : window_(std::exchange(other.window_, nullptr)), motion_(std::exchange(other.motion_, {})) {}
+    : window_(std::exchange(other.window_, nullptr)), motion_(std::exchange(other.motion_, {})),
+      noclip_toggle_(std::exchange(other.noclip_toggle_, false)) {}
 
 Window& Window::operator=(Window&& other) noexcept {
     if (this != &other) {
         destroy();
         window_ = std::exchange(other.window_, nullptr);
         motion_ = std::exchange(other.motion_, {});
+        noclip_toggle_ = std::exchange(other.noclip_toggle_, false);
     }
     return *this;
 }
@@ -66,6 +68,9 @@ bool Window::handle_events(Overlay& overlay) {
         if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F3 && !event.key.repeat) {
             overlay.toggle();
         }
+        if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F4 && !event.key.repeat) {
+            noclip_toggle_ = !noclip_toggle_;
+        }
         if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.windowID == id &&
             !overlay_took) {
             SDL_SetWindowRelativeMouseMode(window_, true);
@@ -88,6 +93,12 @@ bool Window::mouse_captured() const {
 
 MouseMotion Window::take_mouse_motion() noexcept {
     return std::exchange(motion_, {});
+}
+
+bool Window::take_noclip_toggle() noexcept {
+    const bool toggled = noclip_toggle_;
+    noclip_toggle_ = false;
+    return toggled;
 }
 
 render::SurfaceSource Window::surface_source() const {

@@ -244,6 +244,17 @@ void Overlay::draw_camera(const render::Camera& camera) {
                 static_cast<double>(glm::degrees(camera.pitch)));
 }
 
+void Overlay::draw_movement(const MovementReport& movement) {
+    if (movement.noclip) {
+        ImGui::TextUnformatted("Noclip camera (F4 walks, from outside blocks)");
+        return;
+    }
+    ImGui::Text("Walking (F4 flies): %.3f blocks a second, %.3f up%s%s", movement.speed,
+                movement.vertical_speed, movement.sprinting ? ", sprinting" : "",
+                movement.on_ground ? "" : ", in the air");
+    ImGui::Text("Movement ticks: %llu", static_cast<unsigned long long>(movement.ticks));
+}
+
 void Overlay::draw_validation(const render::Context& context) const {
     // RFC 0001: in debug builds, validation errors show in red.
     if (!validation_) {
@@ -307,6 +318,7 @@ ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& cam
         draw_chunk(renderer, meshing);
         ImGui::Separator();
         draw_camera(camera);
+        draw_movement(movement_);
         ImGui::Separator();
         draw_validation(renderer.context());
     }
