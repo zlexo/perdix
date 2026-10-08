@@ -174,8 +174,47 @@ constexpr LocalPos slice_block(Face face, int depth, int u, int v) noexcept {
     }
 }
 
-// Every face fully lit, until RFC 0003's ambient occlusion.
-constexpr std::array<std::uint8_t, 4> fully_lit{3, 3, 3, 3};
+// Whether padded block (x, y, z) is opaque.
+bool opaque_at(const Rows& opaque, int x, int y, int z) noexcept {
+    return ((opaque[static_cast<std::size_t>(y)][static_cast<std::size_t>(z)] >>
+             static_cast<unsigned>(x)) &
+            1U) != 0;
+}
+
+// A corner's ambient occlusion (RFC 0003, after Lysenko): 3 is fully lit, 0
+// the darkest. With both edge blocks in place, the corner block behind them
+// makes no difference.
+constexpr std::uint8_t corner_occlusion(bool side1, bool side2, bool corner) noexcept {
+    if (side1 && side2) {
+        return 0;
+    }
+    return static_cast<std::uint8_t>(3 - (int{side1} + int{side2} + int{corner}));
+}
+
+// Each corner of `face` of `block` looks at the blocks beside it on the
+// face's open side: one along each of its two edges and one across its
+// diagonal. Only opaque blocks occlude. Corner 0 first, at the low ends of
+// the face's width and height axes, as in the quad.
+std::array<std::uint8_t, 4> face_occlusion(const Rows& opaque, Face face, LocalPos block) noexcept {
+    const FaceAxes axes = face_axes(face);
+    // The block in front of the face, padded.
+    std::array<int, 3> front{block.x + 1, block.y + 1, block.z + 1};
+    front[axes.normal] += faces_positive(face) ? 1 : -1;
+    const auto beside = [&](int along_width, int along_height) {
+        std::array<int, 3> at = front;
+        at[axes.width] += along_width;
+        at[axes.height] += along_height;
+        return opaque_at(opaque, at[0], at[1], at[2]);
+    };
+    const bool width_low = beside(-1, 0);
+    const bool width_high = beside(1, 0);
+    const bool height_low = beside(0, -1);
+    const bool height_high = beside(0, 1);
+    return {corner_occlusion(width_low, height_low, beside(-1, -1)),
+            corner_occlusion(width_high, height_low, beside(1, -1)),
+            corner_occlusion(width_high, height_high, beside(1, 1)),
+            corner_occlusion(width_low, height_high, beside(-1, 1))};
+}
 
 } // namespace
 
@@ -221,8 +260,9 @@ ChunkMesh mesh_chunk(const PaddedChunk& blocks, std::span<const BlockVisual> vis
                         const BlockVisual& visual =
                             visual_of(visuals, blocks.at(block.x + 1, block.y + 1, block.z + 1));
                         quads[written++] = {.geometry = quad_geometry(block, 1, 1, face),
-                                            .material =
-                                                quad_material(visual.texture[face_at], fully_lit)};
+                                            .material = quad_material(
+                                                visual.texture[face_at],
+                                                face_occlusion(*scratch.opaque_, face, block))};
                     }
                 }
             }

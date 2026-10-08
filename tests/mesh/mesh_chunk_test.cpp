@@ -281,3 +281,125 @@ TEST_CASE("a pass's faces and all of a mesh's lie back to back") {
         }
     }
 }
+
+namespace {
+
+// The quad of `face` on the block at `block`, which the test knows is there.
+vx::QuadFields quad_of(const vx::ChunkMesh& mesh, vx::Pass pass, vx::Face face,
+                       vx::LocalPos block) {
+    for (const vx::Quad quad : mesh.range(pass, face)) {
+        const vx::QuadFields fields = vx::decode_quad(quad);
+        if (fields.block == block) {
+            return fields;
+        }
+    }
+    FAIL("no quad on that block");
+    return {};
+}
+
+// Lysenko's table: 3 is fully lit, 0 the darkest.
+int lysenko(bool side1, bool side2, bool corner) {
+    return side1 && side2 ? 0 : 3 - (int{side1} + int{side2} + int{corner});
+}
+
+} // namespace
+
+TEST_CASE(
+    "each corner of a face darkens with the opaque blocks around it, as Lysenko's table says") {
+    Fixture chunk;
+    // A block in the middle, and blocks at two corners of the chunk, whose
+    // corners look into the border's edges and corners.
+    for (const vx::LocalPos block :
+         {vx::LocalPos{.x = 10, .y = 11, .z = 12}, vx::LocalPos{.x = 0, .y = 0, .z = 0},
+          vx::LocalPos{.x = 31, .y = 31, .z = 31}}) {
+        for (int face_at = 0; face_at < 6; ++face_at) {
+            const auto face = static_cast<vx::Face>(face_at);
+            const std::size_t normal = static_cast<std::size_t>(face_at / 2);
+            const std::array<int, 3> own{block.x, block.y, block.z};
+            // The layer of blocks the face looks into, and its block there.
+            std::array<int, 3> front = own;
+            front[normal] += face_at % 2 == 0 ? 1 : -1;
+            for (int corner = 0; corner < 4; ++corner) {
+                // Of the blocks in that layer touching the corner, worked out
+                // in 3D: the two beside the front block, and the one across.
+                const std::array<int, 3> vertex = vx::quad_corner({.block = block,
+                                                                   .width = 1,
+                                                                   .height = 1,
+                                                                   .face = face,
+                                                                   .texture = 0,
+                                                                   .occlusion = {3, 3, 3, 3}},
+                                                                  corner);
+                std::vector<std::array<int, 3>> sides;
+                std::array<int, 3> across{};
+                for (int a = 0; a < 2; ++a) {
+                    for (int b = 0; b < 2; ++b) {
+                        std::array<int, 3> at{};
+                        int step = 0;
+                        int differs = 0;
+                        for (std::size_t axis = 0; axis < 3; ++axis) {
+                            if (axis == normal) {
+                                at[axis] = front[axis];
+                                continue;
+                            }
+                            at[axis] = vertex[axis] - ((step++ == 0 ? a : b) == 0 ? 1 : 0);
+                            differs += at[axis] != front[axis] ? 1 : 0;
+                        }
+                        if (differs == 1) {
+                            sides.push_back(at);
+                        } else if (differs == 2) {
+                            across = at;
+                        }
+                    }
+                }
+                REQUIRE(sides.size() == 2);
+                for (int arrangement = 0; arrangement < 8; ++arrangement) {
+                    const bool side1 = (arrangement & 1) != 0;
+                    const bool side2 = (arrangement & 2) != 0;
+                    const bool diagonal = (arrangement & 4) != 0;
+                    const auto set = [&](const std::array<int, 3>& at, vx::BlockState state) {
+                        chunk.put(at[0], at[1], at[2], state);
+                    };
+                    chunk.put(block.x, block.y, block.z, blocks::stone);
+                    set(sides[0], side1 ? blocks::stone : vx::BlockState::air);
+                    set(sides[1], side2 ? blocks::stone : vx::BlockState::air);
+                    set(across, diagonal ? blocks::stone : vx::BlockState::air);
+                    const vx::QuadFields quad =
+                        quad_of(chunk.mesh(), vx::Pass::opaque, face, block);
+                    INFO("block (", block.x, ", ", block.y, ", ", block.z, ") face ", face_at,
+                         " corner ", corner, " arrangement ", arrangement);
+                    CHECK(quad.occlusion[static_cast<std::size_t>(corner)] ==
+                          lysenko(side1, side2, diagonal));
+                    // The corner across the face touches none of them.
+                    CHECK(quad.occlusion[static_cast<std::size_t>((corner + 2) % 4)] == 3);
+                    set(sides[0], vx::BlockState::air);
+                    set(sides[1], vx::BlockState::air);
+                    set(across, vx::BlockState::air);
+                }
+            }
+        }
+        chunk.put(block.x, block.y, block.z, vx::BlockState::air);
+    }
+}
+
+TEST_CASE("cutout blocks cast no ambient occlusion") {
+    Fixture chunk;
+    // A floor with leaves and glass standing on it: the floor's top faces
+    // around them stay fully lit.
+    for (int z = 0; z < 5; ++z) {
+        for (int x = 0; x < 5; ++x) {
+            chunk.put(x, 0, z, blocks::stone);
+        }
+    }
+    chunk.put(2, 1, 2, blocks::leaves);
+    chunk.put(3, 1, 2, blocks::glass);
+    for (const vx::Quad quad : chunk.mesh().range(vx::Pass::opaque, vx::Face::pos_y)) {
+        CHECK(vx::decode_quad(quad).occlusion == std::array<std::uint8_t, 4>{3, 3, 3, 3});
+    }
+    // Stone in their place darkens the faces beside it.
+    chunk.put(2, 1, 2, blocks::stone);
+    const vx::QuadFields beside =
+        quad_of(chunk.mesh(), vx::Pass::opaque, vx::Face::pos_y, {.x = 1, .y = 0, .z = 2});
+    // +y faces: width along x, height along z. The block at x = 2 sits beside
+    // corners 1 and 2, the ones at the high end of x.
+    CHECK(beside.occlusion == std::array<std::uint8_t, 4>{3, 2, 2, 3});
+}
