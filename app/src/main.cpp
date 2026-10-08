@@ -315,9 +315,10 @@ int main(int argc, char* argv[]) {
                 .field_of_view = camera.fov_y,
                 .noclip = false};
     std::cout << "Click the window to walk: W A S D, Space to jump, Ctrl with W or W twice to "
-                 "sprint, Shift to sneak, the mouse to look. F4 flies through everything "
-                 "(W A S D, Space and Shift for up and down, Ctrl to go faster) and back. "
-                 "Escape releases the mouse; F3 shows the overlay.\n";
+                 "sprint, Shift to sneak, Space twice to fly, the mouse to look. F4 switches to a "
+                 "camera that flies through everything (W A S D, Space and Shift for up and "
+                 "down, Ctrl to go faster) and back. Escape releases the mouse; F3 shows the "
+                 "overlay.\n";
 
     using Clock = std::chrono::steady_clock;
     Clock::time_point last = Clock::now();
@@ -346,6 +347,7 @@ int main(int argc, char* argv[]) {
                               .on_ground = mover.walking.player().on_ground,
                               .sprinting = mover.walking.player().sprinting,
                               .crouching = mover.walking.player().pose == vx::Pose::crouching,
+                              .flying = mover.walking.player().flying,
                               .ticks = mover.walking.ticks()});
 
         const vx::Result<vx::render::Frame> rendered =

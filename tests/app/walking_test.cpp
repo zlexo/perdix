@@ -289,3 +289,38 @@ TEST_CASE("placing the player stands it up, with the eye at 1.62 at once") {
     CHECK(walking.player().pose == vx::Pose::standing);
     CHECK(walking.eye().y == doctest::Approx(1.0 + 1.62));
 }
+
+TEST_CASE("Space pressed twice flies, the field of view easing to 1.1, and 1.265 sprint-flying") {
+    const vx::ChunkStorage chunk = floor_chunk();
+    const vx::ChunkBoxes blocks(chunk, {});
+    vx::app::Walking walking(on_the_floor, 0.0);
+    walking.advance(1s, no_keys, blocks);
+    const vx::TickInput space{.held = {.jump = true}, .yaw = 0.0F};
+    walking.advance(50ms, space, blocks);
+    walking.advance(50ms, no_keys, blocks);
+    walking.advance(50ms, space, blocks);
+    REQUIRE(walking.player().flying);
+    walking.advance(1s, no_keys, blocks);
+    CHECK(walking.fov_factor() == doctest::Approx(1.1));
+    walking.advance(1s, sprint, blocks);
+    CHECK(walking.fov_factor() == doctest::Approx(1.265));
+    // Placed, as the noclip camera lands it, the player walks again.
+    walking.place(walking.player().position);
+    CHECK_FALSE(walking.player().flying);
+}
+
+TEST_CASE("placing the player closes Space's window: one press after it does not fly") {
+    // Space pressed, then the noclip camera there and back before the window
+    // closes: no tick runs in the noclip camera, so a window left open would
+    // still be open, and the next single press would fly.
+    const vx::ChunkStorage chunk = floor_chunk();
+    const vx::ChunkBoxes blocks(chunk, {});
+    vx::app::Walking walking(on_the_floor, 0.0);
+    walking.advance(1s, no_keys, blocks);
+    const vx::TickInput space{.held = {.jump = true}, .yaw = 0.0F};
+    walking.advance(50ms, space, blocks);
+    walking.advance(50ms, no_keys, blocks);
+    walking.place(on_the_floor);
+    walking.advance(50ms, space, blocks);
+    CHECK_FALSE(walking.player().flying);
+}

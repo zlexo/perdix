@@ -34,7 +34,8 @@ public:
     // crouching.
     [[nodiscard]] Vec3d eye() const noexcept;
     // The field of view's factor for this frame, eased as the game eases it:
-    // halfway to its target each tick, 1 walking and 1.15 sprinting.
+    // halfway to its target each tick: 1 walking, 1.15 sprinting, 1.1 flying
+    // and 1.265 sprint-flying.
     [[nodiscard]] double fov_factor() const noexcept;
     // The player's horizontal speed over the last tick, in blocks a second.
     [[nodiscard]] double speed() const noexcept;
@@ -45,9 +46,9 @@ public:
     [[nodiscard]] const Player& player() const noexcept { return player_; }
     [[nodiscard]] std::uint64_t ticks() const noexcept { return ticks_; }
 
-    // Puts the player's feet at `feet`, still, standing and not sprinting,
-    // with the eye at 1.62 and the field of view back at 1, as when the
-    // noclip camera lands it.
+    // Puts the player's feet at `feet`, still, standing, not sprinting and not
+    // flying, with no Space press waiting for a second, the eye at 1.62 and
+    // the field of view back at 1, as when the noclip camera lands it.
     void place(Vec3d feet) noexcept;
 
 private:

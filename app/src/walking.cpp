@@ -13,8 +13,10 @@ namespace {
 
 // The most the clock catches up: a second of ticks.
 constexpr std::chrono::nanoseconds most_behind = std::chrono::seconds(1);
-// RFC 0010: the field of view widens by (1.3 + 1) / 2 sprinting.
+// RFC 0010: the field of view widens by (1.3 + 1) / 2 sprinting, by 1.1
+// flying, and by both sprint-flying.
 constexpr double sprinting_fov = 1.15;
+constexpr double flying_fov = 1.1;
 // How far below the lowest block a fall returns the player to its spawn.
 constexpr double void_depth = 64.0;
 
@@ -50,7 +52,8 @@ void Walking::tick(const TickInput& input, const BlockBoxes& world) {
     previous_eye_ = eye_;
     eye_ += (eye_height(player_.pose) - eye_) * 0.5;
     previous_fov_ = fov_;
-    const double target = player_.sprinting ? sprinting_fov : 1.0;
+    const double target =
+        (player_.flying ? flying_fov : 1.0) * (player_.sprinting ? sprinting_fov : 1.0);
     fov_ += (target - fov_) * 0.5;
     ++ticks_;
 }
