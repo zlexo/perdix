@@ -73,5 +73,14 @@ void fill_transparent(BlockImage& image);
 [[nodiscard]] std::vector<std::byte> build_block_textures(std::span<const TextureRef> textures,
                                                           const std::filesystem::path& assets,
                                                           std::vector<Diagnostic>& diagnostics);
+// The same, with textures made from something other than their files, such
+// as the player's own Minecraft (RFC 0009): a texture among `made` takes its
+// level 0 from there, and its file is neither read nor warned about. Made
+// textures that no layer uses are passed over, and of two with one name,
+// the first is used.
+[[nodiscard]] std::vector<std::byte> build_block_textures(std::span<const TextureRef> textures,
+                                                          const std::filesystem::path& assets,
+                                                          std::span<const MadeTexture> made,
+                                                          std::vector<Diagnostic>& diagnostics);
 
 } // namespace vx::render

@@ -5,6 +5,7 @@
 #include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -33,6 +34,17 @@ struct TextureRef {
     std::string first_use; // "assets/core/blocks/oak_log.toml:6:8", for messages
 
     friend bool operator==(const TextureRef&, const TextureRef&) = default;
+};
+
+// A texture's level 0 made from something other than its file, such as the
+// player's own Minecraft (RFC 0009): 16 by 16 texels of RGBA8 with sRGB
+// color, row by row from the top, each row from the left. The texture
+// builder takes it in place of the file.
+struct MadeTexture {
+    std::string name; // "core:grass_side", as a TextureRef names it
+    std::array<std::uint8_t, std::size_t{16} * 16 * 4> rgba{};
+
+    friend bool operator==(const MadeTexture&, const MadeTexture&) = default;
 };
 
 // What every block state is (RFC 0004). Ids are a pure function of the block

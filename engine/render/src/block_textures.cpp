@@ -15,10 +15,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -31,9 +33,6 @@ constexpr std::size_t size = block_texture_size;
 constexpr std::size_t at(std::size_t x, std::size_t y) noexcept {
     return (y * size) + x;
 }
-
-// The alpha test discards below 0.5: an 8-bit alpha of 127 or less.
-constexpr std::uint8_t passes_alpha_test = 128;
 
 // sRGB to linear light, for each 8-bit value.
 const std::array<double, 256>& linear_of() {
@@ -125,9 +124,9 @@ std::vector<std::uint8_t> keep_coverage(const std::vector<double>& alpha, std::s
         const std::uint8_t byte = to_byte(alpha[texel] * scale);
         if (rank < k) {
             // A texel no source texel covers stays a hole.
-            bytes[texel] = alpha[texel] > 0 ? std::max(byte, passes_alpha_test) : byte;
+            bytes[texel] = alpha[texel] > 0 ? std::max(byte, alpha_test_passes) : byte;
         } else {
-            bytes[texel] = std::min<std::uint8_t>(byte, passes_alpha_test - 1);
+            bytes[texel] = std::min<std::uint8_t>(byte, alpha_test_passes - 1);
         }
     }
     return bytes;
@@ -238,7 +237,7 @@ BlockMips mipmaps(const BlockImage& image) {
     std::ranges::copy(image, mips.begin());
 
     const auto passes = static_cast<std::size_t>(std::ranges::count_if(
-        image, [](const Texel& texel) { return texel.a >= passes_alpha_test; }));
+        image, [](const Texel& texel) { return texel.a >= alpha_test_passes; }));
     const bool alpha_tested = passes < image.size();
     const double coverage = static_cast<double>(passes) / static_cast<double>(image.size());
 
@@ -284,7 +283,10 @@ Result<BlockImage> decode_block_texture(std::span<const std::byte> png) {
         stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(png.data()),
                               static_cast<int>(png.size()), &width, &height, &channels, 4);
     if (pixels == nullptr) {
-        return Error{std::string("not a PNG file stb_image can read: ") + stbi_failure_reason()};
+        // stb_image gives no reason when one of its allocations fails.
+        const char* const reason = stbi_failure_reason();
+        return Error{std::string("not a PNG file stb_image can read: ") +
+                     (reason != nullptr ? reason : "no reason given")};
     }
     if (width != block_texture_size || height != block_texture_size) {
         stbi_image_free(pixels);
@@ -309,7 +311,7 @@ std::filesystem::path file_of(const std::filesystem::path& assets, const std::st
 // The texels the alpha test discards: alpha below 0.5.
 std::size_t transparent_texels(const BlockImage& image) {
     return static_cast<std::size_t>(std::ranges::count_if(
-        image, [](const Texel& texel) { return texel.a < passes_alpha_test; }));
+        image, [](const Texel& texel) { return texel.a < alpha_test_passes; }));
 }
 
 // One texture file, read and checked once for every layer that turns it.
@@ -321,11 +323,20 @@ struct Source {
     std::string use;
 };
 
+// A made texture's texels, as a block image.
+BlockImage image_of(const MadeTexture& made) {
+    BlockImage image{};
+    static_assert(sizeof(image) == sizeof(made.rgba));
+    std::memcpy(image.data(), made.rgba.data(), sizeof(image));
+    return image;
+}
+
 // Reads every texture the layers name, in name order, and reports each
-// problem once per file: the images, or none after any error.
+// problem once per file: the images, or none after any error. A made
+// texture stands in for its file, which is then not read.
 std::optional<std::map<std::string, BlockImage>>
 read_sources(std::span<const TextureRef> textures, const std::filesystem::path& assets,
-             std::vector<Diagnostic>& diagnostics) {
+             std::span<const MadeTexture> made, std::vector<Diagnostic>& diagnostics) {
     std::map<std::string, Source> sources;
     for (const TextureRef& texture : textures.subspan(1)) { // layer 0 is the checker
         Source& source = sources[texture.name];
@@ -335,9 +346,18 @@ read_sources(std::span<const TextureRef> textures, const std::filesystem::path& 
             source.use = texture.first_use;
         }
     }
+    // The made textures by name, the first of a name standing in.
+    std::map<std::string_view, const MadeTexture*, std::less<>> stand_ins;
+    for (const MadeTexture& texture : made) {
+        stand_ins.try_emplace(texture.name, &texture);
+    }
     std::map<std::string, BlockImage> images;
     bool failed = false;
     for (const auto& [name, source] : sources) {
+        if (const auto stand_in = stand_ins.find(name); stand_in != stand_ins.end()) {
+            images.emplace(name, image_of(*stand_in->second));
+            continue;
+        }
         const std::filesystem::path path = file_of(assets, name);
         const auto report = [&](Severity severity, std::string message) {
             diagnostics.push_back({.severity = severity,
@@ -386,13 +406,20 @@ read_sources(std::span<const TextureRef> textures, const std::filesystem::path& 
 std::vector<std::byte> build_block_textures(std::span<const TextureRef> textures,
                                             const std::filesystem::path& assets,
                                             std::vector<Diagnostic>& diagnostics) {
+    return build_block_textures(textures, assets, {}, diagnostics);
+}
+
+std::vector<std::byte> build_block_textures(std::span<const TextureRef> textures,
+                                            const std::filesystem::path& assets,
+                                            std::span<const MadeTexture> made,
+                                            std::vector<Diagnostic>& diagnostics) {
     // The registry always lists the checker as layer 0; without it there
     // are no layers, so no bytes.
     if (textures.empty()) {
         return {};
     }
     const std::optional<std::map<std::string, BlockImage>> images =
-        read_sources(textures, assets, diagnostics);
+        read_sources(textures, assets, made, diagnostics);
     if (!images) {
         return {};
     }
