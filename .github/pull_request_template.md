@@ -18,4 +18,6 @@ Closes #
 
 ## Screenshots
 
+<!-- Taken with --no-minecraft: the game's textures are Mojang's and are never published (RFC 0009). -->
+
 <!-- Visual changes only. Delete this section otherwise. -->

@@ -52,7 +52,7 @@ Scopes follow the source layout (`core`, `world`, `mesh`, `render`, `app`), plus
 
 - Branch from `main` as `<type>/<topic>`, for example `feat/chunk-palette`. An RFC's branch is `rfc/NNNN-short-title`, for example `rfc/0002-chunk-storage`.
 - Keep the diff reviewable in one sitting, roughly 400 changed lines at most.
-- Fill in the template: what, why, how it was tested, and before and after numbers for anything on a hot path. Visual changes include a screenshot or a short clip.
+- Fill in the template: what, why, how it was tested, and before and after numbers for anything on a hot path. Visual changes include a screenshot or a short clip, taken with `--no-minecraft`: with Minecraft installed Perdix draws the game's textures, which are Mojang's and are never published (RFC 0009).
 - CI must be green: build, tests, formatting and, once rendering exists, zero Vulkan validation errors.
 - Before pushing, run `scripts/ci-local.sh`. It runs every CI check this machine can run, with CI's pinned tool versions, and names the Linux jobs it cannot stand in for. Its header says how to install the pinned clang-format and clang-tidy.
 - With Minecraft installed, `VX_TEST_MINECRAFT=1` makes the minecraft tests check against your own game: the version found, and the core pack's textures made from it, each against the game's files. CI never has the game, so these are reported skipped there; with the variable set and no game found, they fail.
