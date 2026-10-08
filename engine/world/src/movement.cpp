@@ -2,10 +2,15 @@
 
 #include <vx/core/vec3d.hpp>
 #include <vx/world/collision.hpp>
+#include <vx/world/coordinates.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 #include <numbers>
+#include <optional>
 #include <vector>
 
 namespace vx {
@@ -84,6 +89,101 @@ bool grazed(Vec3d wished, Vec3d moved, double degrees) {
     const double cosine =
         ((wished.x * moved.x) + (wished.z * moved.z)) / (wished_length * moved_length);
     return cosine > std::cos(degrees * std::numbers::pi / 180.0);
+}
+
+// A block coordinate holding `value`, when one does: NaN fails both
+// comparisons, so it holds none.
+std::optional<std::int32_t> block_coordinate(double value) noexcept {
+    const double block = std::floor(value);
+    constexpr auto lowest = static_cast<double>(std::numeric_limits<std::int32_t>::min());
+    constexpr auto highest = static_cast<double>(std::numeric_limits<std::int32_t>::max());
+    if (block >= lowest && block <= highest) {
+        return static_cast<std::int32_t>(block);
+    }
+    return std::nullopt;
+}
+
+// Of the blocks whose boxes overlap `region`, the one whose center is nearest
+// `position`, ties to the greater y, then z, then x, as 26.2 chooses the
+// block that supports a player (from its jar).
+std::optional<BlockPos> supporting_block(const Box& region, Vec3d position, const BlockBoxes& world,
+                                         std::vector<Box>& scratch) {
+    scratch.clear();
+    world.collect(region, scratch);
+    std::optional<BlockPos> best;
+    double best_distance = 0.0;
+    for (const Box& box : scratch) {
+        const bool overlaps = box.max.x > region.min.x && box.min.x < region.max.x &&
+                              box.max.y > region.min.y && box.min.y < region.max.y &&
+                              box.max.z > region.min.z && box.min.z < region.max.z;
+        const std::optional<std::int32_t> x = block_coordinate(box.min.x);
+        const std::optional<std::int32_t> y = block_coordinate(box.min.y);
+        const std::optional<std::int32_t> z = block_coordinate(box.min.z);
+        if (!overlaps || !x || !y || !z) {
+            continue;
+        }
+        const BlockPos block{.x = *x, .y = *y, .z = *z};
+        const Vec3d to_center{.x = static_cast<double>(block.x) + 0.5 - position.x,
+                              .y = static_cast<double>(block.y) + 0.5 - position.y,
+                              .z = static_cast<double>(block.z) + 0.5 - position.z};
+        const double distance =
+            (to_center.x * to_center.x) + (to_center.y * to_center.y) + (to_center.z * to_center.z);
+        const auto order = [](const BlockPos& b) { return std::array{b.y, b.z, b.x}; };
+        if (!best || distance < best_distance ||
+            (distance == best_distance && order(block) > order(*best))) {
+            best = block;
+            best_distance = distance;
+        }
+    }
+    return best;
+}
+
+// The block that holds the player up, after a move (26.2's way, from its
+// jar): on the ground, the supporting block under the box's bottom; with
+// none there, the one under where the box came from, unless the last search
+// on the ground found none either. None in the air.
+void update_supporting(Player& player, Vec3d motion, const BlockBoxes& world,
+                       std::vector<Box>& scratch) {
+    if (!player.on_ground) {
+        player.supporting.reset();
+        player.ground_without_block = false;
+        return;
+    }
+    constexpr double depth = 1e-6; // how far under the box's bottom a block is under it
+    const Box body = body_box(player.position, player.pose);
+    const Box under{.min = {.x = body.min.x, .y = body.min.y - depth, .z = body.min.z},
+                    .max = {.x = body.max.x, .y = body.min.y, .z = body.max.z}};
+    std::optional<BlockPos> found = supporting_block(under, player.position, world, scratch);
+    if (!found && !player.ground_without_block) {
+        const Vec3d back{.x = -motion.x, .y = 0.0, .z = -motion.z};
+        found = supporting_block({.min = under.min + back, .max = under.max + back},
+                                 player.position, world, scratch);
+    }
+    player.supporting = found;
+    player.ground_without_block = !found;
+}
+
+// The slipperiness the player stands on (RFC 0010): of the block just over
+// 0.5 below its feet (0.500001, as 26.2 reads it, so on a slab the block
+// under the slab), in the supporting block's column, or under the player's
+// position with none.
+double slipperiness_under(const Player& player, const BlockBoxes& world,
+                          const MovementNumbers& numbers) {
+    constexpr double below_feet = 0.500001;
+    const std::optional<std::int32_t> y = block_coordinate(player.position.y - below_feet);
+    std::optional<std::int32_t> x;
+    std::optional<std::int32_t> z;
+    if (player.supporting) {
+        x = player.supporting->x;
+        z = player.supporting->z;
+    } else {
+        x = block_coordinate(player.position.x);
+        z = block_coordinate(player.position.z);
+    }
+    if (!x || !y || !z) {
+        return numbers.default_slipperiness;
+    }
+    return world.slipperiness({.x = *x, .y = *y, .z = *z});
 }
 
 // Space pressed twice toggles creative flight (RFC 0010, in the order 26.2's
@@ -243,8 +343,10 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
         player.jump_cooldown = numbers.jump_cooldown;
     }
 
-    // The keys accelerate the player along the facing the yaw gives.
-    const double slipperiness = numbers.default_slipperiness;
+    // The keys accelerate the player along the facing the yaw gives, on the
+    // ground as slippery as the block it stands on.
+    const double slipperiness = started_on_ground ? slipperiness_under(player, world, numbers)
+                                                  : numbers.default_slipperiness;
     const double acceleration = acceleration_now(player, started_on_ground, slipperiness, numbers);
     const KeyInput keys = key_input(input.held, player.pose == Pose::crouching, numbers);
     const Vec3d left{.x = -std::cos(yaw), .y = 0.0, .z = std::sin(yaw)};
@@ -272,6 +374,7 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
         velocity.z = 0.0;
     }
     player.on_ground = move.on_ground;
+    update_supporting(player, move.motion, world, scratch);
     if (flying && move.on_ground) {
         player.flying = false; // landing ends a flight
     }

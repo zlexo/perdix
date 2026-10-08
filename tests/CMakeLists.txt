@@ -60,6 +60,7 @@ add_executable(vx_world_tests
     world/movement_test.cpp
     world/names_test.cpp
     world/packed_array_test.cpp
+    world/slipperiness_test.cpp
     world/sprint_test.cpp
     world/step_up_test.cpp)
 target_link_libraries(vx_world_tests PRIVATE vx::world doctest::doctest)

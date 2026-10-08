@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vx/core/vec3d.hpp>
+#include <vx/world/coordinates.hpp>
 
 #include <cstdint>
 #include <span>
@@ -108,7 +109,7 @@ struct MoveRules {
     double edge_drop = 0.0;         // the edge guard's drop, or 0 for no guard
 };
 
-// The blocks movement collides with.
+// The blocks movement collides with, and how slippery they are.
 class BlockBoxes {
 public:
     virtual ~BlockBoxes() = default;
@@ -116,6 +117,9 @@ public:
     // Appends to `out` the collision box of every block that overlaps or
     // touches `region`.
     virtual void collect(const Box& region, std::vector<Box>& out) const = 0;
+    // How slippery `block` is to stand on (RFC 0010): above 0 and at most 1,
+    // 0.6 for default ground and air.
+    [[nodiscard]] virtual double slipperiness(BlockPos block) const = 0;
 };
 
 // A move against the world's blocks. The boxes it could touch, down to the

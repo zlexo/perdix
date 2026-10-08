@@ -36,6 +36,8 @@ ChunkStorage floor_chunk() {
 // about 16 a tick at sprint-flying's speed, with nothing in its way.
 class Slot final : public BlockBoxes {
 public:
+    [[nodiscard]] double slipperiness(BlockPos /*block*/) const override { return 0.6; }
+
     void collect(const Box& region, std::vector<Box>& out) const override {
         // The floor's blocks fill y 0 to 1, the ceiling's 2.8 to 3.8; the
         // blocks p whose [p, p + 1] touches the region on x and z.
