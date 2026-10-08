@@ -23,3 +23,15 @@ target_compile_definitions(vx_yyjson PUBLIC
     YYJSON_DISABLE_UTILS=1
     YYJSON_DISABLE_NON_STANDARD=1
     YYJSON_DISABLE_FILE=1)
+
+# The minecraft layer (RFC 0009): what Perdix knows about Minecraft's own
+# files, starting with where the game is. Like world, it has no GPU or window
+# code (ADR 0003), so the web viewer can compile it to WebAssembly.
+add_library(vx_minecraft STATIC
+    src/version_description.cpp)
+add_library(vx::minecraft ALIAS vx_minecraft)
+target_link_libraries(vx_minecraft PUBLIC vx::core)
+target_include_directories(vx_minecraft PUBLIC include)
+target_compile_features(vx_minecraft PUBLIC cxx_std_20)
+vx_target_warnings(vx_minecraft)
+vx_target_engine_options(vx_minecraft)
