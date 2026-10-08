@@ -32,9 +32,10 @@ target_link_libraries(vx_app_overlay PUBLIC vx::render vx_imgui_sdl3)
 vx_target_warnings(vx_app_overlay)
 vx_target_engine_options(vx_app_overlay)
 
-# Loading the block pack at startup, drawn with the player's Minecraft (RFC
-# 0009): a library of its own so that tests can load packs without a window.
-add_library(vx_app_startup STATIC src/startup_pack.cpp)
+# The command line, and loading the block pack at startup drawn with the
+# player's Minecraft (RFC 0009): a library of its own so that tests can parse
+# options and load packs without a window.
+add_library(vx_app_startup STATIC src/options.cpp src/startup_pack.cpp)
 target_include_directories(vx_app_startup PUBLIC src)
 target_link_libraries(vx_app_startup PUBLIC vx::render vx::minecraft)
 vx_target_warnings(vx_app_startup)

@@ -1,7 +1,9 @@
 #include "demo_chunk.hpp"
 #include "fly_controls.hpp"
+#include "options.hpp"
 #include "overlay.hpp"
 #include "pack.hpp"
+#include "startup_pack.hpp"
 #include "window.hpp"
 
 #include <vx/core/diagnostic.hpp>
@@ -20,6 +22,7 @@
 #include <vx/world/block_visual.hpp>
 #include <vx/world/chunk_storage.hpp>
 
+#include <SDL3/SDL_stdinc.h>
 #include <tracy/Tracy.hpp>
 
 #include <algorithm>
@@ -36,6 +39,8 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -46,42 +51,23 @@ constexpr bool validation = false;
 constexpr bool validation = true;
 #endif
 
-struct Options {
-    // Quit after this many frames, for smoke tests; 0 runs until the window closes.
-    std::uint64_t frames = 0;
-    // Show the overlay from the first frame, not only once F3 is pressed.
-    bool overlay = false;
-    // The folder holding the block pack's assets/; unset, it is found from
-    // where the executable is.
-    std::optional<std::string> pack;
-};
-
-vx::Result<Options> parse_options(std::span<char* const> args) {
-    constexpr std::string_view frames_flag = "--frames=";
-    constexpr std::string_view overlay_flag = "--overlay";
-    constexpr std::string_view pack_flag = "--pack=";
-    Options options;
-    for (const std::string_view arg : args) {
-        if (arg == overlay_flag) {
-            options.overlay = true;
-            continue;
-        }
-        if (arg.starts_with(pack_flag)) {
-            options.pack = std::string(arg.substr(pack_flag.size()));
-            continue;
-        }
-        if (!arg.starts_with(frames_flag)) {
-            return vx::Error{"unknown option \"" + std::string(arg) +
-                             "\": try --frames=N, --overlay or --pack=DIR"};
-        }
-        const std::string_view value = arg.substr(frames_flag.size());
-        const auto [parsed_to, error] =
-            std::from_chars(value.data(), value.data() + value.size(), options.frames);
-        if (error != std::errc{} || parsed_to != value.data() + value.size()) {
-            return vx::Error{"--frames takes a whole number, not \"" + std::string(value) + "\""};
-        }
+// The home folder and, on Windows, APPDATA, read through SDL, whose getenv
+// MSVC does not mark deprecated. Not SDL_GetUserFolder: on macOS it creates
+// every folder of the path it returns.
+vx::app::Environment read_environment() {
+    vx::app::Environment environment;
+#ifdef _WIN32
+    const char* const home = SDL_getenv("USERPROFILE");
+    if (const char* const appdata = SDL_getenv("APPDATA")) {
+        environment.appdata = appdata;
     }
-    return options;
+#else
+    const char* const home = SDL_getenv("HOME");
+#endif
+    if (home != nullptr) {
+        environment.home = home;
+    }
+    return environment;
 }
 
 // RFC 0003's milestone: one chunk of the core pack, with air all around it,
@@ -146,29 +132,19 @@ vx::Result<vx::render::Frame> draw_frame(vx::render::Renderer& renderer, vx::app
     return renderer.render({.sky = sky, .camera = camera, .cubes = {}, .overlay = shown});
 }
 
-} // namespace
-
-int main(int argc, char* argv[]) {
-    // Named for Tracy (RFC 0005's Main, World and Worker threads) and for the
-    // OS, so debuggers show it too.
-    tracy::SetThreadName("Main");
-    const std::span<char* const> args(argv, static_cast<std::size_t>(argc));
-    const vx::Result<Options> options = parse_options(args.subspan(1));
-    if (!options.has_value()) {
-        std::cerr << "error: " << options.error().message << '\n';
-        return 2;
-    }
-
-    std::cout << "Perdix " << vx::version_string() << '\n';
-
-    // The block pack (RFC 0004), before anything opens: a bad block file or
-    // texture stops startup with every problem listed by file, line and column.
-    const vx::Result<std::filesystem::path> root = vx::app::find_pack(options.value().pack);
+// The block pack, found and loaded with the player's Minecraft where it can
+// be: a bad block file, texture or texture map, or a Minecraft named on the
+// command line that cannot be used, stops startup with every problem listed
+// by file, line and column, and nothing comes back.
+std::optional<vx::app::StartupPack> load_pack(const vx::app::Options& options) {
+    const vx::Result<std::filesystem::path> root = vx::app::find_pack(options.pack);
     if (!root.has_value()) {
         std::cerr << "error: " << root.error().message << '\n';
-        return 1;
+        return std::nullopt;
     }
-    const vx::render::BlockPack pack = vx::render::load_block_pack(root.value());
+    vx::app::StartupPack startup = vx::app::load_startup_pack(
+        root.value(), vx::app::minecraft_choice(options, read_environment()));
+    const vx::render::BlockPack& pack = startup.pack;
     for (vx::Diagnostic diagnostic : pack.diagnostics) {
         // Named under the root, so a terminal or an editor finds the file
         // from whatever folder the program was started in.
@@ -177,13 +153,51 @@ int main(int argc, char* argv[]) {
         }
         std::cerr << vx::format(diagnostic) << '\n';
     }
+    // A Minecraft named on the command line that cannot be used, after every
+    // other problem.
+    if (startup.named_game) {
+        std::cerr << "error: " << startup.named_game->message << '\n';
+    }
     // Any error leaves the pack without a registry or without textures.
-    if (vx::has_errors(pack.diagnostics) || !pack.registry) {
+    const bool loaded = !vx::has_errors(pack.diagnostics) && pack.registry;
+    if (!loaded) {
         std::cerr << "error: the block pack in " << root.value().string() << " did not load\n";
-        return 1;
+    }
+    if (!loaded || startup.named_game) {
+        return std::nullopt;
     }
     std::cout << "Block pack: " << root.value().string() << ", " << pack.registry->state_count()
-              << " states\n";
+              << " states\n"
+              << startup.textures << '\n';
+    return startup;
+}
+
+} // namespace
+
+int main(int argc, char* argv[]) {
+    // Named for Tracy (RFC 0005's Main, World and Worker threads) and for the
+    // OS, so debuggers show it too.
+    tracy::SetThreadName("Main");
+    const std::span<char* const> args(argv, static_cast<std::size_t>(argc));
+    const std::span<char* const> after_name = args.empty() ? args : args.subspan(1);
+    const std::vector<std::string_view> arguments(after_name.begin(), after_name.end());
+    const vx::Result<vx::app::Options> options = vx::app::parse_options(arguments);
+    if (!options.has_value()) {
+        std::cerr << "error: " << options.error().message << '\n';
+        return 2;
+    }
+
+    std::cout << "Perdix " << vx::version_string() << '\n';
+
+    // The block pack (RFC 0004), before anything opens, drawn with the
+    // player's Minecraft where it can be (RFC 0009).
+    const std::optional<vx::app::StartupPack> startup = load_pack(options.value());
+    // A pack comes back only with its registry, which the demo chunk is built
+    // from.
+    if (!startup || !startup->pack.registry) {
+        return 1;
+    }
+    const vx::render::BlockPack& pack = startup->pack;
 
     // SDL loads a Vulkan library for the window's surface, and it must be the
     // engine's loader: a driver's library does not understand the loader's

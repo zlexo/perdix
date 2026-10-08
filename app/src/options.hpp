@@ -1,0 +1,49 @@
+#pragma once
+
+#include "startup_pack.hpp"
+
+#include <vx/core/result.hpp>
+
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+
+namespace vx::app {
+
+// The app's command line.
+struct Options {
+    // Quit after this many frames, for smoke tests; 0 runs until the window closes.
+    std::uint64_t frames = 0;
+    // Show the overlay from the first frame, not only once F3 is pressed.
+    bool overlay = false;
+    // The folder holding the block pack's assets/; unset, it is found from
+    // where the executable is.
+    std::optional<std::string> pack;
+    // RFC 0009: a game folder or a client jar to draw Minecraft's textures
+    // from, a version folder's name, or neither, whatever is installed.
+    std::optional<std::string> minecraft;
+    std::optional<std::string> minecraft_version;
+    bool no_minecraft = false;
+};
+
+// The options, from the arguments after the program's name, or why they are
+// not options: an unknown one, a value that is not a number or is missing,
+// or --no-minecraft with either of the other two.
+[[nodiscard]] Result<Options> parse_options(std::span<const std::string_view> args);
+
+// What the app reads from the environment to find Minecraft: the home
+// folder and, on Windows, APPDATA.
+struct Environment {
+    std::optional<std::string> home;
+    std::optional<std::string> appdata;
+};
+
+// What the options and the environment say about the player's Minecraft
+// (RFC 0009). A path named on the command line is made absolute, so that
+// messages about the files under it name them wherever they are printed.
+[[nodiscard]] MinecraftChoice minecraft_choice(const Options& options,
+                                               const Environment& environment);
+
+} // namespace vx::app
