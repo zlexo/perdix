@@ -33,6 +33,7 @@ struct MovementReport {
     bool on_ground = false;
     bool sprinting = false;
     bool crouching = false;
+    bool flying = false;     // in creative flight
     std::uint64_t ticks = 0; // movement ticks run so far
 };
 

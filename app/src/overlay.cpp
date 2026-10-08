@@ -249,9 +249,10 @@ void Overlay::draw_movement(const MovementReport& movement) {
         ImGui::TextUnformatted("Noclip camera (F4 walks, from outside blocks)");
         return;
     }
-    ImGui::Text("Walking (F4 flies): %.3f blocks a second, %.3f up%s%s%s", movement.speed,
-                movement.vertical_speed, movement.sprinting ? ", sprinting" : "",
-                movement.crouching ? ", crouching" : "", movement.on_ground ? "" : ", in the air");
+    ImGui::Text("%s (F4 for noclip): %.3f blocks a second, %.3f up%s%s%s",
+                movement.flying ? "Flying" : "Walking", movement.speed, movement.vertical_speed,
+                movement.sprinting ? ", sprinting" : "", movement.crouching ? ", crouching" : "",
+                movement.on_ground || movement.flying ? "" : ", in the air");
     ImGui::Text("Movement ticks: %llu", static_cast<unsigned long long>(movement.ticks));
 }
 
