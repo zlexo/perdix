@@ -101,6 +101,7 @@ TEST_CASE("after the mouse has flown the camera, the overlay hovers and takes cl
     REQUIRE(created.has_value());
     vx::render::Renderer& renderer = created.value();
     vx::app::ChunkMeshing meshing;
+    bool bobbing = true;
     const vx::render::Camera camera;
 
     // As the app runs it: each frame the overlay is built and drawn, and every
@@ -109,7 +110,7 @@ TEST_CASE("after the mouse has flown the camera, the overlay hovers and takes cl
     // the camera, and Escape frees the mouse.
     bool captured = false;
     const auto frame = [&] {
-        ImDrawData* const drawn = overlay.build(renderer, camera, captured, meshing);
+        ImDrawData* const drawn = overlay.build(renderer, camera, captured, meshing, bobbing);
         const vx::Result<vx::render::Frame> rendered =
             renderer.render({.sky = {.r = 0.0F, .g = 0.0F, .b = 0.0F, .a = 1.0F},
                              .camera = camera,

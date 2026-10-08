@@ -273,7 +273,7 @@ void Overlay::draw_validation(const render::Context& context) const {
 }
 
 ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& camera,
-                           bool mouse_captured, ChunkMeshing& meshing) {
+                           bool mouse_captured, ChunkMeshing& meshing, bool& bobbing) {
     if (!shown_) {
         return nullptr;
     }
@@ -320,6 +320,8 @@ ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& cam
         ImGui::Separator();
         draw_camera(camera);
         draw_movement(movement_);
+        // The game's View Bobbing option (RFC 0010).
+        ImGui::Checkbox("View bobbing", &bobbing);
         ImGui::Separator();
         draw_validation(renderer.context());
     }

@@ -10,6 +10,17 @@
 
 namespace vx::app {
 
+// This frame's view bobbing (RFC 0010's item 8) as Minecraft 26.2 applies
+// it to the view, numbers from its jar: the scene shifted in view space, x
+// right and y up, in blocks, then turned around the view's z axis and then
+// its x axis, in radians. The camera undoes it.
+struct Bob {
+    double shift_x = 0.0;
+    double shift_y = 0.0;
+    float turn_z = 0.0F;
+    float turn_x = 0.0F;
+};
+
 // The player walking at RFC 0010's 20 ticks a second, on the main thread
 // until M3's world thread takes the ticks over: a clock that runs every tick
 // that falls due, with the keys held then, and the last two ticks' positions
@@ -37,11 +48,17 @@ public:
     // halfway to its target each tick: 1 walking, 1.15 sprinting, 1.1 flying
     // and 1.265 sprint-flying.
     [[nodiscard]] double fov_factor() const noexcept;
+    // This frame's view bobbing: on the ground the camera sways, lifts, leans
+    // and tips with each step, as the game's does; none when `bobbing` is off.
+    [[nodiscard]] Bob bob() const noexcept;
     // The player's horizontal speed over the last tick, in blocks a second.
     [[nodiscard]] double speed() const noexcept;
     // How far the player rose over the last tick, in blocks a second: below
     // 0 falling, and 0 standing on the ground.
     [[nodiscard]] double vertical_speed() const noexcept;
+
+    // The game's View Bobbing option, on by default; the overlay switches it.
+    bool bobbing = true;
 
     [[nodiscard]] const Player& player() const noexcept { return player_; }
     [[nodiscard]] std::uint64_t ticks() const noexcept { return ticks_; }
@@ -65,6 +82,10 @@ private:
     double previous_eye_ = eye_height(Pose::standing);
     double fov_ = 1.0;
     double previous_fov_ = 1.0;
+    double bob_ = 0.0; // the bob's amount
+    double previous_bob_ = 0.0;
+    double walked_ = 0.0; // the bob's walk distance: 0.6 of every horizontal move
+    double previous_walked_ = 0.0;
     MovementNumbers numbers_;
     std::vector<Box> scratch_;
     std::uint64_t ticks_ = 0;
