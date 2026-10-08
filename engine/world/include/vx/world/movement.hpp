@@ -4,6 +4,7 @@
 #include <vx/world/collision.hpp>
 
 #include <cstdint>
+#include <vector>
 
 namespace vx {
 
@@ -24,7 +25,35 @@ struct MovementNumbers {
     double momentum_threshold = 0.003; // speeds below it become 0
 };
 
+// The keys held during a tick.
+struct MovementKeys {
+    bool forward = false;
+    bool back = false;
+    bool left = false;
+    bool right = false;
+    bool jump = false;
+    bool sneak = false;
+    bool sprint = false;
+};
+
+// What a tick reads: the keys held when it runs, and the camera's yaw then
+// (RFC 0001: 0 looks down -z, and positive turns left, seen from above).
+struct TickInput {
+    MovementKeys held;
+    float yaw = 0.0F;
+};
+
 enum class Pose : std::uint8_t { standing, crouching };
+
+// The player's body between ticks.
+struct Player {
+    Vec3d position; // the bottom center of its box
+    Vec3d velocity;
+    Pose pose = Pose::standing;
+    bool sprinting = false;
+    bool on_ground = false;            // the last move ended on the ground
+    bool horizontal_collision = false; // the last move was cut short across x or z
+};
 
 // The box of a body at `position` in `pose`: 0.6 wide, and 1.8 tall standing
 // or 1.5 crouching.
@@ -41,5 +70,16 @@ enum class Pose : std::uint8_t { standing, crouching };
 // The horizontal speed kept after a tick begun on a block of `slipperiness`:
 // 0.546 on default ground, 0.8918 on ice.
 [[nodiscard]] double ground_drag(double slipperiness, const MovementNumbers& numbers) noexcept;
+
+// Advances the player one tick (50 ms) with the input held during it, in
+// Minecraft's order (RFC 0010): speeds under the momentum threshold become
+// 0; the keys accelerate the player, on the ground or in the air, along the
+// facing the yaw gives; the box moves with collision and step-up, and each
+// component of the velocity a block cut short becomes 0; then gravity, and
+// drag, on the ground if the tick began there. `scratch` holds the boxes a
+// move gathers, from one tick to the next. A yaw that is not finite gives
+// no facing: the tick then does nothing.
+void tick(Player& player, const TickInput& input, const BlockBoxes& world,
+          const MovementNumbers& numbers, std::vector<Box>& scratch);
 
 } // namespace vx
