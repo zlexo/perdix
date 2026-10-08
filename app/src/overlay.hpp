@@ -16,11 +16,20 @@ union SDL_Event;
 
 namespace vx::app {
 
+// The chunk's meshing, as the overlay shows it and switches it (RFC 0003):
+// whether faces that look the same merge, and the quads the mesh holds.
+struct ChunkMeshing {
+    bool merge = true;
+    std::size_t quads = 0;
+    std::size_t cutout = 0; // of the quads, those the cutout pass draws
+};
+
 // RFC 0001's debug overlay, built with Dear ImGui over the window: frame
 // time graphs, the GPU and driver, the present mode switch, RFC 0004's
-// texture filter switch, the camera's position and the validation count. F3 shows and hides it. It
-// owns the ImGui context, which the renderer it is given to draws with, so it must outlive that
-// renderer.
+// texture filter switch, RFC 0003's meshing toggles, the camera's position
+// and the validation count. F3 shows and hides it. It owns the ImGui
+// context, which the renderer it is given to draws with, so it must outlive
+// that renderer.
 class Overlay {
 public:
     // An overlay for `window`, shown from the start or not. `validation` says
@@ -47,9 +56,10 @@ public:
 
     // Builds this frame's overlay: its draw lists, or null while it is
     // hidden. A captured mouse flies the camera, and the overlay ignores it.
-    // Switching the present mode asks `renderer` for it.
+    // Switching the present mode asks `renderer` for it. Switching merging
+    // changes `meshing.merge`, and the caller meshes the chunk again.
     [[nodiscard]] ImDrawData* build(render::Renderer& renderer, const render::Camera& camera,
-                                    bool mouse_captured);
+                                    bool mouse_captured, ChunkMeshing& meshing);
 
 private:
     // A measure's last samples, in milliseconds, for its graph.
@@ -77,6 +87,7 @@ private:
     void draw_frame_times() const;
     static void draw_present_mode(render::Renderer& renderer);
     static void draw_block_filter(render::Renderer& renderer);
+    static void draw_chunk(render::Renderer& renderer, ChunkMeshing& meshing);
     static void draw_camera(const render::Camera& camera);
     void draw_validation(const render::Context& context) const;
 

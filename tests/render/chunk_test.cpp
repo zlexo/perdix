@@ -422,3 +422,97 @@ TEST_CASE("binding 3 filters anisotropically where the device offers it, binding
     CHECK(renderer.context().instance().validation_counts().errors == 0);
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }
+
+TEST_CASE("occlusion strength 0 leaves dark corners lit, 1 darkens them fully, the default") {
+    // A white +z quad dark at every corner: 0.4 of its shade at full
+    // strength, all of it at none.
+    const std::array<Quarters, 1> layers = {Quarters{white, white, white, white}};
+    const std::vector<std::byte> textures = texture_bytes(layers);
+    vx::Result<vx::render::Renderer> created = renderer_with(textures);
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    const std::array<vx::Quad, 1> quad = {vx::encode_quad({.block = {.x = 16, .y = 16, .z = 16},
+                                                           .width = 1,
+                                                           .height = 1,
+                                                           .face = vx::Face::pos_z,
+                                                           .texture = 1,
+                                                           .occlusion = {0, 0, 0, 0}})};
+    REQUIRE(
+        renderer
+            .set_chunk({.x = 0, .y = 0, .z = 0}, mesh_of(quad, vx::Pass::opaque, vx::Face::pos_z))
+            .has_value());
+    const auto middle = [&] { return pixel_at(draw(renderer, facing(vx::Face::pos_z)), 32, 32); };
+
+    CHECK(renderer.occlusion_strength() == 1.0F);
+    // 0.8 of the light, the +z shade, is sRGB 231; 0.4 of it, sRGB 153.
+    const Pixel full = middle();
+    CHECK(full[0] >= 146);
+    CHECK(full[0] <= 160);
+    renderer.set_occlusion_strength(0.5F);
+    const Pixel half = middle(); // 0.7 of the shade: sRGB 197
+    CHECK(half[0] >= 190);
+    CHECK(half[0] <= 204);
+    renderer.set_occlusion_strength(0.0F);
+    CHECK(middle()[0] >= 225);
+
+    // Outside 0 to 1, the nearer end.
+    renderer.set_occlusion_strength(2.0F);
+    CHECK(renderer.occlusion_strength() == 1.0F);
+    renderer.set_occlusion_strength(-1.0F);
+    CHECK(renderer.occlusion_strength() == 0.0F);
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}
+
+namespace {
+
+// How many of an image's pixels are lit: not the black sky.
+int lit_pixels(const std::vector<std::uint8_t>& pixels) {
+    int lit = 0;
+    for (std::size_t at = 0; at < pixels.size(); at += 4) {
+        lit += pixels[at] != 0 || pixels[at + 1] != 0 || pixels[at + 2] != 0 ? 1 : 0;
+    }
+    return lit;
+}
+
+} // namespace
+
+TEST_CASE("the wireframe draws a face's triangle edges where the device offers it") {
+    const std::array<Quarters, 1> layers = {Quarters{white, white, white, white}};
+    const std::vector<std::byte> textures = texture_bytes(layers);
+    vx::Result<vx::render::Renderer> created = renderer_with(textures);
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    OneBlock block(vx::Opacity::opaque);
+    REQUIRE(renderer.set_chunk({.x = 0, .y = 0, .z = 0}, block.mesh()).has_value());
+    const vx::render::Camera camera = facing(vx::Face::pos_z);
+    const std::vector<std::uint8_t> solid = draw(renderer, camera);
+    CHECK_FALSE(renderer.wireframe());
+
+    renderer.set_wireframe(true);
+    const std::vector<std::uint8_t> lines = draw(renderer, camera);
+    const bool offered = renderer.context().device().optional().fill_mode_non_solid;
+    INFO("fillModeNonSolid ", offered, ", lit pixels ", lit_pixels(solid), " solid, ",
+         lit_pixels(lines), " as lines");
+    CHECK(renderer.wireframe_offered() == offered);
+    if (offered) {
+        CHECK(renderer.wireframe());
+        // The face is about 40 pixels square: its edges and its diagonal
+        // light about 220 pixels, the rest of it shows the sky.
+        CHECK(lit_pixels(lines) > 100);
+        CHECK(lit_pixels(lines) < lit_pixels(solid) / 4);
+        CHECK(pixel_at(lines, 22, 22) == Pixel{0, 0, 0, 255});
+        CHECK(pixel_at(lines, 42, 42) == Pixel{0, 0, 0, 255});
+    } else {
+        // Asked for anyway, the chunk stays solid.
+        CHECK_FALSE(renderer.wireframe());
+        CHECK(lines == solid);
+    }
+
+    renderer.set_wireframe(false);
+    CHECK(draw(renderer, camera) == solid);
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}

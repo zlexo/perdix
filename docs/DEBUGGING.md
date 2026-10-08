@@ -43,7 +43,7 @@ A clean run is not proof. The layers did not see these, which tests and pixels h
 
 ## Debug names
 
-Every Vulkan object Perdix makes is named when it is made, in every build where the loader offers `VK_EXT_debug_utils`: buffers and images by what they hold (`cube vertices`, `cube checker`, `depth target`, `frame slot 1 cube origins`), the cube's pipeline `cube`, the chunk's `chunk, opaque` and `chunk, cutout`, its `chunk quads` and the shared `chunk indices`, the frame slots' command buffers and semaphores (`frame slot 0`, `frame slot 0 image acquired`, `frames done`), the swapchain's images (`swapchain image 2`), the `texture table` and the `GPU frame timer`. ImGui's Vulkan backend makes objects of its own that stay unnamed, as do VMA's memory blocks.
+Every Vulkan object Perdix makes is named when it is made, in every build where the loader offers `VK_EXT_debug_utils`: buffers and images by what they hold (`cube vertices`, `cube checker`, `depth target`, `frame slot 1 cube origins`), the cube's pipeline `cube`, the chunk's `chunk, opaque`, `chunk, cutout` and, where offered, `chunk, wireframe`, its `chunk quads` and the shared `chunk indices`, the frame slots' command buffers and semaphores (`frame slot 0`, `frame slot 0 image acquired`, `frames done`), the swapchain's images (`swapchain image 2`), the `texture table` and the `GPU frame timer`. ImGui's Vulkan backend makes objects of its own that stay unnamed, as do VMA's memory blocks.
 
 To check that nothing new went unnamed, record a run with the SDK's API dump layer, which logs every call, and compare the handles the create calls return with those `vkSetDebugUtilsObjectNameEXT` names:
 
@@ -54,7 +54,7 @@ VK_APIDUMP_LOG_FILENAME=run.json ./build/mac-debug/app/perdix --frames=3 --overl
 
 ## Frame times: the overlay and Tracy
 
-F3 shows the overlay, and `--overlay` shows it from the first frame: graphs of the CPU's and the GPU's time a frame against the 0.5 ms budget, the frame's interval, the present mode switch, the textures' filter (RFC 0004), the camera's position and the validation count. Its GPU time comes from the renderer's own timestamps, two frames late; on KosmicKrisp about one frame in 200 drawn to a window has no time, its timestamps coming in after the frame is done, and the graph skips it. Judge the CPU graph in `mac-profile` or `mac-release`: debug builds pay for validation.
+F3 shows the overlay, and `--overlay` shows it from the first frame: graphs of the CPU's and the GPU's time a frame against the 0.5 ms budget, the frame's interval, the present mode switch, the textures' filter (RFC 0004), the chunk's quad counts and meshing toggles (RFC 0003: merging, ambient occlusion's strength and, where the device offers `fillModeNonSolid`, the wireframe), the camera's position and the validation count. Its GPU time comes from the renderer's own timestamps, two frames late; on KosmicKrisp about one frame in 200 drawn to a window has no time, its timestamps coming in after the frame is done, and the graph skips it. Judge the CPU graph in `mac-profile` or `mac-release`: debug builds pay for validation.
 
 For where the time goes, step by step, Tracy: see Profiling in the [contributing guide](../CONTRIBUTING.md). KosmicKrisp drops timestamps written inside a render pass, so GPU zones span whole passes, and it does not time a transfer before the first pass of a span.
 

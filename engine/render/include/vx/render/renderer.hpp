@@ -16,6 +16,7 @@
 #include <glm/ext/vector_int3_sized.hpp>
 #include <volk.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -158,6 +159,22 @@ public:
     // How the chunk's textures are filtered, from the next frame.
     void set_block_filter(BlockFilter filter) noexcept { block_filter_ = filter; }
     [[nodiscard]] BlockFilter block_filter() const noexcept { return block_filter_; }
+    // How much ambient occlusion darkens the chunk's corners: from 0, not at
+    // all, to 1, as Minecraft's smooth lighting does, the default (RFC 0003,
+    // open question 1: chosen by eye on the overlay's slider).
+    void set_occlusion_strength(float strength) noexcept {
+        occlusion_strength_ = std::clamp(strength, 0.0F, 1.0F);
+    }
+    [[nodiscard]] float occlusion_strength() const noexcept { return occlusion_strength_; }
+    // Whether the chunk can be drawn as the edges of its quads' triangles:
+    // where the device offers fillModeNonSolid (RFC 0003), which MoltenVK
+    // does and KosmicKrisp does not.
+    [[nodiscard]] bool wireframe_offered() const noexcept {
+        return chunk_drawing_.wireframe.has_value();
+    }
+    // Draws the chunk as a wireframe from the next frame, where offered.
+    void set_wireframe(bool on) noexcept { wireframe_ = on; }
+    [[nodiscard]] bool wireframe() const noexcept { return wireframe_ && wireframe_offered(); }
     // Null when headless.
     [[nodiscard]] const Swapchain* swapchain() const noexcept {
         return swapchain_.has_value() ? &swapchain_.value() : nullptr;
@@ -179,6 +196,7 @@ private:
     struct ChunkDrawing {
         GraphicsPipeline opaque;
         GraphicsPipeline cutout;
+        std::optional<GraphicsPipeline> wireframe; // where the device offers it
         Buffer indices;
     };
     // The chunk set_chunk gave: its quads, opaque then cutout.
@@ -196,6 +214,9 @@ private:
     [[nodiscard]] Result<void> upload_at_startup(std::span<const std::byte> block_textures);
     [[nodiscard]] Result<void> add_rendered_semaphores();
     [[nodiscard]] Result<void> recreate_target();
+    // Makes the target again where the swapchain is stale or the framebuffer
+    // changed size since it was made.
+    [[nodiscard]] Result<void> refresh_target();
     [[nodiscard]] Result<void> start_overlay(ImGuiContext* overlay);
     void destroy() noexcept;
 
@@ -211,6 +232,8 @@ private:
     ChunkDrawing chunk_drawing_;
     std::optional<UploadedChunk> chunk_;
     BlockFilter block_filter_ = BlockFilter::sharpened;
+    float occlusion_strength_ = 1.0F;
+    bool wireframe_ = false;
     Extent framebuffer_;
     Extent target_framebuffer_; // the size the target was made for
     PresentMode present_mode_;

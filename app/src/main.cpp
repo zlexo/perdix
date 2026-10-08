@@ -17,6 +17,7 @@
 #include <vx/render/swapchain.hpp>
 #include <vx/render/swapchain_choice.hpp>
 #include <vx/world/block_registry.hpp>
+#include <vx/world/block_visual.hpp>
 #include <vx/world/chunk_storage.hpp>
 
 #include <tracy/Tracy.hpp>
@@ -83,25 +84,66 @@ vx::Result<Options> parse_options(std::span<char* const> args) {
     return options;
 }
 
-// RFC 0003's milestone: one chunk of the core pack, meshed and given to the
-// renderer, with air all around it. The startup report says its quads.
-vx::Result<void> draw_demo_chunk(const vx::BlockRegistry& registry,
-                                 vx::render::Renderer& renderer) {
-    const vx::Result<vx::ChunkStorage> chunk = vx::app::demo_chunk(registry);
-    if (!chunk.has_value()) {
-        return chunk.error();
-    }
-    auto padded = std::make_unique<vx::PaddedChunk>();
-    vx::assemble_padded(vx::ChunkNeighborhood(chunk.value()), *padded);
+// RFC 0003's milestone: one chunk of the core pack, with air all around it,
+// kept padded so that the overlay's merge toggle can mesh it again.
+struct DemoChunk {
+    std::span<const vx::BlockVisual> visuals; // the registry's, which outlives the chunk
+    std::unique_ptr<vx::PaddedChunk> padded = std::make_unique<vx::PaddedChunk>();
     vx::MeshScratch scratch;
-    const vx::ChunkMesh mesh = vx::mesh_chunk(*padded, registry.visuals(), scratch);
+    vx::app::ChunkMeshing meshing; // as the overlay shows it and switches it
+    std::optional<bool> merged;    // how the renderer's mesh was made, once it has one
+};
+
+// Meshes the demo chunk as its meshing asks, merged or not, and gives it to
+// the renderer, unless the renderer has it meshed that way already.
+vx::Result<void> mesh_demo_chunk(DemoChunk& chunk, vx::render::Renderer& renderer) {
+    if (chunk.merged == chunk.meshing.merge) {
+        return {};
+    }
+    const vx::ChunkMesh mesh =
+        vx::mesh_chunk(*chunk.padded, chunk.visuals, chunk.scratch, {.merge = chunk.meshing.merge});
     if (const vx::Result<void> set = renderer.set_chunk({.x = 0, .y = 0, .z = 0}, mesh);
         !set.has_value()) {
         return set.error();
     }
-    std::cout << "Chunk: " << mesh.all().size() << " quads, " << mesh.pass(vx::Pass::cutout).size()
+    chunk.merged = chunk.meshing.merge;
+    chunk.meshing.quads = mesh.all().size();
+    chunk.meshing.cutout = mesh.pass(vx::Pass::cutout).size();
+    return {};
+}
+
+// Builds the demo chunk, pads it and draws it. The startup report says its
+// quads.
+vx::Result<void> draw_demo_chunk(const vx::BlockRegistry& registry, vx::render::Renderer& renderer,
+                                 DemoChunk& demo) {
+    const vx::Result<vx::ChunkStorage> chunk = vx::app::demo_chunk(registry);
+    if (!chunk.has_value()) {
+        return chunk.error();
+    }
+    demo.visuals = registry.visuals();
+    vx::assemble_padded(vx::ChunkNeighborhood(chunk.value()), *demo.padded);
+    if (const vx::Result<void> meshed = mesh_demo_chunk(demo, renderer); !meshed.has_value()) {
+        return meshed.error();
+    }
+    std::cout << "Chunk: " << demo.meshing.quads << " quads, " << demo.meshing.cutout
               << " of them cutout\n";
     return {};
+}
+
+// One frame: the overlay built, the chunk meshed again where the overlay
+// switched merging, and the frame rendered.
+vx::Result<vx::render::Frame> draw_frame(vx::render::Renderer& renderer, vx::app::Overlay& overlay,
+                                         const vx::app::Window& window,
+                                         const vx::render::Camera& camera, DemoChunk& demo) {
+    // A daytime sky blue, #78A7FF in sRGB.
+    constexpr vx::render::Color sky = {.r = 0.188F, .g = 0.386F, .b = 1.0F, .a = 1.0F};
+    renderer.resize(window.framebuffer_size());
+    ImDrawData* const shown =
+        overlay.build(renderer, camera, window.mouse_captured(), demo.meshing);
+    if (const vx::Result<void> meshed = mesh_demo_chunk(demo, renderer); !meshed.has_value()) {
+        return meshed.error();
+    }
+    return renderer.render({.sky = sky, .camera = camera, .cubes = {}, .overlay = shown});
 }
 
 } // namespace
@@ -181,14 +223,13 @@ int main(int argc, char* argv[]) {
         std::cout << vx::render::format_swapchain_report(swapchain->choice());
     }
 
-    if (const vx::Result<void> drawn = draw_demo_chunk(*pack.registry, renderer.value());
+    DemoChunk demo;
+    if (const vx::Result<void> drawn = draw_demo_chunk(*pack.registry, renderer.value(), demo);
         !drawn.has_value()) {
         std::cerr << "error: " << drawn.error().message << '\n';
         return 1;
     }
 
-    // A daytime sky blue, #78A7FF in sRGB.
-    constexpr vx::render::Color sky = {.r = 0.188F, .g = 0.386F, .b = 1.0F, .a = 1.0F};
     // The chunk seen first from above one corner, looking across it.
     vx::render::Camera camera;
     camera.position = {40.0, 19.0, 40.0};
@@ -218,11 +259,8 @@ int main(int argc, char* argv[]) {
         last = now;
         vx::render::fly(camera, vx::app::read_fly_controls(window.value()), seconds);
 
-        renderer.value().resize(window.value().framebuffer_size());
-        ImDrawData* const shown =
-            overlay.build(renderer.value(), camera, window.value().mouse_captured());
         const vx::Result<vx::render::Frame> rendered =
-            renderer.value().render({.sky = sky, .camera = camera, .cubes = {}, .overlay = shown});
+            draw_frame(renderer.value(), overlay, window.value(), camera, demo);
         if (!rendered.has_value()) {
             std::cerr << "error: " << rendered.error().message << '\n';
             return 1;
