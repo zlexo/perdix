@@ -1,6 +1,7 @@
 #include <vx/world/block_file.hpp>
 
 #include <vx/core/diagnostic.hpp>
+#include <vx/world/names.hpp>
 
 #include <toml++/toml.hpp>
 
@@ -9,7 +10,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -28,57 +28,6 @@ constexpr std::array<std::string_view, 8> face_keys = {"all",   "side",  "top", 
 
 SourcePlace place_of(const toml::source_region& region) {
     return {.line = region.begin.line, .column = region.begin.column};
-}
-
-// Insertions, deletions and substitutions from one key to another.
-std::size_t edit_distance(std::string_view from, std::string_view to) {
-    std::vector<std::size_t> row(to.size() + 1);
-    for (std::size_t column = 0; column < row.size(); ++column) {
-        row[column] = column;
-    }
-    for (std::size_t line = 1; line <= from.size(); ++line) {
-        std::size_t diagonal = row[0];
-        row[0] = line;
-        for (std::size_t column = 1; column <= to.size(); ++column) {
-            const std::size_t above = row[column];
-            const std::size_t substitution = from[line - 1] == to[column - 1] ? 0U : 1U;
-            row[column] = std::min({above + 1, row[column - 1] + 1, diagonal + substitution});
-            diagonal = above;
-        }
-    }
-    return row.back();
-}
-
-// The known key that "opacty" is a near miss of, "opacity": up to one edit
-// in three letters and at most two, and only when one known key is nearer
-// than all the others ("w" is as near to "x" as to "y").
-std::optional<std::string_view> near_miss(std::string_view key,
-                                          std::span<const std::string_view> known) {
-    const auto distance_to = [key](std::string_view candidate) {
-        return edit_distance(key, candidate);
-    };
-    const auto nearest = std::ranges::min_element(known, {}, distance_to);
-    if (nearest == known.end()) {
-        return std::nullopt;
-    }
-    const std::size_t distance = distance_to(*nearest);
-    const std::size_t allowed = std::clamp<std::size_t>(key.size() / 3, 1, 2);
-    const auto equally_near = std::ranges::count_if(
-        known, [&](std::string_view candidate) { return distance_to(candidate) == distance; });
-    if (distance > allowed || equally_near > 1) {
-        return std::nullopt;
-    }
-    return *nearest;
-}
-
-// "; did you mean 'opacity'?" for "opacty", or nothing without a near miss.
-std::string guess(std::string_view key, std::span<const std::string_view> known) {
-    const std::optional<std::string_view> meant = near_miss(key, known);
-    return meant ? "; did you mean '" + std::string(*meant) + "'?" : std::string{};
-}
-
-std::string unknown_key(std::string_view key, std::span<const std::string_view> known) {
-    return "unknown key '" + std::string(key) + "'" + guess(key, known);
 }
 
 // "assets/core/blocks/oak_log.toml" names "core:oak_log": the folder above
@@ -121,17 +70,6 @@ std::optional<std::string> value_text(const toml::node& node) {
         return *flag ? "true" : "false";
     }
     return std::nullopt;
-}
-
-// Names, properties and values use a to z, 0 to 9 and _ only, so a pack
-// loads the same on a case-insensitive file system as on Linux.
-constexpr std::string_view not_a_name = " uses characters other than a to z, 0 to 9 and _";
-
-bool is_name(std::string_view text) {
-    return !text.empty() && std::ranges::all_of(text, [](char letter) {
-        return (letter >= 'a' && letter <= 'z') || (letter >= '0' && letter <= '9') ||
-               letter == '_';
-    });
 }
 
 // "oak_log" in the block's namespace, or "ns:oak_log".
@@ -495,7 +433,7 @@ void Parser::check_conditions(const BlockDefinition& block) {
                 std::ranges::find(block.properties, condition.property, &PropertyDefinition::name);
             if (property == block.properties.end()) {
                 error(condition.place, "the block has no property '" + condition.property + "'" +
-                                           guess(condition.property, property_names));
+                                           did_you_mean(condition.property, property_names));
                 continue;
             }
             const std::vector<std::string_view> values(property->values.begin(),
@@ -503,7 +441,7 @@ void Parser::check_conditions(const BlockDefinition& block) {
             for (const std::string& value : condition.values) {
                 if (std::ranges::find(property->values, value) == property->values.end()) {
                     error(condition.place, "property '" + property->name + "' has no value '" +
-                                               value + "'" + guess(value, values));
+                                               value + "'" + did_you_mean(value, values));
                 }
             }
         }

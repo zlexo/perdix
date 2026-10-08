@@ -31,6 +31,7 @@ add_library(vx_world STATIC
     src/block_file.cpp
     src/block_registry.cpp
     src/chunk_storage.cpp
+    src/names.cpp
     src/packed_array.cpp)
 add_library(vx::world ALIAS vx_world)
 target_link_libraries(vx_world PUBLIC vx::core PRIVATE vx_tomlplusplus)
