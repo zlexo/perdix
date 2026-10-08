@@ -86,6 +86,66 @@ bool grazed(Vec3d wished, Vec3d moved, double degrees) {
     return cosine > std::cos(degrees * std::numbers::pi / 180.0);
 }
 
+// Space pressed twice toggles creative flight (RFC 0010, in the order 26.2's
+// jar has it): a fresh press opens the window, and another while it is
+// still open toggles. True when the toggle takes off.
+bool update_flight(Player& player, const MovementKeys& held, const MovementNumbers& numbers) {
+    if (!held.jump || player.last_held.jump) {
+        return false;
+    }
+    const bool pressed_twice = player.fly_window > 0;
+    player.fly_window = pressed_twice ? 0 : numbers.double_tap_ticks;
+    if (!pressed_twice || !player.may_fly) {
+        return false;
+    }
+    player.flying = !player.flying;
+    return player.flying;
+}
+
+// A jump: at least 0.42 upward, never slowing a faster rise, as 26.2's does
+// (from its jar); sprinting, 0.2 more along the facing, whatever the keys.
+void jump(Player& player, Vec3d facing, const MovementNumbers& numbers) {
+    player.velocity.y = std::max(numbers.jump_speed, player.velocity.y);
+    if (player.sprinting) {
+        player.velocity = player.velocity + (facing * numbers.sprint_jump_boost);
+    }
+}
+
+// The keys' acceleration this tick: flying, on the ground's terms if the
+// tick began there, or in the air.
+double acceleration_now(const Player& player, bool started_on_ground, double slipperiness,
+                        const MovementNumbers& numbers) {
+    if (player.flying) {
+        return numbers.fly_acceleration * (player.sprinting ? numbers.fly_sprint_factor : 1.0);
+    }
+    if (started_on_ground) {
+        return ground_acceleration(slipperiness, player.sprinting, numbers);
+    }
+    return numbers.air_acceleration * (player.sprinting ? numbers.sprint_factor : 1.0);
+}
+
+// Counts the double-tap windows down by a tick, as each tick begins.
+void count_down_windows(Player& player) {
+    player.sprint_window = std::max(player.sprint_window - 1, 0);
+    player.fly_window = std::max(player.fly_window - 1, 0);
+}
+
+// What Space and Shift add to a flying player's vertical speed before the
+// move: 0.15 up, 0.15 down, nothing with both.
+double climb(const MovementKeys& held, const MovementNumbers& numbers) {
+    return (held.jump ? numbers.fly_vertical_speed : 0.0) -
+           (held.sneak ? numbers.fly_vertical_speed : 0.0);
+}
+
+// The vertical speed after the move: flying keeps 0.6 of the speed it had
+// before the move, with no gravity; otherwise gravity, then drag.
+double vertical_after_move(double vertical, bool flying, const MovementNumbers& numbers) {
+    if (flying) {
+        return vertical * numbers.fly_vertical_drag;
+    }
+    return (vertical - numbers.gravity) * numbers.vertical_drag;
+}
+
 // The pose for the next tick (RFC 0010): crouching while Shift is held, or
 // where the standing box does not fit and the crouching one does, as under
 // a ceiling lower than 1.8; standing otherwise. A position that is not
@@ -144,10 +204,20 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
     }
     const bool started_on_ground = player.on_ground;
     Vec3d& velocity = player.velocity;
-    if (player.sprint_window > 0) {
-        --player.sprint_window;
-    }
+    count_down_windows(player);
     update_sprint(player, input.held, numbers);
+    const auto yaw = static_cast<double>(input.yaw);
+    const Vec3d facing{.x = -std::sin(yaw), .y = 0.0, .z = -std::cos(yaw)};
+    // Taking off from the ground jumps too, as 26.2's toggle does; then,
+    // flying, Space rises and Shift sinks, all before the threshold.
+    if (update_flight(player, input.held, numbers) && started_on_ground) {
+        jump(player, facing, numbers);
+    }
+    // This tick's mode, which a landing ends only after the move.
+    const bool flying = player.flying;
+    if (flying) {
+        velocity.y += climb(input.held, numbers);
+    }
     if (player.jump_cooldown > 0) {
         --player.jump_cooldown;
     }
@@ -164,60 +234,61 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
     }
 
     // The jump: from the ground, with Space held, once the cooldown is over,
-    // never slowing a faster rise, as 26.2's does (from its jar). Sprinting,
-    // it also pushes the player along its facing, whatever the other keys.
-    // Letting go of Space ends the cooldown.
-    const auto yaw = static_cast<double>(input.yaw);
-    const Vec3d facing{.x = -std::sin(yaw), .y = 0.0, .z = -std::cos(yaw)};
+    // flying or not, as 26.2's (a flying player is on the ground only on the
+    // tick it takes off). Letting go of Space ends the cooldown.
     if (!input.held.jump) {
         player.jump_cooldown = 0;
     } else if (started_on_ground && player.jump_cooldown == 0) {
-        velocity.y = std::max(numbers.jump_speed, velocity.y);
-        if (player.sprinting) {
-            velocity = velocity + (facing * numbers.sprint_jump_boost);
-        }
+        jump(player, facing, numbers);
         player.jump_cooldown = numbers.jump_cooldown;
     }
 
     // The keys accelerate the player along the facing the yaw gives.
     const double slipperiness = numbers.default_slipperiness;
-    const double acceleration =
-        started_on_ground
-            ? ground_acceleration(slipperiness, player.sprinting, numbers)
-            : numbers.air_acceleration * (player.sprinting ? numbers.sprint_factor : 1.0);
+    const double acceleration = acceleration_now(player, started_on_ground, slipperiness, numbers);
     const KeyInput keys = key_input(input.held, player.pose == Pose::crouching, numbers);
     const Vec3d left{.x = -std::cos(yaw), .y = 0.0, .z = std::sin(yaw)};
     const Vec3d wished = (facing * keys.forward) + (left * keys.strafe);
     velocity = velocity + (wished * acceleration);
 
-    // The move, with step-up, held back at an edge while Shift is held; what
-    // a block cut short stops.
-    const Move move = move_box(body_box(player.position, player.pose), velocity, world, scratch,
-                               {.step_height = numbers.step_height,
-                                .started_on_ground = started_on_ground,
-                                .edge_drop = input.held.sneak ? numbers.step_height : 0.0});
+    // The move, with step-up, held back at an edge while Shift is held and
+    // the player walks; what a block cut short stops.
+    const Move move =
+        move_box(body_box(player.position, player.pose), velocity, world, scratch,
+                 {.step_height = numbers.step_height,
+                  .started_on_ground = started_on_ground,
+                  .edge_drop = input.held.sneak && !flying ? numbers.step_height : 0.0});
     player.position = player.position + move.motion;
     if (move.x_collision) {
         velocity.x = 0.0;
     }
-    if (move.vertical_collision) {
+    // Flying, a block cuts the move short but not the vertical speed: flight
+    // keeps 0.6 of what it was before the move, so a landing leaves the
+    // player pressing on the ground, as standing does.
+    if (move.vertical_collision && !flying) {
         velocity.y = 0.0;
     }
     if (move.z_collision) {
         velocity.z = 0.0;
     }
     player.on_ground = move.on_ground;
+    if (flying && move.on_ground) {
+        player.flying = false; // landing ends a flight
+    }
     player.horizontal_collision = move.horizontal_collision();
     player.minor_horizontal_collision =
         player.horizontal_collision && grazed(wished, move.motion, numbers.minor_collision_degrees);
 
     // Gravity, then drag: on the ground's terms if the tick began there.
-    velocity.y = (velocity.y - numbers.gravity) * numbers.vertical_drag;
-    const double drag = started_on_ground ? ground_drag(slipperiness, numbers) : numbers.air_drag;
+    // Flying, no gravity, and the vertical speed from before the move keeps
+    // 0.6.
+    velocity.y = vertical_after_move(velocity.y, flying, numbers);
+    const double drag =
+        started_on_ground && !flying ? ground_drag(slipperiness, numbers) : numbers.air_drag;
     velocity.x *= drag;
     velocity.z *= drag;
 
-    player.pose = next_pose(player.position, input.held.sneak, world, scratch);
+    player.pose = next_pose(player.position, input.held.sneak && !player.flying, world, scratch);
     player.last_held = input.held;
 }
 
