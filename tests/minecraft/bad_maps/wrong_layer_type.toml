@@ -1,0 +1,4 @@
+# Layers are not nested.
+grass_side = ["grass_block_side", ["grass_block_side_overlay"]]
+# path: assets/core/minecraft.toml
+# expect: assets/core/minecraft.toml:2:35: error: a layer is a name in quotes, such as "stone", or a table such as { texture = "grass_block_top", tint = "grass" }

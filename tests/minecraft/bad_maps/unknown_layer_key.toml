@@ -1,0 +1,3 @@
+grass_top = { texture = "grass_block_top", color = "grass" }
+# path: assets/core/minecraft.toml
+# expect: assets/core/minecraft.toml:1:44: error: unknown key 'color'

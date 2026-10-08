@@ -1,0 +1,3 @@
+stone = { texture = 1 }
+# path: assets/core/minecraft.toml
+# expect: assets/core/minecraft.toml:1:21: error: texture is a name in quotes, such as "grass_block_top"

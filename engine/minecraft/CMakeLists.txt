@@ -25,14 +25,16 @@ target_compile_definitions(vx_yyjson PUBLIC
     YYJSON_DISABLE_FILE=1)
 
 # The minecraft layer (RFC 0009): what Perdix knows about Minecraft's own
-# files, starting with where the game is. Like world, it has no GPU or window
-# code (ADR 0003), so the web viewer can compile it to WebAssembly.
+# files: where the game is, and what a pack's textures are in it. Like world,
+# it has no GPU or window code (ADR 0003), so the web viewer can compile it to
+# WebAssembly. Texture maps are TOML, read with world's toml++.
 add_library(vx_minecraft STATIC
     src/install.cpp
     src/json.cpp
+    src/texture_map.cpp
     src/version_description.cpp)
 add_library(vx::minecraft ALIAS vx_minecraft)
-target_link_libraries(vx_minecraft PUBLIC vx::core PRIVATE vx_yyjson)
+target_link_libraries(vx_minecraft PUBLIC vx::core vx::world PRIVATE vx_tomlplusplus vx_yyjson)
 target_include_directories(vx_minecraft PUBLIC include)
 target_compile_features(vx_minecraft PUBLIC cxx_std_20)
 vx_target_warnings(vx_minecraft)

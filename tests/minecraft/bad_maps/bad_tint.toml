@@ -1,0 +1,3 @@
+oak_leaves = { texture = "oak_leaves", tint = "#77AB2" }
+# path: assets/core/minecraft.toml
+# expect: assets/core/minecraft.toml:1:47: error: tint '#77AB2' is neither a color map's name, such as "grass", nor a color written #rrggbb

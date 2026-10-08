@@ -1,0 +1,3 @@
+grass_side = []
+# path: assets/core/minecraft.toml
+# expect: assets/core/minecraft.toml:1:14: error: texture 'grass_side' lists no layers

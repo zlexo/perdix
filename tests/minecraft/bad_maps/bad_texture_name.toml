@@ -1,0 +1,4 @@
+# The game's names come without its namespace.
+stone = "minecraft:stone"
+# path: assets/core/minecraft.toml
+# expect: assets/core/minecraft.toml:2:9: error: Minecraft texture name 'minecraft:stone' uses characters other than a to z, 0 to 9 and _
