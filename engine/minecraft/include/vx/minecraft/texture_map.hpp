@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <optional>
@@ -70,6 +71,21 @@ struct TextureMapLoad {
 // neither a name nor #rrggbb, and a name with characters other than a to z,
 // 0 to 9 and _.
 [[nodiscard]] TextureMapLoad load_texture_map(const SourceFile& file);
+
+// Every namespace's map in a pack on disk (RFC 0009): each
+// assets/<namespace>/minecraft.toml under `root`, read and checked as
+// load_texture_map reads one, named by its path relative to `root`, as the
+// block files are. A namespace without one maps nothing. Names match
+// exactly, as the block files' do: a file named so only in another case is
+// an error, and so is one that cannot be read or is not a regular file.
+// Folders whose names start with a dot are passed over. A pack without a
+// folder named exactly assets has no maps; loading its blocks says what is
+// wrong with it.
+struct TextureMapsLoad {
+    std::vector<TextureMap> maps;        // those that read without an error, by namespace
+    std::vector<Diagnostic> diagnostics; // by namespace, each in its file's order
+};
+[[nodiscard]] TextureMapsLoad load_texture_maps(const std::filesystem::path& root);
 
 // Checks a map against the textures a pack's blocks use, as the block
 // registry lists its layers, and adds a warning for each texture of the

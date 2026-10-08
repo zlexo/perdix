@@ -1,12 +1,10 @@
 #include <vx/core/diagnostic.hpp>
-#include <vx/core/file.hpp>
 #include <vx/minecraft/texture_map.hpp>
 #include <vx/world/block_registry.hpp>
 
 #include <doctest/doctest.h>
 
 #include <filesystem>
-#include <optional>
 #include <string>
 
 TEST_CASE("the shipped pack's texture map reads, and maps every texture its blocks use") {
@@ -21,12 +19,10 @@ TEST_CASE("the shipped pack's texture map reads, and maps every texture its bloc
     }
     INFO(block_problems);
     REQUIRE(blocks.registry.has_value());
-    const std::optional<std::string> text = vx::read_file(root / "assets/core/minecraft.toml");
-    REQUIRE(text.has_value());
-    vx::minecraft::TextureMapLoad load =
-        vx::minecraft::load_texture_map({.path = "assets/core/minecraft.toml", .text = *text});
-    if (load.map) {
-        vx::minecraft::check_texture_map(*load.map, blocks.registry->textures(), load.diagnostics);
+    // As the app reads it: every namespace's map in the pack.
+    vx::minecraft::TextureMapsLoad load = vx::minecraft::load_texture_maps(root);
+    for (const vx::minecraft::TextureMap& map : load.maps) {
+        vx::minecraft::check_texture_map(map, blocks.registry->textures(), load.diagnostics);
     }
     std::string problems;
     for (const vx::Diagnostic& diagnostic : load.diagnostics) {
@@ -34,6 +30,7 @@ TEST_CASE("the shipped pack's texture map reads, and maps every texture its bloc
     }
     INFO(problems);
     CHECK(load.diagnostics.empty());
-    REQUIRE(load.map.has_value());
-    CHECK(load.map->textures.size() == 11);
+    REQUIRE(load.maps.size() == 1);
+    CHECK(load.maps[0].path == "assets/core/minecraft.toml");
+    CHECK(load.maps[0].textures.size() == 11);
 }

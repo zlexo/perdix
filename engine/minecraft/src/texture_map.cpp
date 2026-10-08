@@ -1,6 +1,7 @@
 #include <vx/minecraft/texture_map.hpp>
 
 #include <vx/core/diagnostic.hpp>
+#include <vx/core/file.hpp>
 #include <vx/world/block_file.hpp>
 #include <vx/world/block_registry.hpp>
 #include <vx/world/names.hpp>
@@ -12,6 +13,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <optional>
@@ -231,6 +233,100 @@ void Parser::read_tint(const toml::node& node, Layer& layer) {
 
 TextureMapLoad load_texture_map(const SourceFile& file) {
     return Parser(file).parse();
+}
+
+namespace {
+
+namespace fs = std::filesystem;
+
+// A path's last part in UTF-8. On Windows, path::string() converts through
+// the system's code page and throws on a character it cannot map, which
+// engine code, built without exceptions, cannot catch.
+std::string utf8_name(const fs::path& path) {
+    const std::u8string name = path.filename().u8string();
+    return {reinterpret_cast<const char*>(name.data()), name.size()};
+}
+
+// Whether two names differ in the case of their letters alone.
+bool same_but_case(std::string_view one, std::string_view other) {
+    const auto lower = [](char letter) {
+        return letter >= 'A' && letter <= 'Z' ? static_cast<char>(letter - 'A' + 'a') : letter;
+    };
+    return one != other && std::ranges::equal(one, other, {}, lower, lower);
+}
+
+// What a folder holds, by name, in name order; nothing when it cannot be
+// listed.
+std::vector<fs::directory_entry> listing(const fs::path& folder) {
+    std::vector<fs::directory_entry> entries;
+    std::error_code error;
+    for (fs::directory_iterator entry(folder, error); !error && entry != fs::directory_iterator();
+         entry.increment(error)) {
+        entries.push_back(*entry);
+    }
+    std::ranges::sort(entries, {},
+                      [](const fs::directory_entry& entry) { return utf8_name(entry.path()); });
+    return entries;
+}
+
+} // namespace
+
+TextureMapsLoad load_texture_maps(const fs::path& root) {
+    TextureMapsLoad load;
+    const auto error = [&](std::string file, std::string message) {
+        load.diagnostics.push_back({.severity = Severity::error,
+                                    .file = std::move(file),
+                                    .line = 0,
+                                    .column = 0,
+                                    .message = std::move(message)});
+    };
+    constexpr std::string_view file_name = "minecraft.toml";
+    // The assets folder named exactly so; the block loader says what is wrong
+    // with one named otherwise.
+    std::vector<fs::directory_entry> spaces;
+    for (const fs::directory_entry& entry : listing(root)) {
+        std::error_code ignored;
+        if (utf8_name(entry.path()) == "assets" && entry.is_directory(ignored)) {
+            spaces = listing(entry.path());
+        }
+    }
+    for (const fs::directory_entry& space : spaces) {
+        const std::string space_name = utf8_name(space.path());
+        std::error_code ignored;
+        if (space_name.starts_with('.') || !space.is_directory(ignored)) {
+            continue;
+        }
+        for (const fs::directory_entry& entry : listing(space.path())) {
+            const std::string name = utf8_name(entry.path());
+            std::string path = "assets/";
+            path += space_name;
+            path += '/';
+            path += name;
+            if (same_but_case(name, file_name)) {
+                error(path, "'" + name + "' must be named '" + std::string(file_name) +
+                                "': names in a pack match exactly, as on Linux");
+                continue;
+            }
+            if (name != file_name) {
+                continue;
+            }
+            // A regular file only, following links: a pipe or a device, such
+            // as a link to /dev/zero, would be read until it ended, if ever.
+            const std::optional<std::string> text =
+                entry.is_regular_file(ignored) ? read_file(entry.path()) : std::nullopt;
+            if (!text) {
+                error(path, "the file cannot be read");
+                continue;
+            }
+            TextureMapLoad map = load_texture_map({.path = path, .text = *text});
+            load.diagnostics.insert(load.diagnostics.end(), map.diagnostics.begin(),
+                                    map.diagnostics.end());
+            if (map.map) {
+                load.maps.push_back(*std::move(map.map));
+            }
+        }
+    }
+    return load;
 }
 
 void check_texture_map(const TextureMap& map, std::span<const TextureRef> textures,
