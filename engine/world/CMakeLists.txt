@@ -32,6 +32,7 @@ add_library(vx_world STATIC
     src/block_registry.cpp
     src/chunk_storage.cpp
     src/collision.cpp
+    src/movement.cpp
     src/names.cpp
     src/packed_array.cpp)
 add_library(vx::world ALIAS vx_world)
