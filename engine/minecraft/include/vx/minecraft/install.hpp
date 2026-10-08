@@ -43,6 +43,8 @@ game_folders(System system, const std::filesystem::path& home,
 struct InstallQuery {
     // --minecraft: a game folder, or a client jar.
     std::optional<std::filesystem::path> path = std::nullopt;
+    // --minecraft-version: a version folder's name.
+    std::optional<std::string> version = std::nullopt;
     // The player's home folder. The initializer is not redundant, whatever
     // clang-tidy says: without one, Clang warns when a designated
     // initializer leaves the field out.
@@ -66,11 +68,12 @@ struct Install {
 // version is the newest release, by release time, that has a jar, and the
 // first such jar that opens is used. A version folder without its jar is
 // passed over before its description is read; a snapshot or a modded profile
-// is passed over once its description says so. A jar named as the path skips
-// the choice. Without a path, the launcher's folders for the system are looked
-// in, in order. The reason there is none is an error when the query named a
-// path; otherwise it is a line for the startup report. Versions passed over on
-// the way, for a description that cannot be used or a newer jar that does not
+// is passed over once its description says so. A version named in the query is
+// used whatever its type. A jar named as the path skips the choice. Without a
+// path, the launcher's folders for the system are looked in, in order. The
+// reason there is none is an error when the query named a path or a version;
+// otherwise it is a line for the startup report. Versions passed over on the
+// way, for a description that cannot be used or a newer jar that does not
 // open, are warnings in `diagnostics`.
 [[nodiscard]] Result<Install> find_install(const InstallQuery& query,
                                            std::vector<Diagnostic>& diagnostics);

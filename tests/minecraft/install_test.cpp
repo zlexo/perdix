@@ -9,6 +9,7 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <optional>
 #include <random>
 #include <string>
@@ -102,6 +103,10 @@ fs::path jar_of(const fs::path& game, std::string_view id) {
 
 vx::minecraft::InstallQuery named(const fs::path& game) {
     return {.path = game};
+}
+
+vx::minecraft::InstallQuery named(const fs::path& game, std::string_view version) {
+    return {.path = game, .version = std::string(version)};
 }
 
 // What find_install gave, and its diagnostics, formatted.
@@ -517,4 +522,75 @@ TEST_CASE("a named file that does not open as a jar is an error saying why") {
     write(notes, "not a zip archive");
     CHECK(why(find(named(notes))) ==
           utf8(notes) + ": not a zip archive: it has no end of central directory record");
+}
+
+TEST_CASE("a named version is used whatever its type, and only its jar is needed") {
+    const TemporaryFolder game;
+    add_version(game.path(), "26.2", release("2026-06-16T12:03:33+00:00"));
+    // Its description is not read, so one that is not JSON does no harm.
+    add_version(game.path(), "26.3-snapshot-1", "not JSON");
+    add_version(game.path(), "fabric-loader-0.19.2-26.2",
+                R"({"inheritsFrom": "26.2", "type": "release"})", jar_saying(R"({"id": "26.2"})"));
+    write(jar_of(game.path(), "custom"), empty_jar());
+    Found found = find(named(game.path(), "26.3-snapshot-1"));
+    CHECK(version_of(found) == "26.3-snapshot-1");
+    CHECK(path_of(found) == jar_of(game.path(), "26.3-snapshot-1"));
+    CHECK(found.diagnostics.empty());
+    // A modded profile's jar is the one of the version it builds on.
+    found = find(named(game.path(), "fabric-loader-0.19.2-26.2"));
+    CHECK(version_of(found) == "26.2");
+    CHECK(path_of(found) == jar_of(game.path(), "fabric-loader-0.19.2-26.2"));
+    CHECK(version_of(find(named(game.path(), "custom"))) == "custom");
+}
+
+TEST_CASE("a named version that has no jar, or none that opens, or is not there, is an error") {
+    const TemporaryFolder game;
+    add_version(game.path(), "26.3", release("2026-07-15T10:00:00+00:00"), std::nullopt);
+    add_version(game.path(), "26.2", release("2026-06-16T12:03:33+00:00"), "not a zip archive");
+    CHECK(why(find(named(game.path(), "26.3"))) ==
+          "version 26.3 in " + utf8(game.path()) + " has no jar");
+    CHECK(why(find(named(game.path(), "26.2"))) ==
+          utf8(jar_of(game.path(), "26.2")) +
+              ": not a zip archive: it has no end of central directory record");
+    CHECK(why(find(named(game.path(), "25w36b"))) == "no version 25w36b in " + utf8(game.path()));
+}
+
+TEST_CASE("a version name that could reach outside the versions folder is refused") {
+    const TemporaryFolder game;
+    add_version(game.path(), "26.2", release("2026-06-16T12:03:33+00:00"));
+    for (const std::string& name :
+         {std::string(), std::string("."), std::string(".."), std::string("../versions/26.2"),
+          std::string("26.2/../26.2"), std::string("26.2\\..\\26.2"), std::string("26.2\0", 5),
+          // A drive, which would replace the whole path on Windows, what is
+          // not printable ASCII, and a name longer than any version's.
+          std::string("D:26.2"), std::string("26.2\xC3\xA9"), std::string("26.2\n"),
+          std::string(65, '2')}) {
+        CAPTURE(name);
+        CHECK(why(find(named(game.path(), name))) ==
+              "'" + name + "' is not the name of a version folder");
+    }
+}
+
+TEST_CASE("a version named with a jar for the path is an error") {
+    const TemporaryFolder folder;
+    write(folder.path() / "26.2.jar", empty_jar());
+    CHECK(why(find(named(folder.path() / "26.2.jar", "26.2"))) ==
+          "version 26.2 is named, but " + utf8(folder.path() / "26.2.jar") +
+              " is a jar, not a game folder");
+}
+
+TEST_CASE("without a path, a named version is looked for in the launcher's folders, in order") {
+    const TemporaryFolder home;
+    const vx::minecraft::InstallQuery query{
+        .version = "26.2", .home = home.path(), .system = System::linux_os};
+    const fs::path launcher = home.path() / ".minecraft";
+    const fs::path flathub = home.path() / ".var" / "app" / "com.mojang.Minecraft" / ".minecraft";
+    CHECK(why(find(query)) ==
+          "no Minecraft game folder at " + utf8(launcher) + " or " + utf8(flathub));
+    add_version(launcher, "1.21.11", release("2025-12-09T12:23:30+00:00"));
+    CHECK(why(find(query)) == "no version 26.2 in " + utf8(launcher));
+    add_version(flathub, "26.2", release("2026-06-16T12:03:33+00:00"));
+    CHECK(path_of(find(query)) == jar_of(flathub, "26.2"));
+    add_version(launcher, "26.2", release("2026-06-16T12:03:33+00:00"));
+    CHECK(path_of(find(query)) == jar_of(launcher, "26.2"));
 }

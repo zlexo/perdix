@@ -34,6 +34,10 @@ std::string utf8(const fs::path& path) {
     return {reinterpret_cast<const char*>(text.data()), text.size()};
 }
 
+fs::path from_utf8(std::string_view text) {
+    return {std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size())};
+}
+
 void warn(std::vector<Diagnostic>& diagnostics, const fs::path& file, std::string message) {
     diagnostics.push_back({.severity = Severity::warning,
                            .file = utf8(file),
@@ -209,8 +213,32 @@ Error none_in(const std::vector<fs::path>& games, std::size_t releases) {
     return Error{"no Minecraft release with a jar in " + listed(games)};
 }
 
-// A jar the query named: one that does not open is an error, not a version
-// passed over.
+// The newest release, in the first of the game folders that has one whose
+// jar opens.
+Result<Install> find_release(const std::vector<fs::path>& folders,
+                             std::vector<Diagnostic>& diagnostics) {
+    std::vector<fs::path> games;
+    std::size_t releases = 0;
+    for (const fs::path& folder : folders) {
+        std::error_code error;
+        if (!fs::is_directory(folder, error)) {
+            continue;
+        }
+        games.push_back(folder);
+        Choice choice = choose_release(folder, diagnostics);
+        if (choice.install) {
+            return std::move(*choice.install);
+        }
+        releases += choice.releases;
+    }
+    if (games.empty()) {
+        return Error{"no Minecraft game folder at " + listed(folders)};
+    }
+    return none_in(games, releases);
+}
+
+// A jar the query named, by its path or its version: one that does not open
+// is an error, not a version passed over.
 Result<Install> open_named(const fs::path& jar, const std::string& name,
                            std::vector<Diagnostic>& diagnostics) {
     Result<Archive> archive = Archive::open(jar);
@@ -220,9 +248,44 @@ Result<Install> open_named(const fs::path& jar, const std::string& name,
     return make_install(std::move(archive).value(), jar, name, diagnostics);
 }
 
+// The version folder named `id` in the first of the game folders that has
+// one, whatever its type: only its jar is needed.
+Result<Install> find_version(const std::vector<fs::path>& folders, const std::string& id,
+                             std::vector<Diagnostic>& diagnostics) {
+    std::vector<fs::path> games;
+    for (const fs::path& game : folders) {
+        std::error_code error;
+        if (!fs::is_directory(game, error)) {
+            continue;
+        }
+        games.push_back(game);
+        const fs::path folder = game / "versions" / from_utf8(id);
+        if (!fs::is_directory(folder, error)) {
+            continue;
+        }
+        const fs::path jar = own_file(folder, ".jar");
+        if (!fs::is_regular_file(jar, error)) {
+            return Error{"version " + id + " in " + utf8(game) + " has no jar"};
+        }
+        return open_named(jar, id, diagnostics);
+    }
+    if (games.empty()) {
+        return Error{"no Minecraft game folder at " + listed(folders)};
+    }
+    return Error{"no version " + id + " in " + listed(games)};
+}
+
+Result<Install> search(const std::vector<fs::path>& folders,
+                       const std::optional<std::string>& version,
+                       std::vector<Diagnostic>& diagnostics) {
+    return version ? find_version(folders, *version, diagnostics)
+                   : find_release(folders, diagnostics);
+}
+
 // A path the query names: a client jar, which skips the choice, or a game
 // folder, searched like the launcher's.
-Result<Install> find_in_named(const fs::path& path, std::vector<Diagnostic>& diagnostics) {
+Result<Install> find_in_named(const fs::path& path, const std::optional<std::string>& version,
+                              std::vector<Diagnostic>& diagnostics) {
     if (path.empty()) {
         return Error{"an empty path names no game folder and no jar"};
     }
@@ -235,16 +298,25 @@ Result<Install> find_in_named(const fs::path& path, std::vector<Diagnostic>& dia
         return Error{utf8(path) + " cannot be read (" + error.message() + ")"};
     }
     if (fs::is_regular_file(status)) {
+        if (version) {
+            return Error{"version " + *version + " is named, but " + utf8(path) +
+                         " is a jar, not a game folder"};
+        }
         return open_named(path, utf8(path.stem()), diagnostics);
     }
     if (!fs::is_directory(status) || !fs::is_directory(path / "versions", error)) {
         return Error{utf8(path) + " is not a game folder: it holds no versions folder"};
     }
-    Choice choice = choose_release(path, diagnostics);
-    if (choice.install) {
-        return std::move(*choice.install);
-    }
-    return none_in({path}, choice.releases);
+    return search({path}, version, diagnostics);
+}
+
+// Whether `name` can only name a folder in versions/, and no other: a
+// version's name, with no slash, backslash or colon (D:26.2 would replace the
+// whole path on Windows), and not . or ..; printable ASCII also leaves out
+// what Windows could not turn into a path.
+bool is_folder_name(std::string_view name) {
+    return is_printable_name(name) && name != "." && name != ".." &&
+           name.find_first_of("/\\:") == std::string_view::npos;
 }
 
 } // namespace
@@ -277,31 +349,17 @@ game_folders(System system, const std::filesystem::path& home,
 }
 
 Result<Install> find_install(const InstallQuery& query, std::vector<Diagnostic>& diagnostics) {
+    if (query.version && !is_folder_name(*query.version)) {
+        return Error{"'" + *query.version + "' is not the name of a version folder"};
+    }
     if (query.path) {
-        return find_in_named(*query.path, diagnostics);
+        return find_in_named(*query.path, query.version, diagnostics);
     }
     const std::vector<fs::path> folders = game_folders(query.system, query.home, query.appdata);
     if (folders.empty()) {
         return Error{"no home folder to look for Minecraft in"};
     }
-    std::vector<fs::path> games;
-    std::size_t releases = 0;
-    for (const fs::path& folder : folders) {
-        std::error_code error;
-        if (!fs::is_directory(folder, error)) {
-            continue;
-        }
-        games.push_back(folder);
-        Choice choice = choose_release(folder, diagnostics);
-        if (choice.install) {
-            return std::move(*choice.install);
-        }
-        releases += choice.releases;
-    }
-    if (games.empty()) {
-        return Error{"no Minecraft game folder at " + listed(folders)};
-    }
-    return none_in(games, releases);
+    return search(folders, query.version, diagnostics);
 }
 
 } // namespace vx::minecraft
