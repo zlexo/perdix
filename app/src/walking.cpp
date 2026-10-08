@@ -42,19 +42,13 @@ void Walking::advance(std::chrono::nanoseconds elapsed, const TickInput& input,
 }
 
 void Walking::tick(const TickInput& input, const BlockBoxes& world) {
-    // W with S held too is no forward input, as RFC 0010 reads the keys.
-    const bool forward = input.held.forward && !input.held.back;
-    if (input.held.sprint && forward) {
-        player_.sprinting = true;
-    }
-    if (!forward) {
-        player_.sprinting = false;
-    }
     previous_ = player_.position;
     vx::tick(player_, input, world, numbers_, scratch_);
     if (player_.position.y < respawn_below_) {
         place(spawn_);
     }
+    previous_eye_ = eye_;
+    eye_ += (eye_height(player_.pose) - eye_) * 0.5;
     previous_fov_ = fov_;
     const double target = player_.sprinting ? sprinting_fov : 1.0;
     fov_ += (target - fov_) * 0.5;
@@ -66,8 +60,9 @@ double Walking::between() const noexcept {
 }
 
 Vec3d Walking::eye() const noexcept {
-    return between_points(previous_, player_.position, between()) +
-           Vec3d{.x = 0.0, .y = eye_height, .z = 0.0};
+    const double t = between();
+    return between_points(previous_, player_.position, t) +
+           Vec3d{.x = 0.0, .y = previous_eye_ + ((eye_ - previous_eye_) * t), .z = 0.0};
 }
 
 double Walking::fov_factor() const noexcept {
@@ -86,11 +81,13 @@ double Walking::vertical_speed() const noexcept {
 }
 
 void Walking::place(Vec3d feet) noexcept {
+    // A new player there: no speed, no sprint, no wall hit or double tap
+    // carried over from before.
+    player_ = Player{};
     player_.position = feet;
-    player_.velocity = {};
-    player_.on_ground = false;
-    player_.sprinting = false;
     previous_ = feet;
+    eye_ = eye_height(Pose::standing);
+    previous_eye_ = eye_;
     fov_ = 1.0;
     previous_fov_ = 1.0;
 }

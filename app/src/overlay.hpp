@@ -32,6 +32,7 @@ struct MovementReport {
     double vertical_speed = 0.0; // up, in blocks a second
     bool on_ground = false;
     bool sprinting = false;
+    bool crouching = false;
     std::uint64_t ticks = 0; // movement ticks run so far
 };
 

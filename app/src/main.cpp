@@ -164,7 +164,7 @@ void move_player(Mover& mover, vx::app::Window& window, vx::render::Camera& came
                  const vx::BlockBoxes& blocks, std::chrono::nanoseconds elapsed, float seconds) {
     if (window.take_noclip_toggle()) {
         const vx::Vec3d feet{.x = camera.position.x,
-                             .y = camera.position.y - vx::app::Walking::eye_height,
+                             .y = camera.position.y - vx::eye_height(vx::Pose::standing),
                              .z = camera.position.z};
         if (!mover.noclip) {
             mover.noclip = true;
@@ -314,10 +314,10 @@ int main(int argc, char* argv[]) {
     Mover mover{.walking = vx::app::Walking(vx::app::demo_spawn, 0.0),
                 .field_of_view = camera.fov_y,
                 .noclip = false};
-    std::cout << "Click the window to walk: W A S D, Space to jump, Ctrl with W to sprint, "
-                 "the mouse to look. F4 flies through everything (W A S D, Space and Shift "
-                 "for up and down, Ctrl to go faster) and back. Escape releases the mouse; "
-                 "F3 shows the overlay.\n";
+    std::cout << "Click the window to walk: W A S D, Space to jump, Ctrl with W or W twice to "
+                 "sprint, Shift to sneak, the mouse to look. F4 flies through everything "
+                 "(W A S D, Space and Shift for up and down, Ctrl to go faster) and back. "
+                 "Escape releases the mouse; F3 shows the overlay.\n";
 
     using Clock = std::chrono::steady_clock;
     Clock::time_point last = Clock::now();
@@ -345,6 +345,7 @@ int main(int argc, char* argv[]) {
                               .vertical_speed = mover.walking.vertical_speed(),
                               .on_ground = mover.walking.player().on_ground,
                               .sprinting = mover.walking.player().sprinting,
+                              .crouching = mover.walking.player().pose == vx::Pose::crouching,
                               .ticks = mover.walking.ticks()});
 
         const vx::Result<vx::render::Frame> rendered =

@@ -17,7 +17,6 @@ namespace vx::app {
 class Walking {
 public:
     static constexpr std::chrono::nanoseconds tick_length = std::chrono::milliseconds(50);
-    static constexpr double eye_height = 1.62;
 
     // A player standing at `spawn`, returned there whenever it falls 64
     // blocks below `lowest`, the world's lowest block.
@@ -25,13 +24,14 @@ public:
 
     // Runs every tick that falls due in `elapsed`, each with `input`. More
     // than a second behind, the rest is skipped, as RFC 0005's world thread
-    // skips ticks. Ctrl starts a sprint while W is held without S, and
-    // letting go of W ends it; RFC 0010's item 4 brings the game's other
-    // sprint rules.
+    // skips ticks. The tick's own rules (RFC 0010) start and end sprints and
+    // crouches.
     void advance(std::chrono::nanoseconds elapsed, const TickInput& input, const BlockBoxes& world);
 
     // The camera's position for this frame: between the last tick's position
-    // and this one's, as far as the time since this tick goes, at eye height.
+    // and this one's, as far as the time since this tick goes, at eye height,
+    // which eases halfway to the pose's each tick, 1.62 standing and 1.27
+    // crouching.
     [[nodiscard]] Vec3d eye() const noexcept;
     // The field of view's factor for this frame, eased as the game eases it:
     // halfway to its target each tick, 1 walking and 1.15 sprinting.
@@ -45,8 +45,9 @@ public:
     [[nodiscard]] const Player& player() const noexcept { return player_; }
     [[nodiscard]] std::uint64_t ticks() const noexcept { return ticks_; }
 
-    // Puts the player's feet at `feet`, still and not sprinting, with the
-    // field of view back at 1, as when the noclip camera lands it.
+    // Puts the player's feet at `feet`, still, standing and not sprinting,
+    // with the eye at 1.62 and the field of view back at 1, as when the
+    // noclip camera lands it.
     void place(Vec3d feet) noexcept;
 
 private:
@@ -59,6 +60,8 @@ private:
     Vec3d spawn_;
     double respawn_below_;
     std::chrono::nanoseconds since_tick_{0};
+    double eye_ = eye_height(Pose::standing);
+    double previous_eye_ = eye_height(Pose::standing);
     double fov_ = 1.0;
     double previous_fov_ = 1.0;
     MovementNumbers numbers_;
