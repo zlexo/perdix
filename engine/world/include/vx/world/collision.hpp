@@ -87,6 +87,20 @@ struct Move {
 [[nodiscard]] Move clip_move_stepping(const Box& box, Vec3d wanted, bool started_on_ground,
                                       double step_height, std::span<const Box> obstacles) noexcept;
 
+// Whether `box` overlaps one of `obstacles` by more than the tolerance on
+// every axis: whether it would be inside a block there.
+[[nodiscard]] bool overlaps_any(const Box& box, std::span<const Box> obstacles) noexcept;
+
+// The sneaking edge guard (RFC 0010). While the box is within `max_drop` of
+// the ground and not moving up, `wanted`'s horizontal motion is cut back in
+// steps of 0.05 blocks (to 0 once under 0.05) until the box, moved by it,
+// would still have an obstacle within `max_drop` below its bottom: x alone,
+// then z alone, then both together. A motion still over the edge after 256
+// steps (12.8 blocks, far beyond walking speed) becomes 0, so the guard
+// always ends.
+[[nodiscard]] Vec3d guard_edge(const Box& box, Vec3d wanted, double max_drop,
+                               std::span<const Box> obstacles) noexcept;
+
 // The blocks movement collides with.
 class BlockBoxes {
 public:
