@@ -70,6 +70,10 @@ struct Player {
 // or 1.5 crouching.
 [[nodiscard]] Box body_box(Vec3d position, Pose pose) noexcept;
 
+// How far above its feet a body in `pose` sees from: 1.62 standing, 1.27
+// crouching.
+[[nodiscard]] double eye_height(Pose pose) noexcept;
+
 // The horizontal acceleration on the ground, on a block of `slipperiness`
 // (more than 0, at most 1): the walking acceleration, more sprinting, times
 // (0.6 / slipperiness) cubed, never more than 1, so slippery blocks are slow
@@ -83,18 +87,20 @@ struct Player {
 [[nodiscard]] double ground_drag(double slipperiness, const MovementNumbers& numbers) noexcept;
 
 // Advances the player one tick (50 ms) with the input held during it, in
-// Minecraft's order (RFC 0010): a sprint starts, with W held without S and
-// the player not crouched, while the sprint key is held, or when W is pressed
+// Minecraft's order (RFC 0010): a sprint starts, with W held without S and the
+// player not crouched, while the sprint key is held, or when W is pressed
 // again within 6 ticks of a press, in the air too, unless Shift was held the
 // tick before or S is; it stops when that push forward goes or when the last
-// move ran into a wall at more than 8 degrees from where the keys pointed,
-// and survives a crouch; speeds under the momentum threshold become 0; a player that began
-// the tick on the ground with Space held jumps, once the cooldown since its
-// last jump is over, and sprinting also pushes it along its facing; the keys
-// accelerate the player, on the ground or in the air, along the facing the
-// yaw gives; the box moves with collision and step-up, and each component of
-// the velocity a block cut short becomes 0; then gravity, and drag, on the
-// ground if the tick began there. `scratch` holds the boxes a move gathers,
+// move ran into a wall at more than 8 degrees from where the keys pointed, and
+// survives a crouch; speeds under the momentum threshold become 0; a player
+// that began the tick on the ground with Space held jumps, once the cooldown
+// since its last jump is over, and sprinting also pushes it along its facing;
+// the keys accelerate the player, on the ground or in the air, along the
+// facing the yaw gives; the box moves with collision and step-up, held back at
+// edges while Shift is held, and each component of the velocity a block cut
+// short becomes 0; then gravity, and drag, on the ground if the tick began
+// there. Last, the pose for the next tick: crouching while Shift is held, or
+// where only the crouching box fits. `scratch` holds the boxes a move gathers,
 // from one tick to the next. A yaw that is not finite gives no facing: the
 // tick then does nothing.
 void tick(Player& player, const TickInput& input, const BlockBoxes& world,

@@ -52,6 +52,7 @@ add_executable(vx_world_tests
     world/chunk_storage_test.cpp
     world/collision_test.cpp
     world/coordinates_test.cpp
+    world/crouch_test.cpp
     world/edge_guard_test.cpp
     world/jump_test.cpp
     world/move_rules_test.cpp
