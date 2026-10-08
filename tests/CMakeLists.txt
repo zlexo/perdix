@@ -170,8 +170,10 @@ add_executable(vx_minecraft_tests
     minecraft/version_description_test.cpp
     fuzz/version_description_fuzz.cpp)
 # render too, for the end-to-end test that loads the core pack with made
-# textures; nothing in it touches a GPU.
-target_link_libraries(vx_minecraft_tests PRIVATE vx::minecraft vx::render doctest::doctest)
+# textures, nothing in it touching a GPU; and stb_image, for the check against
+# the player's own Minecraft, which decodes the jar's files apart.
+target_link_libraries(vx_minecraft_tests PRIVATE vx::minecraft vx::render vx_stb_image
+    doctest::doctest)
 # RFC 0009's corpus of bad texture maps and the pack this repository ships,
 # for the shipped map's test; version descriptions and release times, and
 # inputs fuzzing saved, read by the description fuzz target's replay test.

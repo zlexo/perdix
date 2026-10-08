@@ -19,3 +19,6 @@ compile_commands.json
 # Profiler and GPU captures
 *.tracy
 *.gputrace
+
+# Minecraft's own files, read from the player's install and never kept (RFC 0009)
+*.jar

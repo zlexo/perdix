@@ -133,7 +133,8 @@ jobs:
   # ADR 0003: no GPU or window code in the world and mesh layers, nor in
   # RFC 0009's minecraft layer. Include paths fence off the engine's own
   # headers, but not system ones such as Vulkan's, so this checks the
-  # includes themselves (#28).
+  # includes themselves (#28). And RFC 0009: nothing of Minecraft's own is
+  # ever committed.
   layering:
     name: Layering
     runs-on: ubuntu-24.04
@@ -150,5 +151,28 @@ jobs:
             exit 1
           elif [ "$status" -ne 1 ]; then
             echo "::error::git grep failed with status $status, so nothing was checked"
+            exit 1
+          fi
+      - name: Nothing of Minecraft's own in the repository
+        # RFC 0009: the game's files are read from the player's install at
+        # startup and never committed: no tracked path under an
+        # assets/minecraft/ folder, and no jar, in any case of letters. The
+        # paths go to a file first, so that a failing git ls-files stops the
+        # step (bash -e, with no pipefail here), and NUL-separated, since git
+        # quotes a path with an unusual character, and the quotes would keep
+        # ^ and $ from matching it. The file for what grep finds is made
+        # first too: one that could not be made would fail grep's redirect
+        # with status 1, which reads as no match.
+        run: |
+          git ls-files -z > "$RUNNER_TEMP/tracked"
+          : > "$RUNNER_TEMP/found"
+          status=0
+          grep -zinE '(^|/)assets/minecraft/|\.jar$' "$RUNNER_TEMP/tracked" > "$RUNNER_TEMP/found" || status=$?
+          if [ "$status" -eq 0 ]; then
+            tr '\0' '\n' < "$RUNNER_TEMP/found"
+            echo "::error::Minecraft's own files are never committed (RFC 0009): they are read from the player's install"
+            exit 1
+          elif [ "$status" -ne 1 ]; then
+            echo "::error::grep failed with status $status, so nothing was checked"
             exit 1
           fi
