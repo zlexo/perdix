@@ -269,6 +269,117 @@ TEST_CASE("sprinting onto a 1-block step: Space on ticks 4 to 9 clears its face,
             CHECK(landing + 1 == 15);
             CHECK(-steps[landing].position.z == doctest::Approx(4.111729).epsilon(tolerance));
         }
+        if (jump == 11) {
+            // The research's late case: against the face until tick 12,
+            // over it without the sprint on tick 13, sprinting again from
+            // tick 14, and on top at tick 19, 3.266902 along.
+            CHECK(-steps[12].position.z == doctest::Approx(2.719600).epsilon(tolerance));
+            CHECK(-steps[13].position.z == doctest::Approx(2.762916).epsilon(tolerance));
+            CHECK(landing + 1 == 19);
+            CHECK(-steps[landing].position.z == doctest::Approx(3.266902).epsilon(tolerance));
+        }
     }
 }
 
+namespace {
+
+// A wall 2 blocks high along z, its face at x = -1, as in the 5 and 45
+// degree test.
+vx::test::FlatWorld wall_on_the_left() {
+    vx::test::FlatWorld world;
+    for (int z = -40; z < 2; ++z) {
+        world.boxes.push_back(block_box(-2.0, 0.0, z));
+        world.boxes.push_back(block_box(-2.0, 1.0, z));
+    }
+    return world;
+}
+
+// A player at rest with its box against that wall.
+vx::Player against_the_left_wall() {
+    vx::Player player = at_rest();
+    player.position.x = -0.7;
+    return player;
+}
+
+} // namespace
+
+TEST_CASE("the 8 degrees are the line: a wall at 7.5 degrees is grazed, and one at 8.5 is hit") {
+    const vx::test::FlatWorld world = wall_on_the_left();
+    for (const double angle : {7.5, 8.5}) {
+        INFO(angle, " degrees");
+        vx::Player player = against_the_left_wall();
+        const std::vector<Step> steps = run(player, repeat(ctrl_w, 3), world, degrees(angle));
+        CHECK(steps[0].horizontal_collision);
+        CHECK(steps[1].sprinting == (angle < 8.0));
+        CHECK(steps[2].sprinting == (angle < 8.0));
+    }
+}
+
+TEST_CASE(
+    "W and A along a wall on the left: the keys point 45 degrees into it, which ends a sprint") {
+    // The facing runs along the wall, 0 degrees from the slide; the rule
+    // measures from where the keys point.
+    const vx::test::FlatWorld world = wall_on_the_left();
+    vx::Player player = against_the_left_wall();
+    const std::vector<Step> steps =
+        run(player, repeat({.forward = true, .left = true, .sprint = true}, 2), world);
+    CHECK(steps[0].sprinting);
+    CHECK(steps[0].horizontal_collision);
+    CHECK_FALSE(steps[1].sprinting);
+}
+
+TEST_CASE(
+    "straight into a wall: the tick that reaches it grazes, and standing dead against it ends "
+    "the sprint") {
+    // The angle is taken against the motion after the cut: a move cut short
+    // straight ahead still went where the keys pointed, 0 degrees, and a box
+    // that could not move at all ran into the wall. The face is at z = -1.
+    vx::test::FlatWorld world;
+    for (int x = -2; x < 2; ++x) {
+        world.boxes.push_back(block_box(x, 0.0, -2.0));
+        world.boxes.push_back(block_box(x, 1.0, -2.0));
+    }
+    vx::Player player = at_rest();
+    const std::vector<Step> steps = run(player, repeat(ctrl_w, 6), world);
+    // Sprinting from rest, the 4th tick reaches the face.
+    CHECK_FALSE(steps[2].horizontal_collision);
+    CHECK(steps[3].horizontal_collision);
+    CHECK(steps[3].position.z == doctest::Approx(-0.7));
+    CHECK(steps[4].sprinting);
+    CHECK_FALSE(steps[5].sprinting);
+}
+
+TEST_CASE("the sprint key starts a sprint with A or D held beside W") {
+    const vx::test::FlatWorld world;
+    for (const vx::MovementKeys& keys :
+         {vx::MovementKeys{.forward = true, .left = true, .sprint = true},
+          vx::MovementKeys{.forward = true, .right = true, .sprint = true}}) {
+        vx::Player player = at_rest();
+        CHECK(run(player, {keys}, world)[0].sprinting);
+    }
+}
+
+TEST_CASE("a sprint started on a jump's tick has the jump's boost that same tick") {
+    // RFC 0010's standing sprint-jump: W, the sprint key and Space pressed
+    // together on the first tick move it 0.1274 and 0.2.
+    const vx::test::FlatWorld world;
+    vx::Player player = at_rest();
+    const std::vector<Step> steps =
+        run(player, {{.forward = true, .jump = true, .sprint = true}}, world);
+    CHECK(steps[0].sprinting);
+    CHECK(-steps[0].position.z == doctest::Approx(0.3274).epsilon(tolerance));
+}
+
+TEST_CASE("crouching refuses a sprint outright, whatever the crouched input") {
+    // 26.2 refuses a sprint while crouched, whatever the push forward: with
+    // a crouching factor of 1 it still does.
+    const vx::test::FlatWorld world;
+    vx::MovementNumbers numbers;
+    numbers.sneak_factor = 1.0;
+    std::vector<Box> scratch;
+    vx::Player player = at_rest();
+    player.pose = vx::Pose::crouching;
+    vx::tick(player, {.held = {.forward = true, .sneak = true, .sprint = true}, .yaw = 0.0F}, world,
+             numbers, scratch);
+    CHECK_FALSE(player.sprinting);
+}
