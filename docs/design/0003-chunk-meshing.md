@@ -264,3 +264,21 @@ Pull request plan item 5, ambient occlusion:
 - **Each face's four corners are worked out as it is written**, from the opaque rows: the block in front of the face, then the two beside it along the face's width and height axes and the one across, 8 reads a face. The values go into the material word, corner 0 first, as RFC 0003's quad lays them out.
 - **The tests work out each corner's blocks in 3D** from the corner's position (`quad_corner`), not from the mesher's axes, for all eight arrangements around every corner of every face, on a block inside the chunk and on two of its corners, whose arrangements reach into the border's edges and corners.
 - **Occlusion costs about 10 ns a face**, medians of five release runs on the reference machine: typical terrain 26.5 to 42.0 µs, rough terrain 29.4 to 54.0 µs, flat layers 24.6 to 35.0 µs, the opaque checkerboard 0.17 to 1.13 ms and the cutout checkerboard 0.48 to 2.43 ms, still one quad a face. All within the budget, which merging must also fit in; reading the corners from the row masks a whole row at a time is the way to make it cheaper, if profiling ever asks.
+
+Pull request plan item 6, merging:
+
+- **Greedy, on each slice's rows, with the material word as the key**: a run along the row while the faces go on with the same key, then down the rows while each holds the same run with the same keys. A quad keeps the shared occlusion values, which equal keys make exact.
+- **`MeshOptions` turns merging off**, for the overlay's toggle and for measuring; `mesh_chunk` takes it last, defaulted, so the call in this RFC is unchanged.
+- **The coverage property runs on 40 chunks of random boxes**, sparse to crowded, where faces of one look meet and part: the merged quads cover exactly the unmerged faces, each once, with the same texture and occlusion.
+- **The engine's numbers, replacing the prototype's column** (medians of five release runs on the reference machine, nanobench):
+
+| Case | Target | Merged | A quad a face | Faces → quads |
+|---|---|---|---|---|
+| Typical terrain | under 150 µs | 46.7 µs | 46.9 µs | 1,459 → 819 |
+| Rough terrain | | 62.2 µs | 61.1 µs | 2,354 → 1,849 |
+| Flat layers | under 50 µs | 35.2 µs | 37.1 µs | 1,024 → 1 |
+| Opaque checkerboard | under 2 ms | 1.34 ms | 1.30 ms | 98,304, none merge |
+| Cutout checkerboard | under 4 ms | 2.95 ms | 2.88 ms | 196,608, none merge |
+| Quad output, typical terrain | under 32 KiB | 6.4 KiB | 11.4 KiB | |
+
+  Merging itself costs little: the time goes into culling and into each face's occlusion and key, which both ways compute. The quad counts are the prototype's exactly.

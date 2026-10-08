@@ -127,6 +127,8 @@ struct Fixture {
         padded->blocks[vx::padded_index(x + 1, y + 1, z + 1)] = state;
     }
     vx::ChunkMesh mesh() { return vx::mesh_chunk(*padded, visuals, scratch); }
+    // Every face a quad of its own, as before merging.
+    vx::ChunkMesh unmerged() { return vx::mesh_chunk(*padded, visuals, scratch, {.merge = false}); }
 };
 
 std::size_t quad_count(const vx::ChunkMesh& mesh) {
@@ -157,7 +159,7 @@ TEST_CASE("two blocks side by side hide the faces between them") {
     Fixture chunk;
     chunk.put(5, 6, 7, blocks::stone);
     chunk.put(6, 6, 7, blocks::stone);
-    const vx::ChunkMesh mesh = chunk.mesh();
+    const vx::ChunkMesh mesh = chunk.unmerged();
     // RFC 0003's test plan: 10 faces without merging.
     CHECK(quad_count(mesh) == 10);
     CHECK(mesh.range(vx::Pass::opaque, vx::Face::pos_x).size() == 1);
@@ -174,7 +176,7 @@ TEST_CASE("a full chunk in air shows only its six sides") {
             }
         }
     }
-    const vx::ChunkMesh mesh = chunk.mesh();
+    const vx::ChunkMesh mesh = chunk.unmerged();
     for (int face = 0; face < 6; ++face) {
         CHECK(mesh.range(vx::Pass::opaque, static_cast<vx::Face>(face)).size() == 1'024);
     }
@@ -188,7 +190,7 @@ TEST_CASE("an opaque neighbor hides the faces on the chunk's border, and air doe
     chunk.put(0, 0, 0, blocks::stone);
     chunk.put(31, 0, 31, blocks::stone);
     SUBCASE("neighbors of air") {
-        CHECK(quad_count(chunk.mesh()) == 12);
+        CHECK(quad_count(chunk.unmerged()) == 12);
     }
     SUBCASE("opaque neighbors under the whole chunk and beside its -x side") {
         for (int z = -1; z <= 32; ++z) {
@@ -201,7 +203,7 @@ TEST_CASE("an opaque neighbor hides the faces on the chunk's border, and air doe
                 chunk.put(-1, y, z, blocks::stone);
             }
         }
-        const vx::ChunkMesh mesh = chunk.mesh();
+        const vx::ChunkMesh mesh = chunk.unmerged();
         CHECK(mesh.range(vx::Pass::opaque, vx::Face::neg_y).empty());
         CHECK(mesh.range(vx::Pass::opaque, vx::Face::neg_x).size() == 1); // the block at x = 31
         CHECK(quad_count(mesh) == 9);
@@ -214,34 +216,34 @@ TEST_CASE("cutout blocks show what is behind them, and hide only their own cull 
     SUBCASE("two leaves: the faces between them go") {
         chunk.put(1, 1, 1, blocks::leaves);
         chunk.put(2, 1, 1, blocks::leaves);
-        CHECK(chunk.mesh().range(vx::Pass::cutout, vx::Face::pos_x).size() == 1);
-        CHECK(quad_count(chunk.mesh()) == 10);
+        CHECK(chunk.unmerged().range(vx::Pass::cutout, vx::Face::pos_x).size() == 1);
+        CHECK(quad_count(chunk.unmerged()) == 10);
     }
     SUBCASE("two kinds of leaves in one cull group: the faces between them go") {
         chunk.put(1, 1, 1, blocks::leaves);
         chunk.put(1, 2, 1, blocks::birch_leaves);
-        CHECK(quad_count(chunk.mesh()) == 10);
+        CHECK(quad_count(chunk.unmerged()) == 10);
     }
     SUBCASE("leaves and glass: both faces between them stay") {
         chunk.put(1, 1, 1, blocks::leaves);
         chunk.put(1, 1, 2, blocks::glass);
-        CHECK(quad_count(chunk.mesh()) == 12);
+        CHECK(quad_count(chunk.unmerged()) == 12);
     }
     SUBCASE("two cutouts without a cull group: both faces stay") {
         chunk.put(1, 1, 1, blocks::bars);
         chunk.put(2, 1, 1, blocks::bars);
-        CHECK(quad_count(chunk.mesh()) == 12);
+        CHECK(quad_count(chunk.unmerged()) == 12);
     }
     SUBCASE("leaves on stone: the stone shows through, the leaves' face against it goes") {
         chunk.put(1, 1, 1, blocks::leaves);
         chunk.put(1, 0, 1, blocks::stone);
-        const vx::ChunkMesh mesh = chunk.mesh();
+        const vx::ChunkMesh mesh = chunk.unmerged();
         CHECK(mesh.range(vx::Pass::opaque, vx::Face::pos_y).size() == 1);
         CHECK(mesh.range(vx::Pass::cutout, vx::Face::neg_y).empty());
         CHECK(mesh.pass(vx::Pass::opaque).size() == 6);
         CHECK(mesh.pass(vx::Pass::cutout).size() == 5);
     }
-    CHECK(faces_of(chunk.mesh()) == expected_faces(*chunk.padded, chunk.visuals));
+    CHECK(faces_of(chunk.unmerged()) == expected_faces(*chunk.padded, chunk.visuals));
 }
 
 TEST_CASE("on random chunks, the faces shown are exactly those RFC 0003's rule gives") {
@@ -402,4 +404,161 @@ TEST_CASE("cutout blocks cast no ambient occlusion") {
     // +y faces: width along x, height along z. The block at x = 2 sits beside
     // corners 1 and 2, the ones at the high end of x.
     CHECK(beside.occlusion == std::array<std::uint8_t, 4>{3, 2, 2, 3});
+}
+
+namespace {
+
+// Each face a mesh covers, with the material it gets: texture and
+// occlusion. A merged quad's faces get the quad's.
+using MaterialFace =
+    std::tuple<int, int, int, int, int, std::uint32_t>; // pass, face, x, y, z, material
+
+std::vector<MaterialFace> material_faces_of(const vx::ChunkMesh& mesh) {
+    std::vector<MaterialFace> faces;
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int face = 0; face < 6; ++face) {
+            for (const vx::Quad quad :
+                 mesh.range(static_cast<vx::Pass>(pass), static_cast<vx::Face>(face))) {
+                const vx::QuadFields fields = vx::decode_quad(quad);
+                const vx::FaceAxes axes = vx::face_axes(fields.face);
+                for (int j = 0; j < fields.height; ++j) {
+                    for (int i = 0; i < fields.width; ++i) {
+                        std::array<int, 3> at{fields.block.x, fields.block.y, fields.block.z};
+                        at[axes.width] += i;
+                        at[axes.height] += j;
+                        faces.emplace_back(pass, static_cast<int>(fields.face), at[0], at[1], at[2],
+                                           quad.material);
+                    }
+                }
+            }
+        }
+    }
+    std::ranges::sort(faces);
+    return faces;
+}
+
+// Boxes of random blocks in random places: faces that can merge, broken up
+// by other textures, by occlusion and by cutouts.
+void fill_with_boxes(vx::PaddedChunk& padded, std::mt19937& generator, int boxes) {
+    padded.blocks.fill(vx::BlockState::air);
+    std::uniform_int_distribution<int> corner(0, vx::padded_size - 1);
+    std::uniform_int_distribution<int> size(1, 12);
+    std::uniform_int_distribution<int> kind(0, 6);
+    for (int box = 0; box < boxes; ++box) {
+        const int x0 = corner(generator);
+        const int y0 = corner(generator);
+        const int z0 = corner(generator);
+        const int width = size(generator);
+        const int height = size(generator);
+        const int depth = size(generator);
+        const auto state = static_cast<vx::BlockState>(kind(generator));
+        for (int y = y0; y < std::min(y0 + height, vx::padded_size); ++y) {
+            for (int z = z0; z < std::min(z0 + depth, vx::padded_size); ++z) {
+                for (int x = x0; x < std::min(x0 + width, vx::padded_size); ++x) {
+                    padded.blocks[vx::padded_index(x, y, z)] = state;
+                }
+            }
+        }
+    }
+}
+
+} // namespace
+
+TEST_CASE("two blocks side by side merge into six quads, four of them two blocks wide") {
+    Fixture chunk;
+    chunk.put(5, 6, 7, blocks::stone);
+    chunk.put(6, 6, 7, blocks::stone);
+    const vx::ChunkMesh mesh = chunk.mesh();
+    REQUIRE(quad_count(mesh) == 6);
+    int two_wide = 0;
+    for (const vx::Quad quad : mesh.all()) {
+        const vx::QuadFields fields = vx::decode_quad(quad);
+        two_wide += fields.width * fields.height == 2 ? 1 : 0;
+    }
+    CHECK(two_wide == 4);
+}
+
+TEST_CASE("a full chunk in air becomes six quads of 32 by 32") {
+    Fixture chunk;
+    for (int y = 0; y < vx::chunk_size; ++y) {
+        for (int z = 0; z < vx::chunk_size; ++z) {
+            for (int x = 0; x < vx::chunk_size; ++x) {
+                chunk.put(x, y, z, blocks::stone);
+            }
+        }
+    }
+    const vx::ChunkMesh mesh = chunk.mesh();
+    for (int face = 0; face < 6; ++face) {
+        const auto range = mesh.range(vx::Pass::opaque, static_cast<vx::Face>(face));
+        REQUIRE(range.size() == 1);
+        const vx::QuadFields quad = vx::decode_quad(range[0]);
+        CHECK(quad.width == 32);
+        CHECK(quad.height == 32);
+        // The block with the smallest coordinates: on the far side for
+        // the faces looking along +x, +y and +z.
+        const int far = face % 2 == 0 ? 31 : 0;
+        CHECK(quad.block == vx::LocalPos{.x = face / 2 == 0 ? far : 0,
+                                         .y = face / 2 == 1 ? far : 0,
+                                         .z = face / 2 == 2 ? far : 0});
+        CHECK(quad.occlusion == std::array<std::uint8_t, 4>{3, 3, 3, 3});
+    }
+}
+
+TEST_CASE("faces merge only where they look the same") {
+    Fixture chunk;
+    SUBCASE("two textures in a row: two tops") {
+        chunk.put(1, 1, 1, blocks::stone);
+        chunk.put(2, 1, 1, blocks::grass);
+        CHECK(chunk.mesh().range(vx::Pass::opaque, vx::Face::pos_y).size() == 2);
+    }
+    SUBCASE("a block on a floor breaks the floor's top into pieces lit alike") {
+        for (int z = 0; z < 5; ++z) {
+            for (int x = 0; x < 5; ++x) {
+                chunk.put(x, 0, z, blocks::stone);
+            }
+        }
+        chunk.put(2, 1, 2, blocks::stone);
+        // The ring of 8 faces around the block is darkened, each in its own
+        // way, and the outer ring of 16 is fully lit: with the block's own
+        // top, 25 faces up without merging. Merged, fewer, and each merged
+        // quad's faces lit alike. (A mesh lives in the scratch, so each is
+        // read before the next is made.)
+        const std::size_t merged_tops =
+            chunk.mesh().range(vx::Pass::opaque, vx::Face::pos_y).size();
+        const std::vector<MaterialFace> merged = material_faces_of(chunk.mesh());
+        CHECK(chunk.unmerged().range(vx::Pass::opaque, vx::Face::pos_y).size() == 25);
+        CHECK(merged_tops < 25);
+        CHECK(merged == material_faces_of(chunk.unmerged()));
+    }
+    SUBCASE("a cutout's faces merge with its own kind, in their own pass") {
+        for (int x = 0; x < 4; ++x) {
+            chunk.put(x, 1, 1, blocks::glass);
+        }
+        const vx::ChunkMesh mesh = chunk.mesh();
+        CHECK(mesh.pass(vx::Pass::cutout).size() == 6);
+        CHECK(mesh.pass(vx::Pass::opaque).empty());
+    }
+}
+
+TEST_CASE(
+    "merged quads cover exactly the faces of the unmerged mesh, each once, looking the same") {
+    // RFC 0003's coverage property: on every chunk it tries, merging adds,
+    // drops and changes no face.
+    Fixture chunk;
+    std::mt19937 generator(11);
+    std::size_t merged_total = 0;
+    std::size_t unmerged_total = 0;
+    for (const int boxes : {3, 10, 30, 80}) {
+        for (int round = 0; round < 10; ++round) {
+            fill_with_boxes(*chunk.padded, generator, boxes);
+            const std::vector<MaterialFace> unmerged = material_faces_of(chunk.unmerged());
+            unmerged_total += chunk.unmerged().all().size();
+            const vx::ChunkMesh merged = chunk.mesh();
+            merged_total += merged.all().size();
+            INFO(boxes, " boxes, round ", round);
+            CHECK(material_faces_of(merged) == unmerged);
+        }
+    }
+    // And merging did merge.
+    CHECK(merged_total * 2 < unmerged_total);
 }
