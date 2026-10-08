@@ -3,6 +3,7 @@
 #include <vx/core/vec3d.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <span>
 #include <utility>
 
@@ -19,6 +20,19 @@ double along(const Vec3d& v, Axis axis) noexcept {
         return v.z;
     }
     return 0.0;
+}
+
+// `length` along `axis`, nothing along the other two.
+Vec3d on(Axis axis, double length) noexcept {
+    switch (axis) {
+    case Axis::x:
+        return {.x = length, .y = 0.0, .z = 0.0};
+    case Axis::y:
+        return {.x = 0.0, .y = length, .z = 0.0};
+    case Axis::z:
+        return {.x = 0.0, .y = 0.0, .z = length};
+    }
+    return {};
 }
 
 std::pair<Axis, Axis> other_axes(Axis axis) noexcept {
@@ -72,6 +86,25 @@ double clip_axis(const Box& box, Axis axis, double wanted,
         }
     }
     return allowed;
+}
+
+Move clip_move(const Box& box, Vec3d wanted, std::span<const Box> obstacles) noexcept {
+    Box at = box;
+    const auto step = [&](Axis axis) {
+        const double length = clip_axis(at, axis, along(wanted, axis), obstacles);
+        at = moved(at, on(axis, length));
+        return length;
+    };
+    Vec3d motion;
+    motion.y = step(Axis::y);
+    if (std::abs(wanted.x) >= std::abs(wanted.z)) {
+        motion.x = step(Axis::x);
+        motion.z = step(Axis::z);
+    } else {
+        motion.z = step(Axis::z);
+        motion.x = step(Axis::x);
+    }
+    return collided(wanted, motion);
 }
 
 } // namespace vx

@@ -41,4 +41,35 @@ inline constexpr double collision_tolerance = 1e-7;
 [[nodiscard]] double clip_axis(const Box& box, Axis axis, double wanted,
                                std::span<const Box> obstacles) noexcept;
 
+// What a move did: how far the box went, and what cut it short.
+struct Move {
+    Vec3d motion;
+    bool x_collision = false;        // x was cut short
+    bool vertical_collision = false; // y was cut short
+    bool z_collision = false;        // z was cut short
+    bool on_ground = false;          // y was cut short moving down
+
+    // x or z was cut short.
+    [[nodiscard]] constexpr bool horizontal_collision() const noexcept {
+        return x_collision || z_collision;
+    }
+};
+
+// The move that went `motion` when `wanted` was asked for: each axis that
+// went otherwise was cut short, and y cut short moving down is the ground.
+[[nodiscard]] constexpr Move collided(Vec3d wanted, Vec3d motion) noexcept {
+    return {.motion = motion,
+            .x_collision = motion.x != wanted.x,
+            .vertical_collision = motion.y != wanted.y,
+            .z_collision = motion.z != wanted.z,
+            .on_ground = motion.y != wanted.y && wanted.y < 0.0};
+}
+
+// Moves `box` by `wanted` among `obstacles` one axis at a time, as Minecraft
+// does (RFC 0010): y first, then the horizontal axis with the larger wanted
+// motion (x on a tie), then the other, each clipped from where the last left
+// the box. Since y goes first, a box that walks off an edge still ends that
+// move on the ground.
+[[nodiscard]] Move clip_move(const Box& box, Vec3d wanted, std::span<const Box> obstacles) noexcept;
+
 } // namespace vx
