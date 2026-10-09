@@ -5,8 +5,10 @@
 #include <vx/world/chunk_storage.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/generator.hpp>
+#include <vx/world/job_record.hpp>
 #include <vx/world/placeholder_generator.hpp>
 #include <vx/world/region.hpp>
+#include <vx/world/versions.hpp>
 #include <vx/world/world_streamer.hpp>
 
 #include <doctest/doctest.h>
@@ -836,4 +838,96 @@ TEST_CASE("with worker threads the region streams in as in the deterministic mod
     CHECK(streamer.stats().jobs_in_flight == 0);
     CHECK(streamer.stats().chunks == expected.stats().chunks);
     CHECK(streamer.records().size() == expected.records().size());
+}
+
+TEST_CASE("fed with room for a few jobs, the streamer queues no more, and still streams in") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    streamer.feed(5);
+    CHECK(streamer.stats().jobs_in_flight == 5);
+    CHECK(jobs.queued(vx::JobLevel::normal) == 5);
+    streamer.feed(0);
+    CHECK(jobs.queued(vx::JobLevel::normal) == 5);
+    for (int pass = 0; pass < 10'000 && streamer.stats().jobs_in_flight > 0; ++pass) {
+        jobs.run_until_idle();
+        streamer.integrate();
+        streamer.feed(5);
+        check_rules(streamer);
+        REQUIRE(streamer.stats().jobs_in_flight <= 5);
+    }
+    CHECK(streamer.stats().jobs_in_flight == 0);
+    CHECK(count(streamer, ChunkState::queued) == 0);
+    CHECK(streamer.stats().surfaces_known == streamer.stats().columns);
+    const ChunkRecord* own = streamer.find(above_hills);
+    REQUIRE(own != nullptr);
+    CHECK(own->state == ChunkState::complete);
+}
+
+TEST_CASE("a mesh job's pins hold a complete chunk's neighborhood as it was") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    // Only a complete chunk is meshed: one with no record is not.
+    CHECK(streamer.pin_neighborhood(
+              {.x = above_hills.x + 40, .y = above_hills.y, .z = above_hills.z}, 1) == nullptr);
+    const ChunkRecord* own = streamer.find(above_hills);
+    REQUIRE(own != nullptr);
+    REQUIRE(own->state == ChunkState::complete);
+    vx::JobRecord* pins = streamer.pin_neighborhood(above_hills, 7);
+    REQUIRE(pins != nullptr);
+    CHECK(pins->load_id == own->load_id);
+    CHECK(pins->sequence == 7);
+    // In a build's order, x fastest, then z, then y: [13] is the chunk.
+    for (std::int32_t at = 0; at < 27; ++at) {
+        const ChunkPos pos{.x = above_hills.x + (at % 3) - 1,
+                           .y = above_hills.y + (at / 9) - 1,
+                           .z = above_hills.z + ((at / 3) % 3) - 1};
+        INFO("neighbor ", at);
+        const ChunkRecord* record = streamer.find(pos);
+        REQUIRE(record != nullptr);
+        const auto index = static_cast<std::size_t>(at);
+        CHECK(pins->chunks[index] == record->blocks);
+        if (record->blocks == nullptr) {
+            CHECK(pins->uniform[index] == record->uniform);
+        }
+    }
+    // An edit while pinned writes a copy: the job keeps reading the old
+    // blocks, which go once released.
+    const vx::Version<vx::ChunkStorage>* before = pins->chunks[13];
+    REQUIRE(before != nullptr);
+    REQUIRE(streamer.set_block({.x = 100, .y = 70, .z = 100}, stone));
+    CHECK(streamer.find(above_hills)->blocks != before);
+    CHECK(pins->chunks[13] == before);
+    const std::size_t versions = streamer.stats().block_versions;
+    streamer.release(*pins);
+    CHECK(streamer.stats().block_versions == versions - 1);
+}
+
+TEST_CASE("canceling the queued jobs leaves none queued, and may run twice") {
+    // Debug builds also assert, as the streamer goes, that every pin of the
+    // canceled builds came back.
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    for (int pass = 0; pass < 100 && count(streamer, ChunkState::building) == 0; ++pass) {
+        streamer.feed();
+        if (count(streamer, ChunkState::building) == 0) {
+            jobs.run_until_idle();
+            streamer.integrate();
+        }
+    }
+    REQUIRE(count(streamer, ChunkState::building) > 0);
+    REQUIRE(jobs.queued(vx::JobLevel::normal) > 0);
+    streamer.cancel_queued();
+    CHECK(jobs.queued(vx::JobLevel::normal) == 0);
+    streamer.cancel_queued();
+    CHECK(jobs.queued(vx::JobLevel::normal) == 0);
 }

@@ -145,8 +145,8 @@ WorldStreamer::WorldStreamer(const Generator& generator, JobSystem& jobs, WakeEv
       scratch_(std::max<std::uint32_t>(1, jobs.worker_count())),
       results_(std::size_t{2} * jobs.slot_count(), results_ready) {}
 
-WorldStreamer::~WorldStreamer() {
-    // What is still queued never runs; what ran has sent its result.
+void WorldStreamer::cancel_queued() noexcept {
+    // A job canceled already, or done, cancels no more: this may run twice.
     for (std::uint32_t index = 0; index < chunks_.end_index(); ++index) {
         if (!chunks_.live(index) || !chunks_[index].job) {
             continue;
@@ -161,6 +161,11 @@ WorldStreamer::~WorldStreamer() {
             jobs_->cancel(column.job);
         }
     }
+}
+
+WorldStreamer::~WorldStreamer() {
+    // What is still queued never runs; what ran has sent its result.
+    cancel_queued();
     results_.drain([this](StreamResult&& result) {
         if (result.record != nullptr) {
             job_records_.release(*result.record);
@@ -517,17 +522,20 @@ void WorldStreamer::report(ChunkEvent::Kind kind, std::uint32_t index) {
     events_.push_back({.kind = kind, .pos = chunks_[index].pos, .record = index});
 }
 
-void WorldStreamer::feed() {
-    feed_surfaces();
-    feed_plans();
-    feed_builds();
+void WorldStreamer::feed(std::size_t room) {
+    feed_surfaces(room);
+    feed_plans(room);
+    feed_builds(room);
 }
 
-void WorldStreamer::feed_surfaces() {
-    start_waiting(waiting_surfaces_, [this](Waiting entry) {
+void WorldStreamer::feed_surfaces(std::size_t& room) {
+    start_waiting(waiting_surfaces_, [this, &room](Waiting entry) {
         Column& column = columns_[entry.index];
         if (column.load_id != entry.load_id || column.known || column.job) {
             return Start::done;
+        }
+        if (room == 0) {
+            return Start::full;
         }
         column.job = jobs_->submit({}, SurfaceJob{.generator = generator_,
                                                   .scratch = scratch_.data(),
@@ -538,12 +546,13 @@ void WorldStreamer::feed_surfaces() {
             return Start::full;
         }
         ++in_flight_;
+        --room;
         return Start::done;
     });
 }
 
-void WorldStreamer::feed_plans() {
-    start_waiting(waiting_plans_, [this](Waiting entry) {
+void WorldStreamer::feed_plans(std::size_t& room) {
+    start_waiting(waiting_plans_, [this, &room](Waiting entry) {
         if (!chunks_.live(entry.index) || chunks_[entry.index].load_id != entry.load_id ||
             chunks_[entry.index].state != ChunkState::queued) {
             return Start::done;
@@ -558,6 +567,9 @@ void WorldStreamer::feed_plans() {
         if (make_uniform(entry.index)) {
             return Start::done;
         }
+        if (room == 0) {
+            return Start::full;
+        }
         ChunkRecord& record = chunks_[entry.index];
         record.job = jobs_->submit({}, PlanJob{.generator = generator_,
                                                .scratch = scratch_.data(),
@@ -568,16 +580,20 @@ void WorldStreamer::feed_plans() {
             return Start::full;
         }
         ++in_flight_;
+        --room;
         set_state(entry.index, ChunkState::planning);
         return Start::done;
     });
 }
 
-void WorldStreamer::feed_builds() {
-    start_waiting(waiting_builds_, [this](Waiting entry) {
+void WorldStreamer::feed_builds(std::size_t& room) {
+    start_waiting(waiting_builds_, [this, &room](Waiting entry) {
         if (!chunks_.live(entry.index) || chunks_[entry.index].load_id != entry.load_id ||
             chunks_[entry.index].state != ChunkState::build_queued) {
             return Start::done;
+        }
+        if (room == 0) {
+            return Start::full;
         }
         ChunkRecord& record = chunks_[entry.index];
         JobRecord* pins = job_records_.acquire(record.load_id, 0);
@@ -595,6 +611,7 @@ void WorldStreamer::feed_builds() {
             return Start::full;
         }
         ++in_flight_;
+        --room;
         record.job_record = pins;
         set_state(entry.index, ChunkState::building);
         return Start::done;
@@ -728,6 +745,26 @@ bool WorldStreamer::set_block(BlockPos pos, BlockState state) {
         }
     }
     return true;
+}
+
+JobRecord* WorldStreamer::pin_neighborhood(ChunkPos pos, std::uint32_t sequence) noexcept {
+    const std::optional<std::uint32_t> own = chunks_.find(pos);
+    if (!own || chunks_[*own].state != ChunkState::complete) {
+        return nullptr;
+    }
+    JobRecord* pins = job_records_.acquire(chunks_[*own].load_id, sequence);
+    if (pins == nullptr) {
+        return nullptr;
+    }
+    // Complete: all 26 neighbors are ready, each with blocks or a state.
+    around(pos, [&](ChunkPos near) {
+        const std::optional<std::uint32_t> neighbor = chunks_.find(near);
+        const ChunkRecord* record = neighbor ? &chunks_[*neighbor] : nullptr;
+        job_records_.read_chunk(*pins, around_index(near.x - pos.x, near.y - pos.y, near.z - pos.z),
+                                record != nullptr ? record->blocks : nullptr,
+                                record != nullptr ? record->uniform : BlockState::air);
+    });
+    return pins;
 }
 
 const ChunkRecord* WorldStreamer::find(ChunkPos pos) const noexcept {
