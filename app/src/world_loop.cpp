@@ -6,6 +6,8 @@
 #include <vx/mesh/mesh_chunk.hpp>
 #include <vx/mesh/padded_chunk.hpp>
 #include <vx/mesh/quad.hpp>
+#include <vx/world/block_state.hpp>
+#include <vx/world/block_visual.hpp>
 #include <vx/world/chunk_records.hpp>
 #include <vx/world/chunk_storage.hpp>
 #include <vx/world/coordinates.hpp>
@@ -64,7 +66,7 @@ void WorldLoop::MeshJob::operator()(JobContext& job) const noexcept {
         }
     }
     assemble_padded(neighborhood, scratch.padded);
-    const ChunkMesh mesh = mesh_chunk(scratch.padded, context->visuals, scratch.mesh);
+    const ChunkMesh mesh = mesh_chunk(scratch.padded, context->visuals, scratch.mesh, options);
     MeshResult result;
     result.pins = pins;
     result.update.pos = pos;
@@ -231,9 +233,25 @@ void WorldLoop::handle(ToWorld& message) {
         // difference would wrap and hold streaming back for good.
         uploaded_ = std::min(std::max(uploaded_, message.uploaded), sent_);
         break;
+    case ToWorld::Kind::meshing:
+        remesh(message.meshing);
+        break;
     case ToWorld::Kind::stop:
         stopping_ = true;
         break;
+    }
+}
+
+void WorldLoop::remesh(MeshOptions options) {
+    if (options.merge == meshing_.merge) {
+        return;
+    }
+    meshing_ = options;
+    // An empty mesh is empty with any options.
+    for (std::uint32_t index = 0; index < meshes_.size(); ++index) {
+        if (meshes_[index].state != MeshRecord::State::none && !known_empty(index)) {
+            queue_mesh(index, false);
+        }
     }
 }
 
@@ -458,15 +476,23 @@ void WorldLoop::feed() {
         if (record.state != MeshRecord::State::queued || !record.urgent) {
             return true; // started, or dropped
         }
+        // RFC 0006's fast path: a mesh known to be empty takes no job, and
+        // no room in the queue. It goes at once, as a job's result would.
+        if (known_empty(index)) {
+            skip_mesh(index);
+            return true;
+        }
         if (urgent_room == 0 || !start_mesh(index, 0)) {
             return false;
         }
         --urgent_room;
         return true;
     });
+    // A mesh known to be empty goes even while the jobs wait for room or
+    // for the main thread: it takes neither.
     std::size_t normal_room = room(JobLevel::normal, "Queued normal");
     const bool held = unuploaded() >= settings_.unuploaded_limit;
-    while (!held && normal_room > 0 && !waiting_meshes_.empty()) {
+    while (!waiting_meshes_.empty()) {
         const Backlog::Entry entry = waiting_meshes_.top();
         const MeshRecord& record = mesh_record(entry.index);
         if (record.state != MeshRecord::State::queued || record.urgent ||
@@ -474,8 +500,13 @@ void WorldLoop::feed() {
             waiting_meshes_.pop(); // started, dropped, or an edit's now
             continue;
         }
-        if (!start_mesh(entry.index, entry.key)) {
-            break; // no job slot or record: it stays first in line
+        if (known_empty(entry.index)) {
+            skip_mesh(entry.index);
+            waiting_meshes_.pop();
+            continue;
+        }
+        if (held || normal_room == 0 || !start_mesh(entry.index, entry.key)) {
+            break; // no room, or no job slot or record: it stays first in line
         }
         waiting_meshes_.pop();
         --normal_room;
@@ -493,6 +524,45 @@ void WorldLoop::rescore_meshes() {
     });
 }
 
+bool WorldLoop::known_empty(std::uint32_t index) const noexcept {
+    const ChunkRecord& chunk = streamer_.records()[index];
+    if (chunk.blocks != nullptr) {
+        return false;
+    }
+    if (chunk.uniform == BlockState::air) {
+        return true; // air draws no faces
+    }
+    const auto opaque = [this](BlockState state) {
+        const auto at = static_cast<std::size_t>(state);
+        return at < context_.visuals.size() && context_.visuals[at].opacity == Opacity::opaque;
+    };
+    if (!opaque(chunk.uniform)) {
+        return false;
+    }
+    // Every face of an opaque block meets an opaque block, so none shows.
+    constexpr std::array<std::array<std::int32_t, 3>, 6> sides = {
+        {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}};
+    return std::ranges::all_of(sides, [&](const std::array<std::int32_t, 3>& side) {
+        const ChunkRecord* neighbor = streamer_.find(
+            {.x = chunk.pos.x + side[0], .y = chunk.pos.y + side[1], .z = chunk.pos.z + side[2]});
+        return neighbor != nullptr && neighbor->blocks == nullptr && opaque(neighbor->uniform);
+    });
+}
+
+void WorldLoop::skip_mesh(std::uint32_t index) {
+    MeshRecord& record = mesh_record(index);
+    const ChunkPos pos = streamer_.records()[index].pos;
+    record.generation = next_generation_++;
+    record.state = MeshRecord::State::sent;
+    record.urgent = false;
+    ++meshes_skipped_;
+    forward(index, MeshUpdate{.pos = pos,
+                              .load_id = record.load_id,
+                              .generation = record.generation,
+                              .counts = {},
+                              .quads = {}});
+}
+
 bool WorldLoop::start_mesh(std::uint32_t index, std::uint32_t key) {
     MeshRecord& record = mesh_record(index);
     const ChunkPos pos = streamer_.records()[index].pos;
@@ -503,9 +573,11 @@ bool WorldLoop::start_mesh(std::uint32_t index, std::uint32_t key) {
     }
     const JobPriority priority{.level = record.urgent ? JobLevel::urgent : JobLevel::normal,
                                .key = key};
-    record.job = jobs_->submit(
-        priority,
-        MeshJob{.context = &context_, .pins = pins, .pos = pos, .generation = generation});
+    record.job = jobs_->submit(priority, MeshJob{.context = &context_,
+                                                 .pins = pins,
+                                                 .pos = pos,
+                                                 .generation = generation,
+                                                 .options = meshing_});
     if (!record.job) {
         streamer_.release(*pins);
         return false;

@@ -58,12 +58,14 @@ struct ToWorld {
         camera,   // where the camera is and looks
         edit,     // a block to set; M5's actions will bring the view ray
         uploaded, // how far the main thread is with the meshes sent alone
+        meshing,  // RFC 0003's merge toggle: every chunk shown meshed again
         stop,
     };
     Kind kind = Kind::camera;
     Viewer camera;
     BlockPos block;
     BlockState state = BlockState::air;
+    MeshOptions meshing{};
     // Of the meshes sent alone (ToMain::Kind::mesh, never a batch's), how
     // many the main thread is done with so far: uploaded, or dropped without
     // an upload (empty, older than the one it holds, or its chunk's unload
@@ -134,6 +136,8 @@ public:
     [[nodiscard]] std::uint64_t unuploaded() const noexcept { return sent_ - uploaded_; }
     // Mesh jobs queued or running.
     [[nodiscard]] std::size_t meshes_in_flight() const noexcept { return meshes_in_flight_; }
+    // Meshes known to be empty without meshing, sent without a job.
+    [[nodiscard]] std::uint64_t meshes_skipped() const noexcept { return meshes_skipped_; }
     [[nodiscard]] std::uint64_t ticks() const noexcept { return ticks_; }
     [[nodiscard]] std::uint64_t skipped_ticks() const noexcept { return skipped_; }
     // RFC 0006's catching up: a chunk of the near cylinder, all of it drawn,
@@ -188,10 +192,14 @@ private:
         JobRecord* pins; // read only, until the world thread releases it
         ChunkPos pos;
         std::uint32_t generation;
+        MeshOptions options; // the job's own: the loop's may change while it runs
         void operator()(JobContext& job) const noexcept;
     };
 
     void handle(ToWorld& message);
+    // New mesh options: every chunk that has a mesh, or waits for one,
+    // meshed again with them.
+    void remesh(MeshOptions options);
     void edit(BlockPos block, BlockState state);
     void follow_events();
     MeshRecord& mesh_record(std::uint32_t index);
@@ -204,6 +212,11 @@ private:
     void send_ready_batches();
     void feed();
     bool start_mesh(std::uint32_t index, std::uint32_t key);
+    // Uniform air, or an opaque state among six uniform opaque neighbors:
+    // no face of it can show.
+    [[nodiscard]] bool known_empty(std::uint32_t index) const noexcept;
+    // Sends a known empty mesh, as a job's result would go.
+    void skip_mesh(std::uint32_t index);
     // A tick in Tracy: a frame of its own set, and a zone.
     void tick();
     void run_tick();
@@ -228,6 +241,7 @@ private:
     WakeEvent main_wake_; // the main thread polls each frame and never waits on it
     Inbox<ToMain> to_main_;
     std::optional<ChunkPos> camera_;
+    MeshOptions meshing_;
     std::chrono::steady_clock::time_point next_tick_;
     bool ticking_ = false;
     std::uint64_t ticks_ = 0;
@@ -236,6 +250,7 @@ private:
     std::uint64_t sent_ = 0;     // streaming meshes sent
     std::uint64_t uploaded_ = 0; // of them, uploaded, as the main thread last said
     std::size_t meshes_in_flight_ = 0;
+    std::uint64_t meshes_skipped_ = 0;
     bool behind_ = false; // the streamer has results left from its last step
     bool stopping_ = false;
 };
