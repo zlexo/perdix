@@ -182,6 +182,9 @@ public:
     void set_draw_switches(const DrawSwitches& switches) noexcept {
         chunks_.set_switches(switches);
     }
+    // Freeze culling (RFC 0007): cull as the next frame's camera sees, while
+    // the camera moves on.
+    void freeze_culling(bool frozen) noexcept { chunks_.set_frozen(frozen); }
     // How long each frame's chunk uploads may take (RFC 0007): 1 ms, raised
     // while a loading screen shows. A frame's first upload always goes.
     void set_chunk_budget(std::chrono::nanoseconds budget) noexcept {

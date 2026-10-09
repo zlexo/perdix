@@ -5,6 +5,7 @@
 #include <vx/core/frustum.hpp>
 #include <vx/core/result.hpp>
 #include <vx/render/buffer.hpp>
+#include <vx/render/camera_relative.hpp>
 #include <vx/render/chunk_arena.hpp>
 #include <vx/render/chunk_uploads.hpp>
 #include <vx/render/device.hpp>
@@ -115,7 +116,25 @@ Result<void> ChunkRenderer::apply(ChunkChanges& changes, VkCommandBuffer command
 
 Result<ChunkFrame> ChunkRenderer::prepare(const Device& device, const glm::i64vec3& camera_block,
                                           const glm::vec3& camera_fraction, const Frustum& view) {
-    build_draw_lists(uploads_.records(), camera_block, camera_fraction, view, switches_, lists_);
+    if (frozen_ && !frozen_view_.has_value()) {
+        frozen_view_ = CullingView{
+            .camera_block = camera_block, .camera_fraction = camera_fraction, .frustum = view};
+    }
+    if (frozen_view_.has_value()) {
+        // Culled as the frozen camera saw it, drawn from where the camera
+        // is: each origin moves from the frozen camera's block to this one's,
+        // exactly while the camera has moved under 2^24 blocks since.
+        const CullingView& culling = *frozen_view_;
+        build_draw_lists(uploads_.records(), culling.camera_block, culling.camera_fraction,
+                         culling.frustum, switches_, lists_);
+        const glm::vec4 shift(relative_origin(culling.camera_block, camera_block), 0.0F);
+        for (glm::vec4& origin : lists_.origins) {
+            origin += shift;
+        }
+    } else {
+        build_draw_lists(uploads_.records(), camera_block, camera_fraction, view, switches_,
+                         lists_);
+    }
     constexpr VkDeviceSize command_bytes = sizeof(VkDrawIndexedIndirectCommand);
     const VkDeviceSize origins_bytes = lists_.origins.size() * sizeof(glm::vec4);
     const VkDeviceSize opaque_offset = origins_bytes;

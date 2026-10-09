@@ -19,6 +19,7 @@
 #include <vx/world/coordinates.hpp>
 
 #include <doctest/doctest.h>
+#include <glm/ext/vector_double3.hpp>
 
 #include <algorithm>
 #include <array>
@@ -27,6 +28,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <numbers>
 #include <span>
 #include <string>
 #include <utility>
@@ -367,4 +369,82 @@ TEST_CASE("a removed chunk is no longer drawn: the frame is one that never had i
     const std::vector<std::uint8_t> never = draw_all(fresh.value(), east_only, camera);
     CHECK(differing_pixels(whole, east) > 0);
     CHECK(differing_pixels(east, never) == 0);
+}
+
+TEST_CASE("frozen culling keeps what the frozen camera culled while the view moves on") {
+    const std::vector<std::byte> textures = layer_bytes(colors);
+    const Scene scene;
+    const vx::render::Camera camera = scene_camera();
+    vx::Result<vx::render::Renderer> created = scene_renderer(textures, false);
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    Offers offers;
+    offer_all(offers, scene);
+    const std::vector<std::uint8_t> before = draw_all(renderer, offers, camera);
+    const vx::render::DrawStats seen = renderer.chunks().draw_stats();
+    Offers none;
+    const auto culling_from = [&](const vx::render::Camera& at) {
+        static_cast<void>(draw_all(renderer, none, at));
+        return renderer.chunks().draw_stats();
+    };
+    const auto same = [](const vx::render::DrawStats& a, const vx::render::DrawStats& b) {
+        return a.chunks == b.chunks && a.culled == b.culled && a.quads == b.quads &&
+               a.quads_facing_away == b.quads_facing_away;
+    };
+
+    // Live, culling changes where the camera moves to, and already at the
+    // corner of its own block, where the moved camera sits in its block: a
+    // frozen view that kept only its direction, or not its place within its
+    // block, fails below.
+    vx::render::Camera moved = camera;
+    moved.position += glm::dvec3(37.5, -5.5, -61.5); // to 38, 19, 39
+    REQUIRE_FALSE(same(culling_from(moved), seen));
+    vx::render::Camera corner = camera;
+    corner.position = {0.0, 24.0, 100.0};
+    REQUIRE_FALSE(same(culling_from(corner), seen));
+
+    // Frozen where it stands, nothing changes; moved and turned around, the
+    // frame still culls as the camera saw before, so what it sees now is
+    // missing.
+    renderer.freeze_culling(true);
+    CHECK(differing_pixels(before, draw_all(renderer, none, camera)) == 0);
+    moved.yaw += std::numbers::pi_v<float>;
+    const std::vector<std::uint8_t> frozen = draw_all(renderer, none, moved);
+    CHECK(same(renderer.chunks().draw_stats(), seen));
+    renderer.freeze_culling(false);
+    const std::vector<std::uint8_t> thawed = draw_all(renderer, none, moved);
+    const vx::render::DrawStats live = renderer.chunks().draw_stats();
+    CHECK(live.chunks != seen.chunks);
+    CHECK(differing_pixels(frozen, thawed) > 0);
+
+    // Frozen again, it keeps the new view, not the first.
+    renderer.freeze_culling(true);
+    CHECK(same(culling_from(moved), live));
+    CHECK(same(culling_from(camera), live));
+}
+
+TEST_CASE("frozen culling draws each chunk where it is from wherever the camera goes") {
+    // With nothing culled either way, a frozen frame differs from a live one
+    // only in its origins, measured from the frozen camera's block and moved
+    // to the camera's: the frames must be the same.
+    const std::vector<std::byte> textures = layer_bytes(colors);
+    const Scene scene;
+    const vx::render::Camera camera = scene_camera();
+    vx::Result<vx::render::Renderer> created = scene_renderer(textures, false);
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    renderer.set_draw_switches({.frustum = false, .faces = false, .merge = true});
+    Offers offers;
+    offer_all(offers, scene);
+    static_cast<void>(draw_all(renderer, offers, camera));
+    renderer.freeze_culling(true);
+    Offers none;
+    static_cast<void>(draw_all(renderer, none, camera));
+    vx::render::Camera moved = camera;
+    moved.position += glm::dvec3(37.25, -5.5, -61.75);
+    const std::vector<std::uint8_t> frozen = draw_all(renderer, none, moved);
+    renderer.freeze_culling(false);
+    const std::vector<std::uint8_t> live = draw_all(renderer, none, moved);
+    CHECK(differing_pixels(frozen, live) == 0);
+    CHECK(sky_pixels(live) < std::size_t{image_size.width} * image_size.height);
 }

@@ -4,6 +4,7 @@
 #include "overlay.hpp"
 
 #include <vx/render/camera.hpp>
+#include <vx/render/chunk_renderer.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/instance.hpp>
 #include <vx/render/renderer.hpp>
@@ -206,6 +207,99 @@ TEST_CASE("after the mouse has flown the camera, the overlay hovers and takes cl
     CHECK(click(checkbox));
     CHECK(meshing.merge);
     CHECK_FALSE(captured);
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}
+
+TEST_CASE("the overlay's chunk rendering switches reach the renderer") {
+    const DummyWindow window;
+    INFO(std::string(SDL_GetError()));
+    REQUIRE(window.get() != nullptr);
+    vx::app::Overlay overlay(window.get(), true, true);
+    vx::Result<vx::render::Renderer> created =
+        vx::render::Renderer::create({.surface = std::nullopt,
+                                      .framebuffer = window_size,
+                                      .validation = true,
+                                      .present_mode = vx::render::PresentMode::fifo,
+                                      .overlay = overlay.context(),
+                                      .block_textures = {}});
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    vx::app::ChunkMeshing meshing;
+    bool bobbing = true;
+    const vx::render::Camera camera;
+    const auto frame = [&] {
+        ImDrawData* const drawn = overlay.build(renderer, camera, false, meshing, bobbing);
+        REQUIRE(renderer
+                    .render({.sky = {.r = 0.0F, .g = 0.0F, .b = 0.0F, .a = 1.0F},
+                             .camera = camera,
+                             .cubes = {},
+                             .overlay = drawn})
+                    .has_value());
+    };
+    const auto hover = [&](ImVec2 at) {
+        overlay.take_event(motion(window.id(), at), false);
+        frame();
+    };
+    const auto click = [&](ImVec2 at) {
+        hover(at);
+        overlay.take_event(left_button(window.id(), true, at), false);
+        frame();
+        overlay.take_event(left_button(window.id(), false, at), false);
+        frame();
+    };
+
+    // The switches share a row: the first down the window's first column,
+    // the others along its row.
+    frame();
+    const ImGuiWindow* const overlay_window = ImGui::FindWindowByName("Overlay");
+    REQUIRE(overlay_window != nullptr);
+    const auto id = [&](const char* label) { return ImHashStr(label, 0, overlay_window->ID); };
+    ImVec2 frustum(28.0F, -1.0F);
+    for (float y = 20.0F; y < static_cast<float>(window_size.height) && frustum.y < 0.0F;
+         y += 3.0F) {
+        hover(ImVec2(frustum.x, y));
+        if (GImGui->HoveredId == id("Frustum culling")) {
+            frustum.y = y;
+        }
+    }
+    REQUIRE(frustum.y >= 0.0F);
+    const auto along_row = [&](const char* label) {
+        for (float x = frustum.x; x < static_cast<float>(window_size.width); x += 6.0F) {
+            hover(ImVec2(x, frustum.y));
+            if (GImGui->HoveredId == id(label)) {
+                return ImVec2(x, frustum.y);
+            }
+        }
+        return ImVec2(-1.0F, -1.0F);
+    };
+    const ImVec2 faces = along_row("Face culling");
+    const ImVec2 merge = along_row("Merge runs");
+    const ImVec2 freeze = along_row("Freeze culling");
+    REQUIRE(faces.x >= 0.0F);
+    REQUIRE(merge.x >= 0.0F);
+    REQUIRE(freeze.x >= 0.0F);
+
+    // Each click switches its one setting, and a second switches it back.
+    const vx::render::ChunkRenderer& chunks = renderer.chunks();
+    click(frustum);
+    CHECK_FALSE(chunks.switches().frustum);
+    CHECK(chunks.switches().faces);
+    click(faces);
+    CHECK_FALSE(chunks.switches().faces);
+    click(merge);
+    CHECK_FALSE(chunks.switches().merge);
+    click(freeze);
+    CHECK(chunks.frozen());
+    click(frustum);
+    click(faces);
+    click(merge);
+    click(freeze);
+    CHECK(chunks.switches().frustum);
+    CHECK(chunks.switches().faces);
+    CHECK(chunks.switches().merge);
+    CHECK_FALSE(chunks.frozen());
     CHECK(renderer.context().instance().validation_counts().errors == 0);
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }

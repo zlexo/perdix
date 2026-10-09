@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -107,6 +108,17 @@ public:
     // The overlay's switches (RFC 0007), from the next frame.
     void set_switches(const DrawSwitches& switches) noexcept { switches_ = switches; }
     [[nodiscard]] const DrawSwitches& switches() const noexcept { return switches_; }
+    // Freeze culling, the overlay's last switch (RFC 0007): from the next
+    // frame on, chunks and faces are culled as that frame's camera saw them
+    // while the camera moves on, to look at what was culled. Off culls with
+    // each frame's camera again.
+    void set_frozen(bool frozen) noexcept {
+        frozen_ = frozen;
+        if (!frozen) {
+            frozen_view_.reset();
+        }
+    }
+    [[nodiscard]] bool frozen() const noexcept { return frozen_; }
 
     // For uploads outside any frame, as RFC 0003's one chunk makes them.
     [[nodiscard]] ChunkUploads& uploads() noexcept { return uploads_; }
@@ -114,6 +126,8 @@ public:
     [[nodiscard]] const ChunkArena& arena() const noexcept { return *arena_; }
     // The last frame's culling, for the overlay.
     [[nodiscard]] const DrawStats& draw_stats() const noexcept { return lists_.stats; }
+    // The last frame's draw lists: its commands, for the overlay's counts.
+    [[nodiscard]] const DrawLists& draw_lists() const noexcept { return lists_; }
     // The most commands one indirect call may draw: the device's
     // maxDrawIndirectCount.
     [[nodiscard]] std::uint32_t draw_limit() const noexcept { return draw_limit_; }
@@ -132,8 +146,18 @@ private:
     // Each frame slot's staging, made afresh when the slot comes round.
     std::vector<UploadContext> staging_;
     std::vector<Buffer> frames_; // each frame slot's origins and commands
+    // Where a frame culls from: the camera's block and fraction, and what it
+    // sees relative to them.
+    struct CullingView {
+        glm::i64vec3 camera_block;
+        glm::vec3 camera_fraction;
+        Frustum frustum;
+    };
+
     DrawLists lists_;
     DrawSwitches switches_;
+    bool frozen_ = false;
+    std::optional<CullingView> frozen_view_; // the first frozen frame's
     std::uint32_t slot_ = 0;
     std::uint32_t draw_limit_ = 0;
 };

@@ -1,8 +1,12 @@
 #include "overlay.hpp"
 
 #include <vx/core/version.hpp>
+#include <vx/render/chunk_arena.hpp>
+#include <vx/render/chunk_renderer.hpp>
+#include <vx/render/chunk_uploads.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/device_report.hpp>
+#include <vx/render/draw_lists.hpp>
 #include <vx/render/instance.hpp>
 #include <vx/render/swapchain.hpp>
 
@@ -237,6 +241,57 @@ void Overlay::draw_chunk(render::Renderer& renderer, ChunkMeshing& meshing) {
     }
 }
 
+namespace {
+
+constexpr double mebibyte = 1024.0 * 1024.0;
+
+double quads_mib(std::uint64_t quads) {
+    return static_cast<double>(quads * render::ChunkArena::quad_bytes) / mebibyte;
+}
+
+} // namespace
+
+void Overlay::draw_chunk_rendering(render::Renderer& renderer) {
+    // RFC 0007's counters, then its switches for culling and merging.
+    const render::ChunkRenderer& chunks = renderer.chunks();
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    if (now - arena_sampled_ >= std::chrono::milliseconds(250)) {
+        arena_ = chunks.arena().space().stats();
+        arena_sampled_ = now;
+    }
+    const render::UploadStats& uploads = chunks.uploads().stats();
+    const render::DrawLists& lists = chunks.draw_lists();
+    ImGui::Text("Chunk meshes: %u, %llu quads (%.1f MiB)", uploads.meshes,
+                static_cast<unsigned long long>(uploads.quads), quads_mib(uploads.quads));
+    ImGui::Text("Drawn: %u chunks, %u culled; %zu opaque and %zu cutout draws", lists.stats.chunks,
+                lists.stats.culled, lists.opaque.size(), lists.cutout.size());
+    ImGui::Text("Quads drawn: %llu, %llu facing away",
+                static_cast<unsigned long long>(lists.stats.quads),
+                static_cast<unsigned long long>(lists.stats.quads_facing_away));
+    ImGui::Text("Arena: %.1f of %.1f MiB, largest free %.1f MiB, fragmentation %.2f",
+                quads_mib(arena_.live + arena_.retired), quads_mib(arena_.capacity),
+                quads_mib(arena_.largest_free), arena_.fragmentation);
+    // Refusals, not the backlog: offers stop at the first one, and what
+    // still waits is the app's to count.
+    ImGui::Text("Uploads: %u (%llu quads), %u dropped, %u refused", uploads.uploads,
+                static_cast<unsigned long long>(uploads.quads_uploaded), uploads.dropped,
+                uploads.refused);
+    render::DrawSwitches switches = chunks.switches();
+    bool changed = ImGui::Checkbox("Frustum culling", &switches.frustum);
+    ImGui::SameLine();
+    changed = ImGui::Checkbox("Face culling", &switches.faces) || changed;
+    ImGui::SameLine();
+    changed = ImGui::Checkbox("Merge runs", &switches.merge) || changed;
+    if (changed) {
+        renderer.set_draw_switches(switches);
+    }
+    bool frozen = chunks.frozen();
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Freeze culling", &frozen)) {
+        renderer.freeze_culling(frozen);
+    }
+}
+
 void Overlay::draw_camera(const render::Camera& camera) {
     ImGui::Text("Camera at x %.2f, y %.2f, z %.2f", camera.position.x, camera.position.y,
                 camera.position.z);
@@ -317,6 +372,8 @@ ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& cam
         draw_block_filter(renderer);
         ImGui::Separator();
         draw_chunk(renderer, meshing);
+        ImGui::Separator();
+        draw_chunk_rendering(renderer);
         ImGui::Separator();
         draw_camera(camera);
         draw_movement(movement_);
