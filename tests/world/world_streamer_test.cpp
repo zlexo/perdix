@@ -26,8 +26,10 @@
 #include <cstdlib>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <span>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // RFC 0006's streaming, the data half, in RFC 0005's deterministic mode.
@@ -1285,15 +1287,20 @@ namespace {
 
 // Plans carry the version they were made at, and a build's blocks say which
 // version its plans were: uniform 100 plus the version, or 99 when the 27
-// plans were of different versions. Deep rock needs plans too, as RFC
-// 0008's caves will, so the near cylinder underground is built.
+// plans were of different versions (versions modulo 8). Deep rock needs
+// plans too, as RFC 0008's caves will, so the near cylinder underground is
+// built. Raised, odd versions lift every surface by a chunk.
 class PlanStamps final : public vx::Generator {
 public:
     explicit PlanStamps(const vx::Generator& inner) : inner_(&inner) {}
 
     [[nodiscard]] vx::ChunkRange surface_range(vx::ColumnPos column,
                                                vx::GenScratch& scratch) const override {
-        return inner_->surface_range(column, scratch);
+        vx::ChunkRange range = inner_->surface_range(column, scratch);
+        if (raised && version_.load() % 2 == 1) {
+            range.max_y += 1;
+        }
+        return range;
     }
     [[nodiscard]] std::optional<BlockState> out_of_reach(ChunkPos pos) const noexcept override {
         const std::optional<BlockState> inner = inner_->out_of_reach(pos);
@@ -1303,7 +1310,7 @@ public:
     [[nodiscard]] vx::ChunkPlan plan(ChunkPos pos, vx::GenScratch& /*scratch*/) const override {
         return {.pos = {.x = pos.x,
                         .y = pos.y,
-                        .z = pos.z + (static_cast<std::int32_t>(version_.load()) * stamp)}};
+                        .z = pos.z + (static_cast<std::int32_t>(version_.load() % 8) * stamp)}};
     }
     [[nodiscard]] vx::ChunkStorage build(std::span<const vx::ChunkPlan* const, 27> plans,
                                          vx::GenScratch& /*scratch*/) const override {
@@ -1320,10 +1327,11 @@ public:
 
     static constexpr BlockState mixed_plans = static_cast<BlockState>(99);
     static constexpr BlockState built_at(std::uint32_t version) {
-        return static_cast<BlockState>(100 + version);
+        return static_cast<BlockState>(100 + (version % 8));
     }
 
-    std::atomic<std::uint32_t> version_{0}; // up to 7
+    std::atomic<std::uint32_t> version_{0};
+    bool raised = false;
     mutable std::atomic<std::size_t> mixed{0};
 
 private:
@@ -1590,4 +1598,311 @@ TEST_CASE("a new version at every pass, as a dragged slider makes, queues each c
         CHECK(record->blocks == nullptr);
         CHECK(record->uniform == stone);
     }
+}
+
+namespace {
+
+// Plans and builds in the order they ran, as one log.
+class JobLog final : public vx::Generator {
+public:
+    explicit JobLog(const vx::Generator& inner) : inner_(&inner) {}
+
+    [[nodiscard]] vx::ChunkRange surface_range(vx::ColumnPos column,
+                                               vx::GenScratch& scratch) const override {
+        return inner_->surface_range(column, scratch);
+    }
+    [[nodiscard]] std::optional<BlockState> out_of_reach(ChunkPos pos) const noexcept override {
+        return inner_->out_of_reach(pos);
+    }
+    [[nodiscard]] vx::ChunkPlan plan(ChunkPos pos, vx::GenScratch& scratch) const override {
+        ran.push_back({.pos = pos, .build = false});
+        return inner_->plan(pos, scratch);
+    }
+    [[nodiscard]] vx::ChunkStorage build(std::span<const vx::ChunkPlan* const, 27> plans,
+                                         vx::GenScratch& scratch) const override {
+        ran.push_back({.pos = plans[13]->pos, .build = true});
+        return inner_->build(plans, scratch);
+    }
+
+    struct Ran {
+        ChunkPos pos;
+        bool build = false;
+    };
+    // The first plan or build of `pos`, by its place in the log.
+    [[nodiscard]] std::optional<std::size_t> first(ChunkPos pos, bool build) const {
+        for (std::size_t at = 0; at < ran.size(); ++at) {
+            if (ran[at].pos == pos && ran[at].build == build) {
+                return at;
+            }
+        }
+        return std::nullopt;
+    }
+    mutable std::vector<Ran> ran;
+
+private:
+    const vx::Generator* inner_;
+};
+
+// Looking west, as looking_east looks east.
+vx::Viewer looking_west(ChunkPos chunk) {
+    vx::Viewer viewer = vx::viewer_at(chunk);
+    viewer.forward = {.x = -1.0, .y = 0.0, .z = 0.0};
+    viewer.view = vx::Frustum({.x = -1.0, .y = 0.0, .z = 0.0}, {.x = 0.0, .y = 0.0, .z = -1.0},
+                              {.x = 0.0, .y = 1.0, .z = 0.0}, 0.7002075382097097, 16.0 / 9.0, 0.05);
+    return viewer;
+}
+
+} // namespace
+
+TEST_CASE("a turn ranks the plans already waiting by the new view") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    const JobLog generator(placeholder);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    // Looking east, the surfaces come and the plans wait, ranked for east.
+    REQUIRE(streamer.set_viewer(looking_east(above_hills)));
+    streamer.feed();
+    jobs.run_until_idle();
+    integrate_all(streamer);
+    REQUIRE(streamer.stats().waiting > 0);
+    // Turned west before any plan ran: three west is in view, two east
+    // behind, so it ranks 9 against 16.
+    REQUIRE(streamer.set_viewer(looking_west(above_hills)));
+    settle(streamer, jobs);
+    std::size_t compared = 0;
+    for (std::int32_t y = above_hills.y - 3; y <= above_hills.y + 3; ++y) {
+        const std::optional<std::size_t> ahead =
+            generator.first({.x = above_hills.x - 3, .y = y, .z = above_hills.z}, false);
+        const std::optional<std::size_t> behind =
+            generator.first({.x = above_hills.x + 2, .y = y, .z = above_hills.z}, false);
+        if (ahead && behind) {
+            INFO("height ", y);
+            CHECK(*ahead < *behind);
+            ++compared;
+        }
+    }
+    CHECK(compared > 0);
+}
+
+TEST_CASE("one job a pass, a build waits only for plans that rank before it") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    const JobLog generator(placeholder);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    for (int pass = 0; pass < 100'000; ++pass) {
+        streamer.feed(1);
+        if (streamer.stats().jobs_in_flight == 0) {
+            break;
+        }
+        jobs.run_until_idle();
+        integrate_all(streamer);
+    }
+    // The camera's chunk scores 0: built before any chunk three away is
+    // planned.
+    const std::optional<std::size_t> built = generator.first(above_hills, true);
+    REQUIRE(built.has_value());
+    for (std::size_t at = 0; at < generator.ran.size(); ++at) {
+        const ChunkPos pos = generator.ran[at].pos;
+        const std::int32_t far =
+            std::max({std::abs(pos.x - above_hills.x), std::abs(pos.y - above_hills.y),
+                      std::abs(pos.z - above_hills.z)});
+        if (!generator.ran[at].build && far >= 3) {
+            CHECK(at > *built);
+        }
+    }
+}
+
+TEST_CASE("an edit while its chunk waits to regenerate keeps its block, and the chunk its blocks") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    VersionedTerrain generator(placeholder);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    generator.version_ = 1;
+    streamer.feed(0);
+    REQUIRE(streamer.find(above_hills)->regeneration == vx::Regeneration::replan);
+    constexpr BlockState glass = static_cast<BlockState>(7);
+    const vx::BlockPos inside{.x = 100, .y = 70, .z = 100};
+    REQUIRE(streamer.set_block(inside, glass));
+    CHECK(streamer.find(above_hills)->regeneration == vx::Regeneration::none);
+    settle(streamer, jobs);
+    CHECK(streamer.stats().regenerating == 0);
+    CHECK(streamer.block(inside) == glass);
+    CHECK(std::ranges::find(generator.rebuilt, above_hills) == generator.rebuilt.end());
+}
+
+namespace {
+
+// Each reading moves it on by 100 us: a step takes in five results, so
+// results are left for later, past version changes too.
+class FiveAStep final : public vx::JobClock {
+public:
+    [[nodiscard]] std::chrono::steady_clock::time_point now() const noexcept override {
+        at += std::chrono::microseconds(100);
+        return at;
+    }
+
+    mutable std::chrono::steady_clock::time_point at{};
+};
+
+// Each column's surface is the generator's own.
+std::size_t surfaces_off(const WorldStreamer& streamer, const vx::Generator& generator) {
+    std::size_t off = 0;
+    vx::GenScratch scratch;
+    const vx::ChunkRecords& records = streamer.records();
+    for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+        if (!records.live(index)) {
+            continue;
+        }
+        const vx::ColumnPos column{.x = records[index].pos.x, .z = records[index].pos.z};
+        const std::optional<vx::ChunkRange> surface = streamer.surface(column);
+        if (surface && *surface != generator.surface_range(column, scratch)) {
+            ++off;
+        }
+    }
+    return off;
+}
+
+} // namespace
+
+TEST_CASE("under random moves and version changes, every build reads plans of one version, and "
+          "settled, every chunk and surface is the newest version's") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    PlanStamps generator(placeholder);
+    generator.raised = true;
+    vx::JobSystem jobs({.slots = 64});
+    vx::WakeEvent wake;
+    const vx::RegionSettings settings{
+        .view_distance = 3, .near_distance = 2, .near_height = 1, .hysteresis = 2};
+    const FiveAStep clock;
+    std::size_t settled = 0;
+    for (const std::uint32_t seed : {7U, 11U, 25U}) {
+        WorldStreamer streamer(generator, jobs, wake, settings);
+        streamer.set_clock(clock);
+        std::mt19937 random(seed);
+        std::uniform_int_distribution<int> roll(0, 99);
+        ChunkPos camera = above_hills;
+        streamer.set_camera(camera);
+        for (int move = 0; move < 40; ++move) {
+            if (roll(random) < 25) {
+                ++generator.version_;
+            }
+            const int kind = roll(random);
+            if (kind < 60) {
+                camera.x += (roll(random) % 3) - 1;
+                camera.z += (roll(random) % 3) - 1;
+            } else if (kind < 80) {
+                camera.y += (roll(random) % 9) - 4;
+            } else if (kind < 90) {
+                camera.x += (roll(random) % 13) - 6;
+            }
+            streamer.set_camera(camera);
+            // A few passes with room for a few jobs, now and then one step of
+            // results only.
+            const int passes = roll(random) % 4;
+            for (int pass = 0; pass < passes; ++pass) {
+                streamer.feed(static_cast<std::size_t>(1 + (roll(random) % 40)));
+                jobs.run_until_idle();
+                if (roll(random) < 50) {
+                    streamer.integrate();
+                } else {
+                    integrate_all(streamer);
+                }
+            }
+            if (move % 5 == 4) {
+                settle(streamer, jobs);
+                INFO("seed ", seed, ", move ", move, ", version ", generator.version_.load());
+                CHECK(streamer.stats().regenerating == 0);
+                CHECK(not_built_at(streamer, generator.version_.load()) == 0);
+                CHECK(surfaces_off(streamer, generator) == 0);
+                ++settled;
+            }
+        }
+    }
+    CHECK(generator.mixed.load() == 0);
+    CHECK(settled == 24);
+}
+
+TEST_CASE("regenerated chunks report changes to the neighbors whose borders read them") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    PlanStamps generator(placeholder);
+    generator.raised = true;
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    std::vector<ChunkEvent> events;
+    streamer.take_events(events);
+    const auto changed = [&events](ChunkPos pos) {
+        return std::ranges::any_of(events, [pos](const ChunkEvent& event) {
+            return event.kind == ChunkEvent::Kind::changed && event.pos == pos;
+        });
+    };
+    // Every chunk ready before and after, next to one that changed, was
+    // told: its border reads it. Version 1 rebuilds every chunk and raises
+    // the surfaces; version 2 lowers them again, so the chunks raised turn
+    // back into air.
+    for (std::uint32_t version = 1; version <= 2; ++version) {
+        std::vector<std::pair<ChunkPos, BlockState>> before;
+        const vx::ChunkRecords& records = streamer.records();
+        for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+            if (records.live(index) && vx::counts_as_ready(records[index].state)) {
+                before.emplace_back(records[index].pos, records[index].uniform);
+            }
+        }
+        const auto was_ready = [&before](ChunkPos pos) {
+            return std::ranges::any_of(before, [pos](const std::pair<ChunkPos, BlockState>& at) {
+                return at.first == pos;
+            });
+        };
+        generator.version_ = version;
+        settle(streamer, jobs);
+        streamer.take_events(events);
+        std::size_t turned = 0;
+        for (const auto& [pos, uniform] : before) {
+            const ChunkRecord* now = streamer.find(pos);
+            if (now == nullptr || now->uniform == uniform) {
+                continue;
+            }
+            ++turned;
+            CHECK(changed(pos));
+            records.for_neighbors(pos, [&](std::uint32_t neighbor) {
+                const ChunkPos next = records[neighbor].pos;
+                if (vx::counts_as_ready(records[neighbor].state) && was_ready(next)) {
+                    INFO("version ", version, ", chunk ", pos.x, ", ", pos.y, ", ", pos.z,
+                         ", neighbor ", next.x, ", ", next.y, ", ", next.z);
+                    CHECK(changed(next));
+                }
+            });
+        }
+        CHECK(turned > 0);
+    }
+}
+
+TEST_CASE("plans made for an older version are dropped, and their chunks plan again") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    PlanStamps generator(placeholder);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    // Surfaces taken in; the plans of version 0 wait in the inbox when the
+    // version changes.
+    streamer.feed();
+    jobs.run_until_idle();
+    integrate_all(streamer);
+    streamer.feed();
+    jobs.run_until_idle();
+    REQUIRE(count(streamer, ChunkState::planning) > 0);
+    REQUIRE(streamer.results_waiting() > 0);
+    generator.version_ = 1;
+    settle(streamer, jobs);
+    CHECK(generator.mixed.load() == 0);
+    CHECK(not_built_at(streamer, 1) == 0);
 }

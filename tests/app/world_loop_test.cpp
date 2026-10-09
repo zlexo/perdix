@@ -1,6 +1,7 @@
 #include "world_loop.hpp"
 #include "world_thread.hpp"
 
+#include <vx/core/frustum.hpp>
 #include <vx/core/job_system.hpp>
 #include <vx/core/mesh_result_pool.hpp>
 #include <vx/mesh/mesh_chunk.hpp>
@@ -13,6 +14,7 @@
 #include <vx/world/coordinates.hpp>
 #include <vx/world/placeholder_generator.hpp>
 #include <vx/world/region.hpp>
+#include <vx/world/world_streamer.hpp>
 
 #include <doctest/doctest.h>
 
@@ -727,4 +729,74 @@ TEST_CASE("the loop goes without running the jobs still queued") {
         calls = generator.calls;
     }
     CHECK(generator.calls == calls);
+}
+
+namespace {
+
+// A viewer at the chunk's middle looking along +x, or along -x: a 70-degree
+// view, as the app's.
+vx::Viewer looking_along_x(ChunkPos chunk, double sign) {
+    vx::Viewer viewer = vx::viewer_at(chunk);
+    viewer.forward = {.x = sign, .y = 0.0, .z = 0.0};
+    viewer.view = vx::Frustum({.x = sign, .y = 0.0, .z = 0.0}, {.x = 0.0, .y = 0.0, .z = sign},
+                              {.x = 0.0, .y = 1.0, .z = 0.0}, 0.7002075382097097, 16.0 / 9.0, 0.05);
+    return viewer;
+}
+
+void turn_to(WorldLoop& loop, const vx::Viewer& viewer) {
+    ToWorld message;
+    message.kind = ToWorld::Kind::camera;
+    message.camera = viewer;
+    loop.to_world().push(std::move(message));
+}
+
+} // namespace
+
+TEST_CASE("streaming meshes go out lowest score first, ranked again when the view turns") {
+    // One job queued at a time, so the backlog alone picks the next, and
+    // one mesh out at a time: none goes until the main thread has the last.
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    const vx::app::WorldLoopSettings one_by_one{
+        .region = small, .queue_limit = 1, .unuploaded_limit = 1};
+    // Streams the region in looking east, then, turned to `turned` or not,
+    // lets the waiting meshes out one by one: their scores, in send order.
+    const auto meshes_out = [&](const std::optional<vx::Viewer>& turned) {
+        vx::JobSystem jobs({});
+        vx::MeshResultPool pool;
+        WorldLoop loop(generator, table, jobs, pool, one_by_one);
+        turn_to(loop, looking_along_x(above_hills, 1.0));
+        loop.settle();
+        std::vector<ToMain> messages;
+        loop.take(messages);
+        MainThread main;
+        main.receive(messages);
+        REQUIRE(main.meshes == 1);
+        if (turned) {
+            turn_to(loop, *turned);
+            loop.settle();
+        }
+        std::vector<std::uint32_t> scores;
+        for (int round = 0; round < 5'000 && main.held.size() < shown(loop).size(); ++round) {
+            uploaded(loop, main.meshes);
+            loop.settle();
+            loop.take(messages);
+            for (const ToMain& message : messages) {
+                if (message.kind == ToMain::Kind::mesh) {
+                    scores.push_back(loop.streamer().score(message.mesh.pos));
+                }
+            }
+            main.receive(messages);
+        }
+        return scores;
+    };
+    for (const std::optional<vx::Viewer>& turned :
+         {std::optional<vx::Viewer>(), std::optional(looking_along_x(above_hills, -1.0))}) {
+        INFO("turned around: ", turned.has_value());
+        const std::vector<std::uint32_t> scores = meshes_out(turned);
+        REQUIRE(scores.size() > 30);
+        CHECK(std::ranges::is_sorted(scores));
+        // Both sides of the view were waiting: the ranking had work to do.
+        CHECK(scores.front() < scores.back());
+    }
 }
