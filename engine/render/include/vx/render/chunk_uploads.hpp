@@ -132,8 +132,9 @@ public:
     // starts over at `now`.
     void begin_frame(std::uint32_t slot, Clock::time_point now) noexcept;
     // Writes the chunk's mesh through `writer` into a new range, and
-    // retires its old one; unless the budget was spent by `now`, or no free
-    // range fits. An error is the writer's.
+    // retires its old one; unless the budget was spent by `now` (never for
+    // the frame's first upload), or no free range fits. An error is the
+    // writer's.
     [[nodiscard]] Result<Uploaded> upload(const ChunkMeshUpdate& update, QuadWriter& writer,
                                           Clock::time_point now);
     // An edit's remeshes (RFC 0005), all in this frame whatever the budget,

@@ -63,7 +63,9 @@ Result<Uploaded> ChunkUploads::upload(const ChunkMeshUpdate& update, QuadWriter&
         empty(update);
         return Uploaded::removed;
     }
-    if (now - frame_start_ >= budget_) {
+    // The frame's first upload always goes, so a frame that spent its time
+    // elsewhere still makes progress.
+    if (stats_.uploads > 0 && now - frame_start_ >= budget_) {
         ++stats_.refused;
         return Uploaded::later;
     }
