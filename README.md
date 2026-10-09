@@ -28,6 +28,7 @@ Perdix is not an official Minecraft product. It is not approved by or associated
 - [Designs](docs/design/): one RFC per system, accepted before any of it is written
 - [Contributing](CONTRIBUTING.md): how work moves from design to merged code
 - [Debugging the renderer](docs/DEBUGGING.md): drivers, validation, debug names, the overlay and frame captures
+- [The benchmark flythrough](docs/BENCHMARK.md): running it, reading its report, and sharing a result
 
 ## License
 

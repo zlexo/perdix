@@ -1,0 +1,24 @@
+name: Benchmark result
+description: The flythrough's report from your machine (docs/BENCHMARK.md).
+labels: ["type: perf"]
+body:
+  - type: textarea
+    id: report
+    attributes:
+      label: The report
+      description: Everything `perdix --flythrough` printed after the run, from "### Perdix flythrough" on, from a release build.
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: machine
+    attributes:
+      label: Machine
+      description: The computer and its CPU, memory and display; plugged in or on battery; anything else running.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything you saw during the run, such as holes, stutters or the ground missing in the climb.
