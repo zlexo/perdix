@@ -1563,3 +1563,31 @@ TEST_CASE("a step's half millisecond includes the records its surfaces bring") {
     // Half a millisecond, then the last surface's records: a few columns'.
     CHECK(longest <= std::chrono::microseconds(1'000));
 }
+
+TEST_CASE("a new version at every pass, as a dragged slider makes, queues each column and chunk "
+          "once") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    VersionedTerrain generator(placeholder);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    const std::vector<ChunkPos> built = with_blocks(streamer);
+    REQUIRE_FALSE(built.empty());
+    for (std::uint32_t version = 1; version <= 20; ++version) {
+        generator.version_ = version;
+        streamer.feed(0);
+    }
+    const vx::StreamingStats stats = streamer.stats();
+    CHECK(stats.waiting <= stats.columns + streamer.records().size());
+    settle(streamer, jobs);
+    CHECK(streamer.stats().regenerating == 0);
+    CHECK(streamer.stats().waiting == 0);
+    for (const ChunkPos pos : built) {
+        const ChunkRecord* record = streamer.find(pos);
+        REQUIRE(record != nullptr);
+        CHECK(record->blocks == nullptr);
+        CHECK(record->uniform == stone);
+    }
+}

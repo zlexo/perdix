@@ -64,6 +64,9 @@ struct StreamingStats {
     std::size_t columns = 0;
     std::size_t surfaces_known = 0;
     std::size_t jobs_in_flight = 0;
+    // Entries in the backlogs, stale ones included, and plans parked: the
+    // overlay's backlog length.
+    std::size_t waiting = 0;
     // Chunks still to regenerate after the generator's version changed.
     std::size_t regenerating = 0;
     // Versions alive: current ones and frozen ones jobs still read.
