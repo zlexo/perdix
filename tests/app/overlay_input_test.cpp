@@ -103,6 +103,7 @@ TEST_CASE("after the mouse has flown the camera, the overlay hovers and takes cl
     vx::render::Renderer& renderer = created.value();
     vx::app::ChunkMeshing meshing;
     bool bobbing = true;
+    vx::app::RenderDistance distance;
     const vx::render::Camera camera;
 
     // As the app runs it: each frame the overlay is built and drawn, and every
@@ -111,7 +112,8 @@ TEST_CASE("after the mouse has flown the camera, the overlay hovers and takes cl
     // the camera, and Escape frees the mouse.
     bool captured = false;
     const auto frame = [&] {
-        ImDrawData* const drawn = overlay.build(renderer, camera, captured, meshing, bobbing);
+        ImDrawData* const drawn =
+            overlay.build(renderer, camera, captured, meshing, bobbing, distance);
         const vx::Result<vx::render::Frame> rendered =
             renderer.render({.sky = {.r = 0.0F, .g = 0.0F, .b = 0.0F, .a = 1.0F},
                              .camera = camera,
@@ -228,9 +230,11 @@ TEST_CASE("the overlay's chunk rendering switches reach the renderer") {
     vx::render::Renderer& renderer = created.value();
     vx::app::ChunkMeshing meshing;
     bool bobbing = true;
+    vx::app::RenderDistance distance;
     const vx::render::Camera camera;
     const auto frame = [&] {
-        ImDrawData* const drawn = overlay.build(renderer, camera, false, meshing, bobbing);
+        ImDrawData* const drawn =
+            overlay.build(renderer, camera, false, meshing, bobbing, distance);
         REQUIRE(renderer
                     .render({.sky = {.r = 0.0F, .g = 0.0F, .b = 0.0F, .a = 1.0F},
                              .camera = camera,
@@ -302,4 +306,74 @@ TEST_CASE("the overlay's chunk rendering switches reach the renderer") {
     CHECK_FALSE(chunks.frozen());
     CHECK(renderer.context().instance().validation_counts().errors == 0);
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}
+
+TEST_CASE("the render distance slider sets the distance once let go, and nothing while fixed") {
+    const DummyWindow window;
+    INFO(std::string(SDL_GetError()));
+    REQUIRE(window.get() != nullptr);
+    vx::app::Overlay overlay(window.get(), true, true);
+    vx::Result<vx::render::Renderer> created =
+        vx::render::Renderer::create({.surface = std::nullopt,
+                                      .framebuffer = window_size,
+                                      .validation = true,
+                                      .present_mode = vx::render::PresentMode::fifo,
+                                      .overlay = overlay.context(),
+                                      .block_textures = {}});
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    vx::app::ChunkMeshing meshing;
+    bool bobbing = true;
+    vx::app::RenderDistance distance{.chunks = 32, .fixed = false};
+    const vx::render::Camera camera;
+    const auto frame = [&] {
+        ImDrawData* const drawn =
+            overlay.build(renderer, camera, false, meshing, bobbing, distance);
+        REQUIRE(renderer
+                    .render({.sky = {.r = 0.0F, .g = 0.0F, .b = 0.0F, .a = 1.0F},
+                             .camera = camera,
+                             .cubes = {},
+                             .overlay = drawn})
+                    .has_value());
+    };
+    const auto send = [&](const SDL_Event& event) {
+        overlay.take_event(event, false);
+        frame();
+    };
+
+    // Down the window's first column until the cursor is over the slider.
+    frame();
+    const ImGuiWindow* const overlay_window = ImGui::FindWindowByName("Overlay");
+    REQUIRE(overlay_window != nullptr);
+    const ImGuiID slider_id = ImHashStr("Render distance", 0, overlay_window->ID);
+    ImVec2 slider(60.0F, -1.0F);
+    for (float y = 20.0F; y < static_cast<float>(window_size.height) && slider.y < 0.0F;
+         y += 3.0F) {
+        send(motion(window.id(), ImVec2(slider.x, y)));
+        if (GImGui->HoveredId == slider_id) {
+            slider.y = y;
+        }
+    }
+    REQUIRE(slider.y >= 0.0F);
+
+    // Pressed and dragged: the slider follows, the distance waits for the
+    // release, then takes the value let go at.
+    const ImVec2 dragged(slider.x + 20.0F, slider.y);
+    send(left_button(window.id(), true, slider));
+    send(motion(window.id(), dragged));
+    CHECK(GImGui->ActiveId == slider_id);
+    CHECK(distance.chunks == 32);
+    send(left_button(window.id(), false, dragged));
+    const std::int32_t set = distance.chunks;
+    CHECK(set != 32);
+    CHECK(set >= vx::app::RenderDistance::least);
+    CHECK(set <= vx::app::RenderDistance::most);
+
+    // Fixed, as in a flythrough: the same drag sets nothing.
+    distance.fixed = true;
+    send(left_button(window.id(), true, ImVec2(slider.x + 60.0F, slider.y)));
+    send(motion(window.id(), ImVec2(slider.x + 100.0F, slider.y)));
+    send(left_button(window.id(), false, ImVec2(slider.x + 100.0F, slider.y)));
+    CHECK(distance.chunks == set);
 }

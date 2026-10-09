@@ -229,14 +229,17 @@ float aspect_of(vx::render::Extent size) {
 }
 
 // What the world thread was last told: how far the uploads are, for its
-// backpressure, and whether to merge, which the overlay switches and which
-// meshes everything again.
+// backpressure; whether to merge, which the overlay switches and which
+// meshes everything again; and the render distance, which the overlay's
+// slider sets (RFC 0006).
 struct WorldReports {
     std::uint64_t uploaded = 0;
     bool merge = vx::app::ChunkMeshing{}.merge;
+    std::int32_t view_distance = 0;
 
     void send_changes(vx::app::WorldLoop& loop, const vx::app::StreamedMeshes& meshes,
-                      const vx::app::ChunkMeshing& meshing) {
+                      const vx::app::ChunkMeshing& meshing,
+                      const vx::app::RenderDistance& distance) {
         if (meshes.done() != uploaded) {
             uploaded = meshes.done();
             vx::app::ToWorld done;
@@ -251,23 +254,29 @@ struct WorldReports {
             options.meshing = {.merge = merge};
             send(loop, options);
         }
+        if (distance.chunks != view_distance) {
+            view_distance = distance.chunks;
+            vx::app::ToWorld region;
+            region.kind = vx::app::ToWorld::Kind::view_distance;
+            region.view_distance = view_distance;
+            send(loop, region);
+        }
     }
 };
 
 // One frame: the overlay built and the frame rendered, the world thread's
 // meshes uploaded within the frame's budget. The overlay switches merging
-// and `bobbing`.
-vx::Result<vx::render::Frame> draw_frame(vx::render::Renderer& renderer, vx::app::Overlay& overlay,
-                                         const vx::app::Window& window,
-                                         const vx::render::Camera& camera,
-                                         vx::app::StreamedMeshes& meshes,
-                                         vx::app::ChunkMeshing& meshing, bool& bobbing) {
+// and `bobbing`, and sets the render distance.
+vx::Result<vx::render::Frame>
+draw_frame(vx::render::Renderer& renderer, vx::app::Overlay& overlay, const vx::app::Window& window,
+           const vx::render::Camera& camera, vx::app::StreamedMeshes& meshes,
+           vx::app::ChunkMeshing& meshing, bool& bobbing, vx::app::RenderDistance& distance) {
     // A daytime sky blue, #78A7FF in sRGB.
     constexpr vx::render::Color sky = {.r = 0.188F, .g = 0.386F, .b = 1.0F, .a = 1.0F};
     renderer.resize(window.framebuffer_size());
     overlay.set_chunk_backlog(meshes.waiting());
     ImDrawData* const shown =
-        overlay.build(renderer, camera, window.mouse_captured(), meshing, bobbing);
+        overlay.build(renderer, camera, window.mouse_captured(), meshing, bobbing, distance);
     return renderer.render(
         {.sky = sky, .camera = camera, .cubes = {}, .overlay = shown, .chunk_changes = &meshes});
 }
@@ -452,7 +461,10 @@ int fly(const vx::app::FlythroughPlan& plan, vx::app::Window& window,
     vx::render::Camera camera;
     vx::app::ChunkMeshing meshing;
     bool bobbing = false;
+    // Fixed: the slider shows the plan's distance and takes nothing.
+    vx::app::RenderDistance distance{.chunks = plan.view_distance, .fixed = true};
     WorldReports reports;
+    reports.view_distance = plan.view_distance;
     FlythroughSamples samples;
     std::optional<Clock::time_point> last;
     while (window.handle_events(overlay)) {
@@ -478,12 +490,12 @@ int fly(const vx::app::FlythroughPlan& plan, vx::app::Window& window,
                             vx::app::camera_viewer(camera, aspect_of(window.framebuffer_size())));
         samples.take(loop, meshes, run, renderer);
         const vx::Result<vx::render::Frame> rendered =
-            draw_frame(renderer, overlay, window, camera, meshes, meshing, bobbing);
+            draw_frame(renderer, overlay, window, camera, meshes, meshing, bobbing, distance);
         if (!rendered.has_value()) {
             std::cerr << "error: " << rendered.error().message << '\n';
             return 1;
         }
-        reports.send_changes(loop, meshes, meshing);
+        reports.send_changes(loop, meshes, meshing, distance);
         FrameMark;
     }
     std::cerr << "error: the window closed before the flythrough's end\n";
@@ -666,7 +678,9 @@ int main(int argc, char* argv[]) {
     Clock::time_point last = Clock::now();
     bool last_drawn = false;
     vx::app::ChunkMeshing meshing;
+    vx::app::RenderDistance distance{.chunks = settings.region.view_distance, .fixed = false};
     WorldReports reports;
+    reports.view_distance = settings.region.view_distance;
     std::vector<vx::app::ToMain> messages;
     const std::uint64_t frames = options.value().frames;
     for (std::uint64_t frame = 0; frames == 0 || frame < frames; ++frame) {
@@ -697,13 +711,14 @@ int main(int argc, char* argv[]) {
                               .ticks = mover.frame.ticks});
 
         const vx::render::Camera shown = shown_camera(mover, camera, now);
-        const vx::Result<vx::render::Frame> rendered = draw_frame(
-            renderer.value(), overlay, window.value(), shown, meshes, meshing, mover.bobbing);
+        const vx::Result<vx::render::Frame> rendered =
+            draw_frame(renderer.value(), overlay, window.value(), shown, meshes, meshing,
+                       mover.bobbing, distance);
         if (!rendered.has_value()) {
             std::cerr << "error: " << rendered.error().message << '\n';
             return 1;
         }
-        reports.send_changes(loop, meshes, meshing);
+        reports.send_changes(loop, meshes, meshing, distance);
         last_drawn = rendered.value() == vx::render::Frame::drawn;
         if (!last_drawn) {
             // Presenting paces the loop; with nothing to present, a 60 Hz wait does.
