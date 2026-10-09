@@ -3,6 +3,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -69,6 +70,32 @@ std::size_t expected_capacity(std::size_t count) {
     return capacity;
 }
 
+// A region as streaming loads it, roughly: the columns within 33 chunks of
+// its center, 5 chunks deep. Its row at `dz` runs from the center's x less
+// this to the center's x plus this.
+std::int32_t half_row(std::int32_t dz) {
+    std::int32_t half = 0;
+    while (((half + 1) * (half + 1)) + (dz * dz) <= 33 * 33) {
+        ++half;
+    }
+    return half;
+}
+
+constexpr std::int32_t region_depth = 5;
+
+std::vector<ChunkPos> region_around(std::int32_t center_x) {
+    std::vector<ChunkPos> region;
+    for (std::int32_t dz = -33; dz <= 33; ++dz) {
+        const std::int32_t half = half_row(dz);
+        for (std::int32_t x = center_x - half; x <= center_x + half; ++x) {
+            for (std::int32_t y = 0; y < region_depth; ++y) {
+                region.push_back({.x = x, .y = y, .z = dz});
+            }
+        }
+    }
+    return region;
+}
+
 } // namespace
 
 TEST_CASE("a chunk map agrees with std::unordered_map through seeded inserts, erases and finds") {
@@ -123,6 +150,9 @@ TEST_CASE("the table doubles before it is more than half full, and not before") 
     region.reserve(17'900);
     CHECK(region.capacity() == 65'536);
     CHECK(region.memory_bytes() == std::size_t{1} << 20U);
+    // Exactly half full is allowed: 65,536 slots hold 32,768 positions.
+    region.reserve(32'768);
+    CHECK(region.capacity() == 65'536);
 }
 
 TEST_CASE("positions that share a hash are still told apart") {
@@ -166,6 +196,7 @@ TEST_CASE("erasing in a run that wraps past the table's end keeps the run reacha
         }
         REQUIRE(map.capacity() == 16);
         CHECK(map.probe_stats().longest == 5);
+        CHECK(map.probe_stats().mean == 2.5); // 0 to 5 slots from home
         REQUIRE(map.erase(last_slot[erased]));
         CHECK_FALSE(map.find(last_slot[erased]).has_value());
         for (std::size_t i = 0; i < last_slot.size(); ++i) {
@@ -175,7 +206,104 @@ TEST_CASE("erasing in a run that wraps past the table's end keeps the run reacha
         }
         // Nothing is left a slot further from home than it needs to be.
         CHECK(map.probe_stats().longest == 4);
+        CHECK(map.probe_stats().mean == 2.0);
     }
+}
+
+TEST_CASE("probe runs stay short after hours of streaming") {
+    // A region flies 2,000 chunks east: every step frees the slice it leaves
+    // and maps the slice it enters, 670,000 erases and as many inserts.
+    ChunkMap map;
+    std::uint32_t record = 0;
+    for (const ChunkPos pos : region_around(0)) {
+        REQUIRE(map.insert(pos, record++));
+    }
+    const std::size_t region_size = map.size();
+    REQUIRE(map.capacity() == 65'536);
+    std::size_t moves = 0;
+    for (std::int32_t center = 1; center <= 2'000; ++center) {
+        for (std::int32_t dz = -33; dz <= 33; ++dz) {
+            const std::int32_t half = half_row(dz);
+            for (std::int32_t y = 0; y < region_depth; ++y) {
+                REQUIRE(map.erase({.x = center - 1 - half, .y = y, .z = dz}));
+                REQUIRE(map.insert({.x = center + half, .y = y, .z = dz}, record++));
+                ++moves;
+            }
+        }
+        REQUIRE(map.size() == region_size);
+    }
+    CHECK(moves == 670'000);
+    CHECK(map.capacity() == 65'536);
+    // As short as in a map built fresh from the same positions: a quarter
+    // full, a position sits about 0.2 slots from home.
+    ChunkMap fresh;
+    for (const ChunkPos pos : region_around(2'000)) {
+        REQUIRE(fresh.insert(pos, 0));
+    }
+    const vx::ProbeStats churned = map.probe_stats();
+    const vx::ProbeStats built = fresh.probe_stats();
+    INFO("mean ", churned.mean, " against ", built.mean, ", longest ", churned.longest, " against ",
+         built.longest);
+    CHECK(churned.mean < 0.4);
+    CHECK(churned.mean < built.mean * 1.5);
+    CHECK(churned.longest <= (built.longest * 2) + 2);
+    for (const ChunkPos pos : region_around(2'000)) {
+        REQUIRE(map.find(pos).has_value());
+    }
+}
+
+TEST_CASE(
+    "the 2,097,152 positions of a 128-chunk cube share no hash, at the origin and the edges") {
+    for (const std::int32_t corner : {-64, lowest, highest - 127}) {
+        INFO("cube from ", corner);
+        std::vector<std::uint64_t> hashes;
+        hashes.reserve(std::size_t{128} * 128 * 128);
+        for (std::int32_t x = 0; x < 128; ++x) {
+            for (std::int32_t y = 0; y < 128; ++y) {
+                for (std::int32_t z = 0; z < 128; ++z) {
+                    hashes.push_back(
+                        vx::chunk_hash({.x = corner + x, .y = corner + y, .z = corner + z}));
+                }
+            }
+        }
+        std::ranges::sort(hashes);
+        CHECK(std::ranges::adjacent_find(hashes) == hashes.end());
+    }
+}
+
+TEST_CASE("positions within 2^21 chunks of each other on every axis never share a hash") {
+    // The finalizer is a bijection, so only the 63 packed bits matter: each
+    // coordinate's low 21 bits, side by side. Coordinates that differ in
+    // their highest or lowest packed bits would collide if the fields
+    // overlapped or lost a bit.
+    const std::vector<std::int32_t> values = {
+        0, 1, 2, 1 << 10, 1 << 19, 1 << 20, (1 << 20) + 1, alias - 2, alias - 1};
+    for (const std::int32_t offset : {0, lowest, highest - alias + 1, -alias}) {
+        INFO("offset ", offset);
+        std::vector<std::uint64_t> hashes;
+        for (const std::int32_t x : values) {
+            for (const std::int32_t y : values) {
+                for (const std::int32_t z : values) {
+                    hashes.push_back(
+                        vx::chunk_hash({.x = offset + x, .y = offset + y, .z = offset + z}));
+                }
+            }
+        }
+        std::ranges::sort(hashes);
+        CHECK(std::ranges::adjacent_find(hashes) == hashes.end());
+    }
+}
+
+TEST_CASE("the hash is RFC 0006's, to the bit") {
+    // Worked out outside the engine from the RFC's code. The tests above pass
+    // for any well-mixed bijection, so only this one sees a change to the
+    // packing order, a constant or a shift.
+    CHECK(vx::chunk_hash({}) == 0U);
+    CHECK(vx::chunk_hash({.x = 1, .y = 2, .z = 3}) == 0x4708'9D13'0101'72F1ULL);
+    CHECK(vx::chunk_hash({.x = -1, .y = -2, .z = -3}) == 0x672C'020C'AED8'AF9DULL);
+    CHECK(vx::chunk_hash({.x = std::numeric_limits<std::int32_t>::min(),
+                          .y = std::numeric_limits<std::int32_t>::max(),
+                          .z = lowest}) == 0x0435'B385'7FD8'9883ULL);
 }
 
 TEST_CASE("insert refuses a mapped position, erase an unmapped one, and clear keeps the slots") {
@@ -197,7 +325,64 @@ TEST_CASE("insert refuses a mapped position, erase an unmapped one, and clear ke
     map.clear();
     CHECK(map.empty());
     CHECK(map.capacity() == reserved);
+    map.reserve(1); // never shrinks
+    CHECK(map.capacity() == reserved);
     CHECK_FALSE(map.find({.x = 1, .y = 2, .z = 3}).has_value());
     CHECK(map.probe_stats().longest == 0);
     CHECK(map.probe_stats().mean == 0.0);
+}
+
+TEST_CASE("an empty slot never answers for the origin") {
+    // An empty slot holds the position (0, 0, 0): only its record tells it
+    // from the origin's. Here the origin's own slot is empty.
+    ChunkMap map;
+    const ChunkPos other{.x = 1, .y = 2, .z = 3};
+    REQUIRE(map.insert(other, 1));
+    REQUIRE((vx::chunk_hash({}) & 15U) != (vx::chunk_hash(other) & 15U));
+    CHECK_FALSE(map.find({}).has_value());
+    CHECK_FALSE(map.erase({}));
+    REQUIRE(map.insert({}, 7));
+    CHECK(map.find({}) == 7U);
+    REQUIRE(map.erase({}));
+    CHECK_FALSE(map.find({}).has_value());
+    CHECK(map.size() == 1);
+    CHECK(map.find(other) == 1U);
+}
+
+TEST_CASE("erasing where runs cross the table's end, with mixed homes, keeps the rest reachable") {
+    // Positions whose own slot is one of the last four or the first three of
+    // 16: eight of them fill runs that cross the end, with mixed homes.
+    std::vector<ChunkPos> near_end;
+    for (std::int32_t x = 0; near_end.size() < std::size_t{8} * 200; ++x) {
+        const ChunkPos pos{.x = x, .y = 0, .z = 0};
+        const std::uint64_t home = vx::chunk_hash(pos) & 15U;
+        if (home >= 12U || home <= 2U) {
+            near_end.push_back(pos);
+        }
+    }
+    for (std::size_t first = 0; first < near_end.size(); first += 8) {
+        for (std::size_t erased = first; erased < first + 8; ++erased) {
+            ChunkMap map;
+            ChunkMap without;
+            for (std::size_t i = first; i < first + 8; ++i) {
+                const auto record = static_cast<std::uint32_t>(i);
+                REQUIRE(map.insert(near_end[i], record));
+                if (i != erased) {
+                    REQUIRE(without.insert(near_end[i], record));
+                }
+            }
+            REQUIRE(map.capacity() == 16);
+            REQUIRE(map.erase(near_end[erased]));
+            REQUIRE_FALSE(map.find(near_end[erased]).has_value());
+            for (std::size_t i = first; i < first + 8; ++i) {
+                if (i != erased) {
+                    REQUIRE(map.find(near_end[i]) == static_cast<std::uint32_t>(i));
+                }
+            }
+            // Linear probing fills the same slots whatever the order of
+            // inserts, so a right erase leaves the same total distance from
+            // home as a map built without that position.
+            REQUIRE(map.probe_stats().mean == without.probe_stats().mean);
+        }
+    }
 }
