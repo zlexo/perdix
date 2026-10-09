@@ -2,6 +2,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <random>
@@ -132,6 +133,34 @@ TEST_CASE("under random allocations, retires and frames, no range overlaps one s
         }
         REQUIRE(stats.live == live_quads);
         REQUIRE(stats.ranges == live.size());
+        std::uint32_t retired_quads = 0;
+        for (const std::vector<ArenaRange>& in_slot : retired) {
+            for (const ArenaRange& range : in_slot) {
+                retired_quads += range.quads;
+            }
+        }
+        REQUIRE(stats.retired == retired_quads);
+        // The free quads, and the longest run of them: freed ranges merge
+        // with their free neighbors, so that is the largest free range.
+        std::uint32_t free_quads = 0;
+        std::uint32_t largest = 0;
+        std::uint32_t run = 0;
+        for (const int held : owner) {
+            if (held == -1) {
+                ++free_quads;
+                ++run;
+                largest = std::max(largest, run);
+            } else {
+                run = 0;
+            }
+        }
+        REQUIRE(stats.free == free_quads);
+        REQUIRE(stats.largest_free == largest);
+        const double fragmentation =
+            free_quads == 0
+                ? 0.0
+                : 1.0 - (static_cast<double>(largest) / static_cast<double>(free_quads));
+        REQUIRE(stats.fragmentation == doctest::Approx(fragmentation));
     }
     CHECK(allocated > 2'000);
 }
