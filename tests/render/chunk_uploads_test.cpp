@@ -247,17 +247,14 @@ TEST_CASE("an edit's batch goes in whole whatever the budget, or not at all with
     CHECK(uploads.find({.x = 3}) == nullptr);
     CHECK(uploads.records().size() == 3);
     CHECK(space.stats().live == 46);
-    // Slot 0 comes round: the old mesh's range and the batch's are free
-    // again. (A hole exactly the size asked for can still be missed: VMA's
-    // TLSF rounds a request up to its next size class. RFC 0007's compaction
-    // answers such a failure.)
+    // Slot 0 comes round: the old mesh's 44 quads are free again, a hole
+    // the batch's large mesh takes, since a batch places its largest first:
+    // its small one, placed first, would have split that hole.
     uploads.begin_frame(1, start);
     uploads.begin_frame(0, start);
     CHECK(space.stats().retired == 0);
     CHECK(space.stats().free == 54);
-    const std::array<ChunkMeshUpdate, 2> fits = {small.update({.x = 3}, 5),
-                                                 small.update({.x = 4}, 6)};
-    CHECK(uploads.upload_batch(fits, arena).value() == Uploaded::written);
+    CHECK(uploads.upload_batch(too_big, arena).value() == Uploaded::written);
     CHECK(uploads.records().size() == 5);
 }
 

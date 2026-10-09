@@ -9,10 +9,12 @@
 
 #include <volk.h>
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <vector>
@@ -75,9 +77,18 @@ Result<Uploaded> ChunkUploads::upload(const ChunkMeshUpdate& update, QuadWriter&
 
 Result<Uploaded> ChunkUploads::upload_batch(std::span<const ChunkMeshUpdate> batch,
                                             QuadWriter& writer) {
-    // Every range first: when one does not fit, nothing is written, and the
-    // ranges taken go back with this frame's slot.
+    // Every range first, the largest first, so a small mesh never takes the
+    // one hole a large one needs: when one does not fit, nothing is
+    // written, and the ranges taken go back with this frame's slot.
     std::vector<std::optional<ArenaRange>> ranges(batch.size());
+    std::vector<std::uint32_t> quads(batch.size());
+    std::vector<std::size_t> order(batch.size());
+    for (std::size_t at = 0; at < batch.size(); ++at) {
+        quads[at] = total_quads(batch[at].mesh);
+        order[at] = at;
+    }
+    std::ranges::stable_sort(order, std::ranges::greater{},
+                             [&quads](std::size_t at) { return quads[at]; });
     const auto give_back = [&](std::size_t from) {
         for (std::size_t at = from; at < ranges.size(); ++at) {
             if (ranges[at]) {
@@ -85,12 +96,11 @@ Result<Uploaded> ChunkUploads::upload_batch(std::span<const ChunkMeshUpdate> bat
             }
         }
     };
-    for (std::size_t at = 0; at < batch.size(); ++at) {
-        const std::uint32_t quads = total_quads(batch[at].mesh);
-        if (quads == 0 || stale(batch[at])) {
+    for (const std::size_t at : order) {
+        if (quads[at] == 0 || stale(batch[at])) {
             continue;
         }
-        ranges[at] = space_->allocate(quads);
+        ranges[at] = space_->allocate(quads[at]);
         if (!ranges[at]) {
             give_back(0);
             ++stats_.refused;
