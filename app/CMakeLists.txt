@@ -41,9 +41,9 @@ target_link_libraries(vx_app_startup PUBLIC vx::render vx::minecraft)
 vx_target_warnings(vx_app_startup)
 vx_target_engine_options(vx_app_startup)
 
-# The demo chunk and the player walking on it (RFC 0010): a library of their
-# own so that tests walk the chunk without a window.
-add_library(vx_app_play STATIC src/demo_chunk.cpp src/walking.cpp)
+# The player walking (RFC 0010): a library of its own, so that the world
+# loop and the tests run it without a window.
+add_library(vx_app_play STATIC src/walking.cpp)
 target_include_directories(vx_app_play PUBLIC src)
 target_link_libraries(vx_app_play PUBLIC vx::world)
 vx_target_warnings(vx_app_play)

@@ -173,7 +173,6 @@ add_executable(vx_app_tests
     app/world_loop_test.cpp)
 target_link_libraries(vx_app_tests PRIVATE vx_app_play vx_app_startup vx_app_stream vx_app_view
     vx_app_world doctest::doctest)
-target_compile_definitions(vx_app_tests PRIVATE VX_SHIPPED_PACK_DIR="${PROJECT_SOURCE_DIR}")
 vx_target_warnings(vx_app_tests)
 doctest_discover_tests(vx_app_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 

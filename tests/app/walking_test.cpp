@@ -1,9 +1,6 @@
-#include "demo_chunk.hpp"
 #include "walking.hpp"
 
-#include <vx/core/result.hpp>
 #include <vx/core/vec3d.hpp>
-#include <vx/render/block_pack.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/chunk_boxes.hpp>
 #include <vx/world/chunk_storage.hpp>
@@ -43,21 +40,6 @@ constexpr vx::TickInput walk{.held = {.forward = true}, .yaw = 0.0F};
 constexpr vx::TickInput sprint{.held = {.forward = true, .sprint = true}, .yaw = 0.0F};
 
 } // namespace
-
-TEST_CASE("the demo chunk's player lands on the grass and stays there") {
-    const vx::render::BlockPack pack = vx::render::load_block_pack(VX_SHIPPED_PACK_DIR);
-    REQUIRE(pack.registry);
-    const vx::Result<vx::ChunkStorage> chunk = vx::app::demo_chunk(*pack.registry);
-    REQUIRE(chunk.has_value());
-    const vx::ChunkBoxes blocks(chunk.value(), {});
-    // Two blocks over the app's spawn, on the grass.
-    vx::app::Walking walking(vx::app::demo_spawn + vx::Vec3d{.x = 0.0, .y = 2.0, .z = 0.0}, 0.0);
-    walking.advance(1s, no_keys, blocks);
-    CHECK(walking.player().on_ground);
-    CHECK(walking.player().position.y == doctest::Approx(vx::app::demo_spawn.y));
-    walking.advance(1s, no_keys, blocks);
-    CHECK(walking.player().position.y == doctest::Approx(vx::app::demo_spawn.y));
-}
 
 TEST_CASE("the clock runs 20 ticks a second at any frame rate, and catches up a second at most") {
     const vx::ChunkStorage chunk = floor_chunk();
