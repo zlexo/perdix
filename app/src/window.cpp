@@ -7,6 +7,7 @@
 #include <tracy/Tracy.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -116,6 +117,19 @@ render::SurfaceSource Window::surface_source() const {
             return surface;
         },
     };
+}
+
+bool Window::set_framebuffer_size(render::Extent pixels) {
+    const float density = SDL_GetWindowPixelDensity(window_);
+    if (density <= 0.0F) {
+        return false;
+    }
+    SDL_SetWindowSize(window_,
+                      static_cast<int>(std::lround(static_cast<float>(pixels.width) / density)),
+                      static_cast<int>(std::lround(static_cast<float>(pixels.height) / density)));
+    SDL_SyncWindow(window_);
+    const render::Extent size = framebuffer_size();
+    return size.width == pixels.width && size.height == pixels.height;
 }
 
 render::Extent Window::framebuffer_size() const {

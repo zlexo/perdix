@@ -12,6 +12,10 @@
 
 namespace vx::app {
 
+// RFC 0006's benchmark flythrough: none, the full one, or the few seconds CI
+// runs.
+enum class Flythrough : std::uint8_t { none, full, quick };
+
 // The app's command line.
 struct Options {
     // Quit after this many frames, for smoke tests; 0 runs until the window closes.
@@ -26,6 +30,8 @@ struct Options {
     std::optional<std::string> minecraft;
     std::optional<std::string> minecraft_version;
     bool no_minecraft = false;
+    // Fly RFC 0006's benchmark path, print its report, and quit.
+    Flythrough flythrough = Flythrough::none;
 };
 
 // The options, from the arguments after the program's name, or why they are
