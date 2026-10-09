@@ -15,8 +15,10 @@
 #include <vx/world/world_streamer.hpp>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -52,20 +54,30 @@ struct ToMain {
 // What the main thread tells the world thread.
 struct ToWorld {
     enum class Kind : std::uint8_t {
-        camera, // the camera's chunk
-        edit,   // a block to set; M5's actions will bring the view ray
+        camera,   // the camera's chunk
+        edit,     // a block to set; M5's actions will bring the view ray
+        uploaded, // how far the main thread is with the meshes sent alone
         stop,
     };
     Kind kind = Kind::camera;
     ChunkPos camera;
     BlockPos block;
     BlockState state = BlockState::air;
+    // Of the meshes sent alone (ToMain::Kind::mesh, never a batch's), how
+    // many the main thread is done with so far: uploaded, or dropped without
+    // an upload (empty, older than the one it holds, or its chunk's unload
+    // came first). One it drops but never counts holds streaming back for
+    // good.
+    std::uint64_t uploaded = 0;
 };
 
 struct WorldLoopSettings {
     RegionSettings region;
     // Each pass tops every job level up to this many queued jobs (RFC 0005).
     std::uint32_t queue_limit = 256;
+    // Streaming meshes sent but not yet uploaded, above which new streaming
+    // mesh jobs wait (RFC 0005); an edit's remeshes never wait.
+    std::uint32_t unuploaded_limit = 512;
 };
 
 // A worker's memory for meshing (RFC 0005): RFC 0003's padded chunk and the
@@ -99,6 +111,11 @@ public:
     // One pass of the loop: the main thread's messages, the jobs' results,
     // then feeding. False once a stop arrived.
     bool pass();
+    // A pass, then each tick that falls due by `now`, 20 a second: more than
+    // a second behind, the rest are skipped. Returns when the next tick is
+    // due, the deadline the world thread sleeps until. After a stop, no tick
+    // runs.
+    std::chrono::steady_clock::time_point step(std::chrono::steady_clock::time_point now);
     // Waits for no job, then integrates their results, until nothing runs or
     // waits, or a stop arrives: for tests. The destructor does shutdown's
     // waiting.
@@ -110,8 +127,17 @@ public:
     // The rest is the world thread's: read it there, or once it has stopped.
     [[nodiscard]] bool stopping() const noexcept { return stopping_; }
     [[nodiscard]] const WorldStreamer& streamer() const noexcept { return streamer_; }
+    // Streaming meshes sent but not yet uploaded.
+    [[nodiscard]] std::uint64_t unuploaded() const noexcept { return sent_ - uploaded_; }
     // Mesh jobs queued or running.
     [[nodiscard]] std::size_t meshes_in_flight() const noexcept { return meshes_in_flight_; }
+    [[nodiscard]] std::uint64_t ticks() const noexcept { return ticks_; }
+    [[nodiscard]] std::uint64_t skipped_ticks() const noexcept { return skipped_; }
+    // RFC 0006's catching up: a chunk of the near cylinder, all of it drawn,
+    // has no mesh sent yet. Workers then run at user-initiated (RFC 0005).
+    [[nodiscard]] bool catching_up() const noexcept { return catching_up_; }
+
+    static constexpr std::chrono::milliseconds tick_length{50};
 
 private:
     struct MeshRecord {
@@ -172,6 +198,8 @@ private:
     void send_ready_batches();
     void feed();
     bool start_mesh(std::uint32_t index);
+    void tick();
+    [[nodiscard]] bool missing_near_camera();
 
     WakeEvent wake_; // before the inboxes that signal it
     WorldStreamer streamer_;
@@ -191,6 +219,14 @@ private:
     std::vector<ChunkEvent> events_;
     WakeEvent main_wake_; // the main thread polls each frame and never waits on it
     Inbox<ToMain> to_main_;
+    std::optional<ChunkPos> camera_;
+    std::chrono::steady_clock::time_point next_tick_;
+    bool ticking_ = false;
+    std::uint64_t ticks_ = 0;
+    std::uint64_t skipped_ = 0;
+    bool catching_up_ = false;
+    std::uint64_t sent_ = 0;     // streaming meshes sent
+    std::uint64_t uploaded_ = 0; // of them, uploaded, as the main thread last said
     std::size_t meshes_in_flight_ = 0;
     bool stopping_ = false;
 };

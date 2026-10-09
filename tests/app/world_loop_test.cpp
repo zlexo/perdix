@@ -1,4 +1,5 @@
 #include "world_loop.hpp"
+#include "world_thread.hpp"
 
 #include <vx/core/job_system.hpp>
 #include <vx/core/mesh_result_pool.hpp>
@@ -17,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -24,6 +26,7 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -79,6 +82,19 @@ void edit(WorldLoop& loop, vx::BlockPos block, BlockState state) {
     message.kind = ToWorld::Kind::edit;
     message.block = block;
     message.state = state;
+    loop.to_world().push(std::move(message));
+}
+
+void stop(WorldLoop& loop) {
+    ToWorld message;
+    message.kind = ToWorld::Kind::stop;
+    loop.to_world().push(std::move(message));
+}
+
+void uploaded(WorldLoop& loop, std::uint64_t count) {
+    ToWorld message;
+    message.kind = ToWorld::Kind::uploaded;
+    message.uploaded = count;
     loop.to_world().push(std::move(message));
 }
 
@@ -431,6 +447,49 @@ TEST_CASE("the loop goes with remeshes queued, or done and not taken in, and eve
     }
 }
 
+TEST_CASE("streaming meshes wait while too many sent are not uploaded, and edits never wait") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool,
+                   {.region = small, .queue_limit = 256, .unuploaded_limit = 10});
+    move_camera(loop, above_hills);
+    loop.settle();
+    std::vector<ToMain> messages;
+    loop.take(messages);
+    MainThread main;
+    main.receive(messages);
+    const std::size_t first = main.meshes;
+    CHECK(first >= 10);
+    CHECK(first < shown(loop).size());
+    // An edit's remeshes go out all the same.
+    const std::optional<ChunkPos> east = ground_chunk(loop, 1);
+    REQUIRE(east.has_value());
+    edit(loop, {.x = 32, .y = (east->y * 32) + 16, .z = 112}, BlockState::air);
+    loop.settle();
+    loop.take(messages);
+    main.receive(messages);
+    CHECK(main.batches == 1);
+    // Uploaded: the rest follow.
+    for (int round = 0; round < 100 && main.held.size() < shown(loop).size(); ++round) {
+        uploaded(loop, main.meshes);
+        loop.settle();
+        loop.take(messages);
+        main.receive(messages);
+    }
+    std::set<Chunk> held;
+    for (const auto& [chunk, mesh] : main.held) {
+        held.insert(chunk);
+    }
+    CHECK(held == shown(loop));
+    // A count past what was sent, as when a batch's meshes are counted too,
+    // never holds streaming back.
+    uploaded(loop, main.meshes + 2);
+    loop.pass();
+    CHECK(loop.unuploaded() == 0);
+}
+
 TEST_CASE("loading, editing, unloading and reloading end the same with 0, 1 and 6 workers") {
     const vx::PlaceholderGenerator generator(0x5EED, blocks);
     const std::vector<vx::BlockVisual> table = visuals();
@@ -482,6 +541,105 @@ TEST_CASE("loading, editing, unloading and reloading end the same with 0, 1 and 
     CHECK(chunks[2] == chunks[0]);
     CHECK(meshes[1] == meshes[0]);
     CHECK(meshes[2] == meshes[0]);
+}
+
+TEST_CASE("ticks come 20 a second on the loop's clock, and over a second behind the rest are "
+          "skipped") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small});
+    const std::chrono::steady_clock::time_point start{};
+    using std::chrono::milliseconds;
+    CHECK(loop.step(start) == start + milliseconds(50));
+    CHECK(loop.ticks() == 0);
+    loop.step(start + milliseconds(49));
+    CHECK(loop.ticks() == 0);
+    loop.step(start + milliseconds(50));
+    CHECK(loop.ticks() == 1);
+    // Late by 120 ms: the three ticks due run, back to back.
+    CHECK(loop.step(start + milliseconds(170)) == start + milliseconds(200));
+    CHECK(loop.ticks() == 3);
+    CHECK(loop.skipped_ticks() == 0);
+    // Five seconds late: a tick runs now and the rest are skipped.
+    const std::chrono::steady_clock::time_point late = start + milliseconds(5'200);
+    CHECK(loop.step(late) == late + milliseconds(50));
+    CHECK(loop.ticks() == 4);
+    CHECK(loop.skipped_ticks() == 100);
+}
+
+TEST_CASE("after a stop no tick runs, and settling returns with jobs still in flight") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small});
+    move_camera(loop, above_hills);
+    loop.pass(); // the first jobs are queued
+    stop(loop);
+    const std::chrono::steady_clock::time_point start{};
+    loop.step(start);
+    loop.step(start + std::chrono::milliseconds(500));
+    REQUIRE(loop.ticks() == 0);
+    // Results are no longer taken in, so this would never settle: the loop's
+    // destructor waits for the jobs instead.
+    loop.settle();
+    CHECK(loop.stopping());
+}
+
+TEST_CASE("the loop catches up while the near cylinder lacks meshes, and stops once it has them") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small});
+    const std::chrono::steady_clock::time_point start{};
+    using std::chrono::milliseconds;
+    loop.step(start);
+    CHECK_FALSE(loop.catching_up()); // no camera yet: nothing is missing
+    move_camera(loop, above_hills);
+    loop.step(start + milliseconds(50));
+    CHECK(loop.catching_up());
+    CHECK(jobs.catching_up()); // the workers are told
+    loop.settle();
+    loop.step(start + milliseconds(100));
+    CHECK_FALSE(loop.catching_up());
+    CHECK_FALSE(jobs.catching_up());
+}
+
+TEST_CASE("on its own thread the loop streams the region in, and stops when told") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({.workers = 2});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small});
+    MainThread main;
+    {
+        const vx::app::WorldThread thread(loop);
+        move_camera(loop, above_hills);
+        std::vector<ToMain> messages;
+        // Until no mesh has come for half a second; at most 30 seconds.
+        auto quiet_since = std::chrono::steady_clock::now();
+        const auto give_up = quiet_since + std::chrono::seconds(30);
+        while (std::chrono::steady_clock::now() - quiet_since < std::chrono::milliseconds(500) &&
+               std::chrono::steady_clock::now() < give_up) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            loop.take(messages);
+            if (!messages.empty()) {
+                main.receive(messages);
+                quiet_since = std::chrono::steady_clock::now();
+            }
+        }
+    }
+    // Stopped and joined: the loop is ours to read.
+    std::set<Chunk> held;
+    for (const auto& [chunk, mesh] : main.held) {
+        held.insert(chunk);
+    }
+    CHECK(held == shown(loop));
+    CHECK(held.size() > 27);
+    CHECK(loop.ticks() > 0);
 }
 
 namespace {

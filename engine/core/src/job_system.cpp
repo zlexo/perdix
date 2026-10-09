@@ -464,6 +464,11 @@ void JobSystem::set_catching_up(bool catching_up) noexcept {
     state_->catching_up = catching_up;
 }
 
+bool JobSystem::catching_up() const noexcept {
+    const std::scoped_lock guard(state_->lock);
+    return state_->catching_up;
+}
+
 std::uint32_t JobSystem::worker_count() const noexcept {
     return static_cast<std::uint32_t>(state_->workers.size());
 }
