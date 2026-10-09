@@ -284,6 +284,13 @@ void WorldLoop::handle(ToWorld& message) {
     case ToWorld::Kind::meshing:
         remesh(message.meshing);
         break;
+    case ToWorld::Kind::view_distance:
+        // The checks recompute the region from the loop's copy of the
+        // settings: it follows too.
+        settings_.region.view_distance = message.view_distance;
+        streamer_.set_view_distance(message.view_distance);
+        follow_events();
+        break;
     case ToWorld::Kind::sample: {
         // What the loop would do later in this pass, done first: the halves
         // agree once the streamer's events are followed.
