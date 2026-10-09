@@ -10,16 +10,33 @@
 
 namespace vx::app {
 
-// One sample of a flythrough, as the app takes it from the world thread: a
-// full one, or one that only says whether the region is complete.
+// One sample of a flythrough: the world thread's numbers and the main
+// thread's own, as the app puts them together. A completion sample, not
+// full, holds only whether the region is complete, and the totals.
 struct FlythroughSample {
     std::uint32_t id = 0; // the request's, in the order they were made
     bool full = true;
     // When the world thread took it. Its {} lets designated initializers
     // leave it out (Linux Clang's -Wmissing-designated-field-initializers).
     std::chrono::steady_clock::time_point at{}; // NOLINT(readability-redundant-member-init)
+    // Totals so far: chunks built by a job, chunks found uniform without
+    // one, and meshes made by a job.
+    std::uint64_t generated = 0;
+    std::uint64_t uniform = 0;
+    std::uint64_t meshed = 0;
+    // Since the full sample before: the world thread's longest streaming
+    // step, and its longest pass.
+    std::chrono::nanoseconds longest_step{0};
+    std::chrono::nanoseconds longest_pass{0};
+    std::uint32_t holes = 0;
+    std::uint32_t near_holes = 0; // within 256 blocks
+    std::uint64_t chunk_bytes = 0;
+    std::uint64_t mesh_bytes = 0;      // the arena's quads, live and retired
+    std::uint64_t footprint_bytes = 0; // the process's
     // The region is complete, and every mesh is uploaded.
     bool complete = false;
+    // RFC 0006's invariants found broken, when the plan checks them.
+    std::uint32_t broken = 0;
 };
 
 // A phase's numbers (RFC 0006).
@@ -32,6 +49,23 @@ struct PhaseResult {
     double frame_p50_ms = 0.0;
     double frame_p99_ms = 0.0;
     double frame_max_ms = 0.0;
+    double longest_step_ms = 0.0;
+    double longest_pass_ms = 0.0;
+    // A second, between the phase's first and last samples, completion ones
+    // included; none with fewer than two.
+    std::optional<double> generated_per_second;
+    std::optional<double> uniform_per_second;
+    std::optional<double> meshed_per_second;
+    std::uint32_t near_holes_p99 = 0;
+    std::uint32_t holes_p99 = 0;
+    // At the phase's last sample, and the most of any.
+    std::uint64_t chunk_bytes_end = 0;
+    std::uint64_t chunk_bytes_peak = 0;
+    std::uint64_t mesh_bytes_end = 0;
+    std::uint64_t mesh_bytes_peak = 0;
+    std::uint64_t footprint_bytes_end = 0;
+    std::uint64_t footprint_bytes_peak = 0;
+    std::uint64_t broken = 0; // invariants broken, over the phase's samples
 };
 
 // A flythrough as the app runs it: the phase each frame falls in and the
@@ -68,9 +102,11 @@ public:
     // that count holes.
     void frame_time(std::chrono::nanoseconds took);
     // A sample came back. One asked for to close a phase, as the next
-    // phase's first or in the phase itself before it ended, closes it, and
-    // ends no wait. Whether the region is complete counts only for the phase
-    // that asked.
+    // phase's first or in the phase itself before it ended, closes it: its
+    // longest step and pass, the invariants it found broken and the memory
+    // where the phase ended go to it, and when it closes the phase just
+    // before this one, this phase's rates start from its totals. Whether the
+    // region is complete counts only for the phase that asked.
     void add(const FlythroughSample& sample);
 
     [[nodiscard]] Phase phase() const noexcept;
@@ -80,6 +116,7 @@ public:
 
 private:
     void finish_phase(Clock::time_point now, bool capped);
+    void close(std::size_t index, const FlythroughSample& sample);
 
     FlythroughPlan plan_;
     FlythroughPath path_;
@@ -98,6 +135,10 @@ private:
     std::uint32_t phase_first_id_ = 0;
     bool complete_ = false;
     std::vector<std::chrono::nanoseconds> frame_times_;
+    std::vector<FlythroughSample> samples_; // full ones
+    // The phase's first and last samples of any kind, for its rates.
+    std::optional<FlythroughSample> first_;
+    std::optional<FlythroughSample> last_;
     std::vector<PhaseResult> results_;
 };
 
