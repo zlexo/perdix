@@ -16,6 +16,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -88,8 +89,9 @@ public:
     // The camera's chunk. When it changes, chunks join the region and those
     // outside the region grown for hysteresis leave it.
     void set_camera(ChunkPos camera);
-    // Submits every job that can start: surfaces, then plans, then builds.
-    void feed();
+    // Submits the jobs that can start, at most `room` of them: surfaces,
+    // then plans, then builds.
+    void feed(std::size_t room = std::numeric_limits<std::size_t>::max());
     // Takes in every result the jobs have sent back.
     void integrate();
     // The events since the last call, moved into `out`.
@@ -100,6 +102,18 @@ public:
     // whose padded border holds the block as changed. False, changing
     // nothing, when the chunk is not ready.
     bool set_block(BlockPos pos, BlockState state);
+
+    // For a mesh job (RFC 0005): a record pinning the complete chunk at
+    // `pos` and its 26 neighbors, each its blocks or, for a uniform chunk,
+    // its state, with the chunk's load id and `sequence`. Null when no
+    // record is free or the chunk is not complete.
+    [[nodiscard]] JobRecord* pin_neighborhood(ChunkPos pos, std::uint32_t sequence) noexcept;
+    // The job reported back, or its cancel succeeded: unpins exactly what
+    // the record names.
+    void release(JobRecord& record) noexcept { job_records_.release(record); }
+    // Shutdown's first step (RFC 0005): every job still queued is canceled
+    // and gives back what it pinned. Nothing is fed or integrated after it.
+    void cancel_queued() noexcept;
 
     [[nodiscard]] const ChunkRecord* find(ChunkPos pos) const noexcept;
     // Every record: for the mesh half, the overlay and tests.
@@ -170,9 +184,9 @@ private:
     void advance(std::uint32_t index);
     void report(ChunkEvent::Kind kind, std::uint32_t index);
 
-    void feed_surfaces();
-    void feed_plans();
-    void feed_builds();
+    void feed_surfaces(std::size_t& room);
+    void feed_plans(std::size_t& room);
+    void feed_builds(std::size_t& room);
     // Pins the 27 plans around a chunk for its build; a uniform neighbor
     // has none.
     void pin_plans(JobRecord& pins, ChunkPos pos) noexcept;
