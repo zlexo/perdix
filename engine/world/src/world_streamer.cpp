@@ -621,7 +621,13 @@ void WorldStreamer::restart(std::uint32_t index) {
     }
     switch (record.state) {
     case ChunkState::queued:
+        break;
     case ChunkState::unloading:
+        // Its job runs. A ready one back in range before the job reports
+        // holds the old version's plan and blocks: it replans then.
+        if (counts_as_ready(record.before_unloading) && !record.edited) {
+            set_regeneration(index, Regeneration::replan);
+        }
         break;
     case ChunkState::planning:
     case ChunkState::building:

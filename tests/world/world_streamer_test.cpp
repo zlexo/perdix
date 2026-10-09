@@ -1276,3 +1276,118 @@ TEST_CASE("results made for an older version are dropped, and their chunks start
     CHECK(own->state == ChunkState::complete);
     CHECK(own->uniform == stone);
 }
+
+namespace {
+
+// Plans carry the version they were made at, and a build's blocks say which
+// version its plans were: uniform 100 plus the version, or 99 when the 27
+// plans were of different versions. Deep rock needs plans too, as RFC
+// 0008's caves will, so the near cylinder underground is built.
+class PlanStamps final : public vx::Generator {
+public:
+    explicit PlanStamps(const vx::Generator& inner) : inner_(&inner) {}
+
+    [[nodiscard]] vx::ChunkRange surface_range(vx::ColumnPos column,
+                                               vx::GenScratch& scratch) const override {
+        return inner_->surface_range(column, scratch);
+    }
+    [[nodiscard]] std::optional<BlockState> out_of_reach(ChunkPos pos) const noexcept override {
+        const std::optional<BlockState> inner = inner_->out_of_reach(pos);
+        return inner == stone ? std::nullopt : inner;
+    }
+    // The version rides in z's high bits: streaming never reads a plan.
+    [[nodiscard]] vx::ChunkPlan plan(ChunkPos pos, vx::GenScratch& /*scratch*/) const override {
+        return {.pos = {.x = pos.x,
+                        .y = pos.y,
+                        .z = pos.z + (static_cast<std::int32_t>(version_) * stamp)}};
+    }
+    [[nodiscard]] vx::ChunkStorage build(std::span<const vx::ChunkPlan* const, 27> plans,
+                                         vx::GenScratch& /*scratch*/) const override {
+        const std::int32_t own = stamp_of(*plans[13]);
+        for (const vx::ChunkPlan* plan : plans) {
+            if (plan != nullptr && stamp_of(*plan) != own) {
+                ++mixed;
+                return vx::ChunkStorage::uniform(mixed_plans);
+            }
+        }
+        return vx::ChunkStorage::uniform(built_at(static_cast<std::uint32_t>(own)));
+    }
+    [[nodiscard]] std::uint32_t version() const noexcept override { return version_; }
+
+    static constexpr BlockState mixed_plans = static_cast<BlockState>(99);
+    static constexpr BlockState built_at(std::uint32_t version) {
+        return static_cast<BlockState>(100 + version);
+    }
+
+    std::uint32_t version_ = 0; // up to 7
+    mutable std::size_t mixed = 0;
+
+private:
+    static constexpr std::int32_t stamp = 1 << 27; // past any chunk's z
+    static std::int32_t stamp_of(const vx::ChunkPlan& plan) {
+        return (plan.pos.z + (stamp / 2)) / stamp;
+    }
+
+    const vx::Generator* inner_;
+};
+
+// Ready chunks that are neither air nor what version `version` builds.
+std::size_t not_built_at(const WorldStreamer& streamer, std::uint32_t version) {
+    std::size_t stale = 0;
+    const vx::ChunkRecords& records = streamer.records();
+    for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+        if (records.live(index) && vx::counts_as_ready(records[index].state) &&
+            records[index].uniform != BlockState::air &&
+            records[index].uniform != PlanStamps::built_at(version)) {
+            ++stale;
+        }
+    }
+    return stale;
+}
+
+} // namespace
+
+TEST_CASE("a chunk that leaves while its rebuild runs and comes back after another version "
+          "change regenerates from the newest plans") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    PlanStamps generator(placeholder);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    // Underground, where the near cylinder's chunks are built.
+    const ChunkPos deep{.x = 3, .y = -6, .z = 3};
+    streamer.set_camera(deep);
+    settle(streamer, jobs);
+    REQUIRE(not_built_at(streamer, 0) == 0);
+    generator.version_ = 1;
+    // Until a rebuild of the near cylinder has run, its result unread.
+    std::optional<ChunkPos> rebuilt;
+    for (int pass = 0; pass < 100 && !rebuilt; ++pass) {
+        streamer.feed();
+        const vx::ChunkRecords& records = streamer.records();
+        for (std::uint32_t index = 0; index < records.end_index() && !rebuilt; ++index) {
+            const ChunkRecord& record = records[index];
+            if (records.live(index) && record.regeneration == vx::Regeneration::rebuild &&
+                record.job && record.pos.y <= deep.y + 1) {
+                rebuilt = record.pos;
+            }
+        }
+        jobs.run_until_idle();
+        if (!rebuilt) {
+            integrate_all(streamer);
+        }
+    }
+    REQUIRE(rebuilt.has_value());
+    // Up over the hills: it leaves while its job has run. The version
+    // changes again, and the camera goes back down before the job reports.
+    streamer.set_camera(above_hills);
+    REQUIRE(streamer.find(*rebuilt) != nullptr);
+    REQUIRE(streamer.find(*rebuilt)->state == ChunkState::unloading);
+    generator.version_ = 2;
+    streamer.feed();
+    streamer.set_camera(deep);
+    settle(streamer, jobs);
+    CHECK(streamer.stats().regenerating == 0);
+    CHECK(generator.mixed == 0);
+    CHECK(not_built_at(streamer, 2) == 0);
+}
