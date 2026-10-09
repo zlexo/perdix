@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <random>
@@ -77,7 +78,7 @@ public:
     explicit FakeArena(std::uint32_t capacity) : quads(capacity) {}
 
     vx::Result<void> write(std::uint32_t first, std::span<const Quad> written) override {
-        if (fail) {
+        if (fail || writes == fail_at) {
             return vx::Error{"the writer failed"};
         }
         REQUIRE(std::size_t{first} + written.size() <= quads.size());
@@ -89,6 +90,8 @@ public:
     std::vector<Quad> quads;
     std::size_t writes = 0;
     bool fail = false;
+    // Fails from the write after this many on.
+    std::size_t fail_at = std::numeric_limits<std::size_t>::max();
 };
 
 ArenaSpace make_space(std::uint32_t capacity, std::uint32_t slots) {
@@ -320,9 +323,53 @@ TEST_CASE("a writer's error writes no record, and its range goes back with its s
     CHECK(space.stats().live == 0);
 }
 
-TEST_CASE("under random uploads, removals and frames, each record's range holds its newest mesh") {
-    // Three frame slots, as RFC 0001's pacing keeps; every frame the slot it
-    // reuses is finished.
+TEST_CASE("a writer's error in a batch keeps the meshes before it and gives back every range "
+          "after") {
+    ArenaSpace space = make_space(1'024, 3);
+    FakeArena arena(1'024);
+    ChunkUploads uploads(space);
+    const TestMesh mesh(some, 1); // 44 quads in eleven groups, a write each
+    uploads.begin_frame(0, Time{});
+    const std::array<ChunkMeshUpdate, 3> batch = {
+        mesh.update({.x = 0}, 1), mesh.update({.x = 1}, 2), mesh.update({.x = 2}, 3)};
+    // The first mesh goes in whole, the second fails halfway.
+    arena.fail_at = 11 + 5;
+    const vx::Result<Uploaded> failed = uploads.upload_batch(batch, arena);
+    REQUIRE_FALSE(failed.has_value());
+    CHECK(failed.error().message == "the writer failed");
+    CHECK(uploads.find({.x = 0}) != nullptr);
+    CHECK(uploads.find({.x = 1}) == nullptr);
+    CHECK(uploads.find({.x = 2}) == nullptr);
+    // The second and third ranges go back with the slot, each once.
+    uploads.begin_frame(1, Time{});
+    uploads.begin_frame(2, Time{});
+    uploads.begin_frame(0, Time{});
+    CHECK(space.stats().live == 44);
+    CHECK(space.stats().ranges == 1);
+    CHECK(space.stats().retired == 0);
+    CHECK(space.stats().free == 1'024 - 44);
+}
+
+TEST_CASE("an emptied chunk's generation rises with each empty mesh and goes when it unloads") {
+    ArenaSpace space = make_space(1'024, 3);
+    FakeArena arena(1'024);
+    ChunkUploads uploads(space);
+    const TestMesh mesh(some, 1);
+    const TestMesh empty(none, 0);
+    uploads.begin_frame(0, Time{});
+    CHECK(uploads.upload(empty.update(here, 5), arena, Time{}).value() == Uploaded::removed);
+    CHECK(uploads.upload(empty.update(here, 8), arena, Time{}).value() == Uploaded::removed);
+    // Newer than the first empty mesh, older than the second.
+    CHECK(uploads.upload(mesh.update(here, 6), arena, Time{}).value() == Uploaded::dropped);
+    // Unloaded, the chunk is forgotten, its empty meshes too.
+    uploads.remove(here);
+    CHECK(uploads.upload(mesh.update(here, 1), arena, Time{}).value() == Uploaded::written);
+}
+
+TEST_CASE("under random uploads, batches, stale offers, removals and frames, each record's "
+          "range holds its newest mesh, and the arena holds those ranges alone") {
+    // Three frame slots, one more than RFC 0001's frames in flight; every
+    // frame, the slot it reuses is finished.
     constexpr std::uint32_t capacity = 4'096;
     ArenaSpace space = make_space(capacity, 3);
     FakeArena arena(capacity);
@@ -331,11 +378,47 @@ TEST_CASE("under random uploads, removals and frames, each record's range holds 
     std::uniform_int_distribution<int> roll(0, 99);
     std::uniform_int_distribution<std::uint32_t> group(0, 12);
     std::uniform_int_distribution<int> chunk(0, 15);
-    // The meshes alive, so their spans stay valid; and each chunk's newest.
+    // The meshes alive, so their spans stay valid.
     std::vector<std::unique_ptr<TestMesh>> meshes;
-    std::map<int, std::uint32_t> newest; // a chunk's generation, which tags its quads
+    // Each chunk's newest generation the uploads know, its mesh's or its
+    // empty one's, until it unloads; and its mesh's, which tags its quads.
+    std::map<int, std::uint32_t> known;
+    std::map<int, std::uint32_t> newest;
     std::uint32_t generation = 0;
     std::uint32_t frame = 0;
+    std::size_t stale_offers = 0;
+    std::size_t batches = 0;
+    // A mesh of random groups for chunk `x`, its quads tagged `tag`.
+    const auto make_update = [&](int x, std::uint32_t tag) {
+        Sizes sizes{};
+        for (auto& faces : sizes) {
+            for (std::uint32_t& size : faces) {
+                size = roll(random) < 60 ? 0 : group(random);
+            }
+        }
+        meshes.push_back(std::make_unique<TestMesh>(sizes, tag));
+        return meshes.back()->update({.x = x}, tag);
+    };
+    // What the uploads make of an update they take, kept in the model.
+    const auto expect = [&](const ChunkMeshUpdate& update) {
+        const int x = update.pos.x;
+        if (known.contains(x) && update.generation <= known[x]) {
+            return Uploaded::dropped;
+        }
+        known[x] = update.generation;
+        std::size_t quads = 0;
+        for (const auto& faces : update.mesh.ranges) {
+            for (const std::span<const Quad> range : faces) {
+                quads += range.size();
+            }
+        }
+        if (quads == 0) {
+            newest.erase(x);
+            return Uploaded::removed;
+        }
+        newest[x] = update.generation;
+        return Uploaded::written;
+    };
     uploads.begin_frame(0, Time{});
     for (int step = 0; step < 5'000; ++step) {
         const int kind = roll(random);
@@ -345,27 +428,51 @@ TEST_CASE("under random uploads, removals and frames, each record's range holds 
             uploads.begin_frame(frame % 3, Time{});
         } else if (kind < 10) {
             uploads.remove({.x = x});
+            known.erase(x);
             newest.erase(x);
-        } else {
-            Sizes sizes{};
-            for (auto& faces : sizes) {
-                for (std::uint32_t& size : faces) {
-                    size = roll(random) < 60 ? 0 : group(random);
-                }
+        } else if (kind < 20 && known.contains(x)) {
+            // An update that waited, offered after a newer one went in.
+            const std::uint32_t old =
+                std::uniform_int_distribution<std::uint32_t>(1, known[x])(random);
+            const vx::Result<Uploaded> done = uploads.upload(make_update(x, old), arena, Time{});
+            REQUIRE(done.has_value());
+            CHECK(done.value() == Uploaded::dropped);
+            ++stale_offers;
+        } else if (kind < 35) {
+            // An edit's batch of one to three, a chunk maybe twice, in any
+            // order.
+            std::vector<ChunkMeshUpdate> batch;
+            const int members = 1 + (roll(random) % 3);
+            for (int at = 0; at < members; ++at) {
+                const int member = at > 0 && roll(random) < 50 ? batch[0].pos.x : chunk(random);
+                ++generation;
+                batch.push_back(make_update(member, generation));
             }
-            meshes.push_back(std::make_unique<TestMesh>(sizes, ++generation));
-            const vx::Result<Uploaded> done =
-                uploads.upload(meshes.back()->update({.x = x}, generation), arena, Time{});
+            std::ranges::shuffle(batch, random);
+            const vx::Result<Uploaded> done = uploads.upload_batch(batch, arena);
             REQUIRE(done.has_value());
             if (done.value() == Uploaded::written) {
-                newest[x] = generation;
-            } else if (done.value() == Uploaded::removed) {
-                newest.erase(x);
+                for (const ChunkMeshUpdate& member : batch) {
+                    expect(member);
+                }
+            } else {
+                REQUIRE(done.value() == Uploaded::full);
+            }
+            ++batches;
+        } else {
+            ++generation;
+            const ChunkMeshUpdate update = make_update(x, generation);
+            const vx::Result<Uploaded> done = uploads.upload(update, arena, Time{});
+            REQUIRE(done.has_value());
+            if (done.value() != Uploaded::full) {
+                CHECK(done.value() == expect(update));
             }
         }
-        // Every record's range holds its own quads, none overlap, and the
-        // records are exactly the chunks with a mesh.
+        // Every record's range holds its own quads, none overlap, the
+        // records are exactly the chunks with a mesh, and the arena's live
+        // quads are their ranges, nothing more.
         std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges;
+        std::uint64_t quads = 0;
         for (const vx::render::ChunkMeshRecord& record : uploads.records()) {
             REQUIRE(newest.contains(record.pos.x));
             REQUIRE(record.generation == newest[record.pos.x]);
@@ -373,13 +480,27 @@ TEST_CASE("under random uploads, removals and frames, each record's range holds 
                 REQUIRE(arena.quads[record.range.first_quad + at].geometry == record.generation);
             }
             ranges.emplace_back(record.range.first_quad, record.range.quads);
+            quads += record.range.quads;
         }
         REQUIRE(uploads.records().size() == newest.size());
         std::ranges::sort(ranges);
         for (std::size_t at = 1; at < ranges.size(); ++at) {
             REQUIRE(ranges[at - 1].first + ranges[at - 1].second <= ranges[at].first);
         }
+        REQUIRE(uploads.stats().meshes == uploads.records().size());
+        REQUIRE(uploads.stats().quads == quads);
+        REQUIRE(space.stats().live == quads);
+        REQUIRE(space.stats().ranges == uploads.records().size());
     }
     CHECK(frame > 100);
     CHECK(generation > 4'000);
+    CHECK(stale_offers > 200);
+    CHECK(batches > 500);
+    // Every slot comes round: nothing waits, and all but the records' ranges
+    // is free.
+    for (std::uint32_t slot = 0; slot < 3; ++slot) {
+        uploads.begin_frame(slot, Time{});
+    }
+    CHECK(space.stats().retired == 0);
+    CHECK(space.stats().free == capacity - space.stats().live);
 }
