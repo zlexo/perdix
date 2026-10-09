@@ -32,6 +32,7 @@ add_library(vx_world STATIC
     src/block_registry.cpp
     src/chunk_boxes.cpp
     src/chunk_map.cpp
+    src/chunk_records.cpp
     src/chunk_storage.cpp
     src/collision.cpp
     src/job_record.cpp
