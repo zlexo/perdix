@@ -75,6 +75,7 @@ target_include_directories(vx_glm SYSTEM INTERFACE "${glm_SOURCE_DIR}")
 target_compile_definitions(vx_glm INTERFACE GLM_FORCE_DEPTH_ZERO_TO_ONE)
 
 add_library(vx_render STATIC
+    src/arena_upkeep.cpp
     src/block_pack.cpp
     src/block_texture_array.cpp
     src/block_textures.cpp
