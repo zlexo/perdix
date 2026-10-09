@@ -43,6 +43,7 @@ int main(int argc, char* argv[]) {
     }
     vx::bench::packed_array(bench);
     vx::bench::chunk_storage(bench);
+    vx::bench::chunk_map(bench);
     vx::bench::block_registry(bench);
     vx::bench::block_textures(bench);
     vx::bench::block_pack(bench);
