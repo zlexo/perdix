@@ -1,6 +1,7 @@
 #include "overlay.hpp"
 
 #include <vx/core/version.hpp>
+#include <vx/render/arena_upkeep.hpp>
 #include <vx/render/chunk_arena.hpp>
 #include <vx/render/chunk_renderer.hpp>
 #include <vx/render/chunk_uploads.hpp>
@@ -271,6 +272,13 @@ void Overlay::draw_chunk_rendering(render::Renderer& renderer) {
     ImGui::Text("Arena: %.1f of %.1f MiB, largest free %.1f MiB, fragmentation %.2f",
                 quads_mib(arena_.live + arena_.retired), quads_mib(arena_.capacity),
                 quads_mib(arena_.largest_free), arena_.fragmentation);
+    const render::UpkeepStats& upkeep = chunks.upkeep();
+    ImGui::Text("Compaction: %.1f MiB moved%s; %u repacks, up to %.0f MiB%s",
+                quads_mib(upkeep.moved_total), upkeep.compacting ? ", moving" : "", upkeep.repacks,
+                quads_mib(chunks.arena_limit()), upkeep.full ? "; full" : "");
+    if (!chunks.repack_error().empty()) {
+        ImGui::TextWrapped("A repack failed: %s", chunks.repack_error().c_str());
+    }
     // The backlog is what waits on the main thread; refusals are this
     // frame's, where the offers stopped.
     ImGui::Text("Uploads: %u (%llu quads), %u dropped, %u refused, %zu waiting", uploads.uploads,

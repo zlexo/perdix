@@ -520,8 +520,9 @@ struct ChunkView {
 };
 
 // Records a frame: hands Tracy the GPU zones of earlier frames whose
-// timestamps have landed, makes the frame's changes to the chunk arena, whose
-// staged copies run before anything reads it, builds the chunks' draw lists,
+// timestamps have landed, keeps the chunk arena up (compaction or a repack)
+// and makes the frame's changes to it, whose copies run before anything
+// reads it, builds the chunks' draw lists,
 // then records the frame's passes, all timed in the frame slot's queries.
 // The timer starts after Tracy's collect, so it times what Tracy's Frame zone
 // does and none of Tracy's own work. Collecting and the timer's start reset
@@ -538,6 +539,14 @@ Result<void> record_frame(VkCommandBuffer commands, GpuTimer& timer, std::uint32
     timer.begin(commands, slot);
     // Only now, after the wait for the image, does the upload budget start.
     chunks.begin_frame(*view.device, slot);
+    {
+        ZoneScopedN("Chunk arena upkeep");
+        if (const Result<void> kept = chunks.keep_arena(*view.device, commands);
+            !kept.has_value()) {
+            vkEndCommandBuffer(commands);
+            return kept.error();
+        }
+    }
     if (view.changes != nullptr) {
         ZoneScopedN("Chunk uploads");
         if (const Result<void> applied = chunks.apply(*view.changes, commands);
@@ -553,6 +562,7 @@ Result<void> record_frame(VkCommandBuffer commands, GpuTimer& timer, std::uint32
         return frame.error();
     }
     draw.chunk.frame = frame.value();
+    draw.chunk.push.quads = frame.value().quads;
     draw.chunk.push.origins = frame.value().origins;
     record_passes(commands, gpu_profiler, target, draw);
     timer.end(commands, slot);
@@ -870,7 +880,7 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
         context.value().device(), desc.chunk_arena_quads,
         static_cast<std::uint32_t>(frames_in_flight),
         desc.stage_chunk_uploads ? BufferMemory::device_local : BufferMemory::upload_target,
-        desc.draw_call_limit);
+        desc.draw_call_limit, desc.chunk_arena_limit);
     if (!chunks.has_value()) {
         return chunks.error();
     }
@@ -1230,16 +1240,16 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
         return written.error();
     }
     const auto cubes = static_cast<std::uint32_t>(inputs.cubes.size());
-    // The chunks as a target of `extent` sees them; the frame's origins and
-    // commands come once the draw lists are built.
+    // The chunks as a target of `extent` sees them; the arena, which a
+    // repack replaces, and the frame's origins and commands come once the
+    // arena's upkeep is done and the draw lists are built.
     const auto chunk_draw = [&](VkExtent2D extent) {
         return ChunkDraw{.opaque_pipeline = &chunk_drawing_.opaque,
                          .cutout_pipeline = &chunk_drawing_.cutout,
                          .wireframe_pipeline = wireframe() ? &*chunk_drawing_.wireframe : nullptr,
                          .indices = chunk_drawing_.indices.handle(),
-                         .push = make_chunk_push(inputs.camera, split, extent,
-                                                 chunks_.arena().buffer().address(), 0,
-                                                 block_filter_, occlusion_strength_),
+                         .push = make_chunk_push(inputs.camera, split, extent, 0, 0, block_filter_,
+                                                 occlusion_strength_),
                          .frame = {},
                          .draw_limit = chunks_.draw_limit()};
     };
