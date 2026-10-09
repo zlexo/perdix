@@ -99,6 +99,27 @@ struct UploadStats {
     std::uint64_t quads_uploaded = 0;
     std::uint32_t dropped = 0;
     std::uint32_t refused = 0; // later, or full
+    // The room the largest upload refused as full needed, in quads: one
+    // mesh's, or an edit's whole batch's. What RFC 0007's compaction or
+    // repack must make.
+    std::uint32_t wanted = 0;
+};
+
+// A mesh moved by compaction, or into a new arena by a repack (RFC 0007):
+// its quads go from `from` to `to`.
+struct ArenaMove {
+    std::uint32_t from = 0;
+    std::uint32_t to = 0;
+    std::uint32_t quads = 0;
+};
+
+// What a frame's compaction did (RFC 0007).
+struct Compacted {
+    std::uint32_t meshes = 0;
+    std::uint32_t quads = 0;
+    // The highest mesh left found no lower range that fits it: compaction
+    // can go no further.
+    bool stuck = false;
 };
 
 // RFC 0007's uploads, on the main thread, which alone owns the arena: each
@@ -145,6 +166,22 @@ public:
                                                 QuadWriter& writer);
     // The chunk unloaded: its mesh goes.
     void remove(ChunkPos pos);
+    // RFC 0007's compaction: the highest meshes move down, each into the
+    // lowest free range that fits it while that lies lower, up to
+    // `max_meshes` meshes and `max_quads` quads, though the first move goes
+    // whatever its size; each old range is retired with the frame. `moves`
+    // gets each move, which the GPU must copy before anything draws this
+    // frame.
+    [[nodiscard]] Compacted compact(std::uint32_t max_meshes, std::uint32_t max_quads,
+                                    std::vector<ArenaMove>& moves);
+    // RFC 0007's repack: every mesh into `fresh`, a new arena's space, in
+    // the order the meshes lie in this one, so they pack from its start.
+    // `moves` gets each mesh's old and new place, for the copy into the new
+    // buffer. The ranges in the old space stay: it goes whole, with its
+    // buffer, once the frames that read it are done, and `fresh` takes its
+    // place before anything else is asked of the uploads. False, with
+    // nothing changed, when the meshes do not fit.
+    [[nodiscard]] bool repack(ArenaSpace& fresh, std::vector<ArenaMove>& moves);
     // Raised while a loading screen shows (RFC 0007).
     void set_budget(std::chrono::nanoseconds budget) noexcept { budget_ = budget; }
 
@@ -156,11 +193,17 @@ private:
     // The newest generation known for `pos`: its mesh's, or its empty one's.
     [[nodiscard]] std::optional<std::uint32_t> newest(ChunkPos pos) const noexcept;
     [[nodiscard]] bool stale(const ChunkMeshUpdate& update) const noexcept;
+    // The quads of the batch's updates that are not stale; `quads` holds each
+    // update's.
+    [[nodiscard]] std::uint32_t fresh_quads(std::span<const ChunkMeshUpdate> batch,
+                                            std::span<const std::uint32_t> quads) const noexcept;
     // Writes the mesh into `range`, which the update now holds.
     [[nodiscard]] Result<Uploaded> place(const ChunkMeshUpdate& update, const ArenaRange& range,
                                          QuadWriter& writer);
     void empty(const ChunkMeshUpdate& update);
     void erase(std::uint32_t index);
+    // Where each record's range starts, unsorted, into by_offset_.
+    void gather_offsets();
 
     ArenaSpace* space_;
     std::chrono::nanoseconds budget_ = default_budget;
@@ -170,6 +213,16 @@ private:
     ChunkMap index_;   // a chunk's record
     ChunkMap emptied_; // the generation of a chunk's empty mesh, until it unloads
     UploadStats stats_;
+    // Scratch, kept for its capacity: records by first quad, and a repack's
+    // new ranges by record.
+    struct ByOffset {
+        std::uint32_t first_quad = 0;
+        std::uint32_t record = 0;
+
+        friend constexpr auto operator<=>(const ByOffset&, const ByOffset&) = default;
+    };
+    std::vector<ByOffset> by_offset_;
+    std::vector<ArenaRange> placed_;
 };
 
 } // namespace vx::render
