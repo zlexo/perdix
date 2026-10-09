@@ -181,8 +181,9 @@ doctest_discover_tests(vx_app_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 # driver and drawn by an offscreen renderer: Vulkan tests that need no display.
 add_executable(vx_app_vulkan_tests
     main.cpp
-    app/overlay_input_test.cpp)
-target_link_libraries(vx_app_vulkan_tests PRIVATE vx_app_overlay doctest::doctest)
+    app/overlay_input_test.cpp
+    app/world_render_test.cpp)
+target_link_libraries(vx_app_vulkan_tests PRIVATE vx_app_overlay vx_app_stream doctest::doctest)
 vx_target_warnings(vx_app_vulkan_tests)
 doctest_discover_tests(vx_app_vulkan_tests PROPERTIES ${VX_VULKAN_DOCTEST_PROPERTIES})
 
