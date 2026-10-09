@@ -70,11 +70,27 @@ void ArenaSpace::destroy() noexcept {
 }
 
 std::optional<ArenaRange> ArenaSpace::allocate(std::uint32_t quads) noexcept {
+    return allocate_with(quads, 0);
+}
+
+std::optional<ArenaRange> ArenaSpace::allocate_lowest(std::uint32_t quads) noexcept {
+    return allocate_with(quads, VMA_VIRTUAL_ALLOCATION_CREATE_STRATEGY_MIN_OFFSET_BIT);
+}
+
+void ArenaSpace::cancel(const ArenaRange& range) noexcept {
+    assert(range.allocation != VK_NULL_HANDLE);
+    vmaVirtualFree(block_, range.allocation);
+    live_ -= range.quads;
+    --ranges_;
+}
+
+std::optional<ArenaRange>
+ArenaSpace::allocate_with(std::uint32_t quads, VmaVirtualAllocationCreateFlags flags) noexcept {
     assert(quads > 0);
     const VmaVirtualAllocationCreateInfo info = {
         .size = quads,
         .alignment = 0,
-        .flags = 0,
+        .flags = flags,
         .pUserData = nullptr,
     };
     VmaVirtualAllocation allocation = VK_NULL_HANDLE;

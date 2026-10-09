@@ -51,6 +51,13 @@ public:
     // A range of `quads` quads, at least one; none when no free range fits,
     // which RFC 0007 answers by compacting or growing.
     [[nodiscard]] std::optional<ArenaRange> allocate(std::uint32_t quads) noexcept;
+    // As allocate, but the lowest free range that fits, where compaction
+    // moves a mesh (RFC 0007). VMA finds it by walking every range of the
+    // block, so a frame asks for only a few.
+    [[nodiscard]] std::optional<ArenaRange> allocate_lowest(std::uint32_t quads) noexcept;
+    // A range handed out and never written or drawn from goes straight
+    // back: no frame can be reading it.
+    void cancel(const ArenaRange& range) noexcept;
     // `range` is no longer drawn from: it goes back when frame slot `slot`,
     // the one being recorded, comes round again.
     void retire(const ArenaRange& range, std::uint32_t slot);
@@ -60,10 +67,16 @@ public:
     // Walks the block for its free ranges: a few times a second, not every
     // frame.
     [[nodiscard]] ArenaStats stats() const noexcept;
+    // Without the walk: the room, and the quads in ranges handed out and
+    // not retired.
+    [[nodiscard]] std::uint32_t capacity() const noexcept { return capacity_; }
+    [[nodiscard]] std::uint32_t live() const noexcept { return live_; }
 
 private:
     ArenaSpace() = default;
     void destroy() noexcept;
+    [[nodiscard]] std::optional<ArenaRange>
+    allocate_with(std::uint32_t quads, VmaVirtualAllocationCreateFlags flags) noexcept;
 
     VmaVirtualBlock block_ = VK_NULL_HANDLE;
     std::uint32_t capacity_ = 0;

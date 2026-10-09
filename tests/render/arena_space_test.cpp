@@ -77,6 +77,50 @@ TEST_CASE("the statistics count live, retired and free quads, and how scattered 
     CHECK(space.allocate(100).has_value());
 }
 
+TEST_CASE("the lowest free range that fits is where compaction moves a mesh") {
+    ArenaSpace space = make(1'200, 2);
+    std::vector<ArenaRange> ranges;
+    for (int at = 0; at < 10; ++at) {
+        const std::optional<ArenaRange> range = space.allocate(100);
+        REQUIRE(range.has_value());
+        ranges.push_back(*range);
+    }
+    // Holes at 100 (100 quads) and 400 (200 quads), and 200 free at the end.
+    for (const std::size_t at : {1U, 4U, 5U}) {
+        space.retire(ranges[at], 0);
+    }
+    space.reclaim(0);
+    const auto lowest = [&space](std::uint32_t quads) {
+        const std::optional<ArenaRange> range = space.allocate_lowest(quads);
+        REQUIRE(range.has_value());
+        return range->first_quad;
+    };
+    CHECK(lowest(150) == 400);
+    CHECK(lowest(100) == 100);
+    // 50 left at 550: 60 goes to the end, 50 fills it.
+    CHECK(lowest(60) == 1'000);
+    CHECK(lowest(50) == 550);
+    CHECK_FALSE(space.allocate_lowest(141).has_value());
+}
+
+TEST_CASE("a cancelled range is free at once, as if it had never been handed out") {
+    ArenaSpace space = make(300, 2);
+    const std::optional<ArenaRange> kept = space.allocate(100);
+    const std::optional<ArenaRange> tried = space.allocate_lowest(200);
+    REQUIRE(kept.has_value());
+    REQUIRE(tried.has_value());
+    CHECK_FALSE(space.allocate(1).has_value());
+    space.cancel(*tried);
+    const vx::render::ArenaStats stats = space.stats();
+    CHECK(stats.live == 100);
+    CHECK(stats.ranges == 1);
+    CHECK(stats.retired == 0);
+    CHECK(stats.free == 200);
+    const std::optional<ArenaRange> again = space.allocate(200);
+    REQUIRE(again.has_value());
+    CHECK(again->first_quad == tried->first_quad);
+}
+
 TEST_CASE("under random allocations, retires and frames, no range overlaps one still in use") {
     constexpr std::uint32_t capacity = 4'096;
     constexpr std::uint32_t slots = 3;
@@ -95,7 +139,25 @@ TEST_CASE("under random allocations, retires and frames, no range overlaps one s
         const int kind = roll(random);
         if (kind < 5) {
             const std::uint32_t quads = size(random);
-            const std::optional<ArenaRange> range = space.allocate(quads);
+            // Two in five the lowest range that fits, which the model
+            // finds by looking from the start.
+            const bool lowest = kind < 2;
+            const std::optional<ArenaRange> range =
+                lowest ? space.allocate_lowest(quads) : space.allocate(quads);
+            if (lowest) {
+                std::optional<std::uint32_t> expected;
+                std::uint32_t run = 0;
+                for (std::uint32_t at = 0; at < capacity && !expected; ++at) {
+                    run = owner[at] == -1 ? run + 1 : 0;
+                    if (run == quads) {
+                        expected = at + 1 - quads;
+                    }
+                }
+                REQUIRE(range.has_value() == expected.has_value());
+                if (range) {
+                    REQUIRE(range->first_quad == *expected);
+                }
+            }
             if (!range) {
                 continue;
             }
