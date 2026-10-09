@@ -11,6 +11,7 @@
 #include <limits>
 #include <numbers>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace vx {
@@ -103,16 +104,20 @@ std::optional<std::int32_t> block_coordinate(double value) noexcept {
     return std::nullopt;
 }
 
-// Of the blocks whose boxes overlap `region`, the one whose center is nearest
-// `position`, ties to the greater y, then z, then x, as 26.2 chooses the
-// block that supports a player (from its jar).
-std::optional<BlockPos> supporting_block(const Box& region, Vec3d position, const BlockBoxes& world,
-                                         std::vector<Box>& scratch) {
-    scratch.clear();
-    world.collect(region, scratch);
+// Whether `inner` lies inside `outer`; a NaN anywhere makes it not.
+bool contains(const Box& outer, const Box& inner) noexcept {
+    return outer.min.x <= inner.min.x && outer.min.y <= inner.min.y && outer.min.z <= inner.min.z &&
+           inner.max.x <= outer.max.x && inner.max.y <= outer.max.y && inner.max.z <= outer.max.z;
+}
+
+// Of the blocks whose boxes in `boxes` overlap `region`, the one whose center
+// is nearest `position`, ties to the greater y, then z, then x, as 26.2
+// chooses the block that supports a player (from its jar).
+std::optional<BlockPos> supporting_block(const Box& region, Vec3d position,
+                                         std::span<const Box> boxes) {
     std::optional<BlockPos> best;
     double best_distance = 0.0;
-    for (const Box& box : scratch) {
+    for (const Box& box : boxes) {
         const bool overlaps = box.max.x > region.min.x && box.min.x < region.max.x &&
                               box.max.y > region.min.y && box.min.y < region.max.y &&
                               box.max.z > region.min.z && box.min.z < region.max.z;
@@ -141,8 +146,12 @@ std::optional<BlockPos> supporting_block(const Box& region, Vec3d position, cons
 // The block that holds the player up, after a move (26.2's way, from its
 // jar): on the ground, the supporting block under the box's bottom; with
 // none there, the one under where the box came from, unless the last search
-// on the ground found none either. None in the air.
-void update_supporting(Player& player, Vec3d motion, const BlockBoxes& world,
+// on the ground found none either. None in the air. The move left the boxes
+// of `gathered` in `scratch`, so a search inside that region reads them
+// rather than asking the world again, and finds the same block: every box
+// that touches it is among them. A search that a rounding leaves a hair
+// outside gathers its own.
+void update_supporting(Player& player, Vec3d motion, const Box& gathered, const BlockBoxes& world,
                        std::vector<Box>& scratch) {
     if (!player.on_ground) {
         player.supporting.reset();
@@ -153,11 +162,19 @@ void update_supporting(Player& player, Vec3d motion, const BlockBoxes& world,
     const Box body = body_box(player.position, player.pose);
     const Box under{.min = {.x = body.min.x, .y = body.min.y - depth, .z = body.min.z},
                     .max = {.x = body.max.x, .y = body.min.y, .z = body.max.z}};
-    std::optional<BlockPos> found = supporting_block(under, player.position, world, scratch);
+    bool holds_gathered = true; // until a search gathers its own boxes
+    const auto search = [&](const Box& region) {
+        if (!holds_gathered || !contains(gathered, region)) {
+            scratch.clear();
+            world.collect(region, scratch);
+            holds_gathered = false;
+        }
+        return supporting_block(region, player.position, scratch);
+    };
+    std::optional<BlockPos> found = search(under);
     if (!found && !player.ground_without_block) {
         const Vec3d back{.x = -motion.x, .y = 0.0, .z = -motion.z};
-        found = supporting_block({.min = under.min + back, .max = under.max + back},
-                                 player.position, world, scratch);
+        found = search({.min = under.min + back, .max = under.max + back});
     }
     player.supporting = found;
     player.ground_without_block = !found;
@@ -356,11 +373,12 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
 
     // The move, with step-up, held back at an edge while Shift is held and
     // the player walks; what a block cut short stops.
-    const Move move =
-        move_box(body_box(player.position, player.pose), velocity, world, scratch,
-                 {.step_height = numbers.step_height,
-                  .started_on_ground = started_on_ground,
-                  .edge_drop = input.held.sneak && !flying ? numbers.step_height : 0.0});
+    const Box body = body_box(player.position, player.pose);
+    const MoveRules rules{.step_height = numbers.step_height,
+                          .started_on_ground = started_on_ground,
+                          .edge_drop = input.held.sneak && !flying ? numbers.step_height : 0.0};
+    const Vec3d wanted = velocity;
+    const Move move = move_box(body, wanted, world, scratch, rules);
     player.position = player.position + move.motion;
     if (move.x_collision) {
         velocity.x = 0.0;
@@ -375,7 +393,11 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
         velocity.z = 0.0;
     }
     player.on_ground = move.on_ground;
-    update_supporting(player, move.motion, world, scratch);
+    // On the ground, the search for the block underfoot reads the boxes the
+    // move gathered; in the air there is none.
+    update_supporting(player, move.motion,
+                      move.on_ground ? gathered_region(body, wanted, rules) : Box{}, world,
+                      scratch);
     if (flying && move.on_ground) {
         player.flying = false; // landing ends a flight
     }

@@ -122,10 +122,15 @@ public:
     [[nodiscard]] virtual double slipperiness(BlockPos block) const = 0;
 };
 
-// A move against the world's blocks. The boxes it could touch, down to the
-// edge guard's drop and up to the step's height, are gathered into
-// `scratch`, which keeps its memory from one move to the next, so moves
-// allocate only when they gather more boxes than any before them; then the
+// The region a move of `box` by `wanted` under `rules` gathers boxes from:
+// the box swept along the move, down to the edge guard's drop and up to the
+// step's height.
+[[nodiscard]] Box gathered_region(const Box& box, Vec3d wanted, const MoveRules& rules) noexcept;
+
+// A move against the world's blocks. The boxes it could touch, those of
+// gathered_region, are gathered into `scratch`, which keeps its memory from
+// one move to the next, so moves allocate only when they gather more boxes
+// than any before them, and still holds them when the move returns; then the
 // edge guard, if the rules ask for one, and clip_move_stepping. A move with a
 // coordinate or a rule that is not finite does nothing, and asks the world
 // for nothing; a negative drop or step height is none.
