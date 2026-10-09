@@ -12,6 +12,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -574,4 +575,191 @@ TEST_CASE("a chunk that comes back before its plan job reports keeps the job's p
     CHECK(vx::counts_as_planned(streamer.find(*planning)->state));
     CHECK(streamer.find(*planning)->plan != nullptr);
     settle(streamer, jobs);
+}
+
+TEST_CASE("a chunk that leaves while its build runs is freed when the job reports back") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    const std::optional<ChunkPos> built = until_ran(streamer, jobs, ChunkState::building);
+    REQUIRE(built.has_value());
+    // Its build ran: too late to cancel, so it waits for the result.
+    streamer.set_camera({.x = above_hills.x + 40, .y = above_hills.y, .z = above_hills.z});
+    REQUIRE(streamer.find(*built) != nullptr);
+    CHECK(streamer.find(*built)->state == ChunkState::unloading);
+    check_rules(streamer);
+    streamer.integrate();
+    CHECK(streamer.find(*built) == nullptr);
+    CHECK(count(streamer, ChunkState::unloading) == 0);
+    settle(streamer, jobs);
+    CHECK(streamer.find(above_hills) == nullptr);
+}
+
+TEST_CASE("a chunk that leaves before its build starts is freed at once, its job canceled") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    // Step until builds are queued, and stop before they run.
+    std::optional<ChunkPos> queued;
+    bool saw_planning = false;
+    for (int pass = 0; pass < 100 && !queued; ++pass) {
+        streamer.feed();
+        // A chunk whose plan job is fed is planning until the job reports.
+        saw_planning = saw_planning || count(streamer, ChunkState::planning) > 0;
+        const vx::ChunkRecords& records = streamer.records();
+        for (std::uint32_t index = 0; index < records.end_index() && !queued; ++index) {
+            if (records.live(index) && records[index].state == ChunkState::building) {
+                queued = records[index].pos;
+            }
+        }
+        if (!queued) {
+            jobs.run_until_idle();
+            streamer.integrate();
+        }
+    }
+    REQUIRE(queued.has_value());
+    CHECK(saw_planning);
+    REQUIRE(streamer.stats().jobs_in_flight > 0);
+    streamer.set_camera({.x = above_hills.x + 40, .y = above_hills.y, .z = above_hills.z});
+    // Every queued job was canceled: nothing is left to wait for.
+    CHECK(streamer.find(*queued) == nullptr);
+    CHECK(count(streamer, ChunkState::unloading) == 0);
+    CHECK(streamer.stats().jobs_in_flight == 0);
+    check_rules(streamer);
+    settle(streamer, jobs);
+}
+
+TEST_CASE("a streamer destroyed with jobs queued or results unread cancels and unpins them all") {
+    // Debug builds also assert, as each streamer goes, that no job record
+    // and no pin is left, and the job system that no job is.
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    for (int round = 0; round < 2; ++round) {
+        const bool ran = round == 1;
+        INFO("results unread: ", ran);
+        {
+            WorldStreamer streamer(generator, jobs, wake, small);
+            streamer.set_camera(above_hills);
+            for (int pass = 0; pass < 100 && count(streamer, ChunkState::building) == 0; ++pass) {
+                streamer.feed();
+                if (count(streamer, ChunkState::building) == 0) {
+                    jobs.run_until_idle();
+                    streamer.integrate();
+                }
+            }
+            REQUIRE(count(streamer, ChunkState::building) > 0);
+            if (ran) {
+                jobs.run_until_idle();
+            }
+        }
+        REQUIRE(jobs.queued(vx::JobLevel::normal) == 0);
+    }
+}
+
+TEST_CASE("a chunk that comes back before its job reports keeps the job's result") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    const std::optional<ChunkPos> built = until_ran(streamer, jobs, ChunkState::building);
+    REQUIRE(built.has_value());
+    // Eight columns east of it the chunk is outside the region grown for
+    // hysteresis, while the surfaces it needs stay known.
+    streamer.set_camera({.x = built->x + 8, .y = above_hills.y, .z = above_hills.z});
+    REQUIRE(streamer.find(*built) != nullptr);
+    CHECK(streamer.find(*built)->state == ChunkState::unloading);
+    streamer.set_camera(above_hills);
+    REQUIRE(streamer.find(*built) != nullptr);
+    CHECK(streamer.find(*built)->state == ChunkState::building);
+    check_rules(streamer);
+    streamer.integrate();
+    REQUIRE(streamer.find(*built) != nullptr);
+    CHECK(vx::counts_as_ready(streamer.find(*built)->state));
+    settle(streamer, jobs);
+}
+
+TEST_CASE("a complete chunk goes back to ready when a neighbor unloads") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    std::vector<ChunkPos> complete;
+    const vx::ChunkRecords& records = streamer.records();
+    for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+        if (records.live(index) && records[index].state == ChunkState::complete) {
+            complete.push_back(records[index].pos);
+        }
+    }
+    // Four chunks east: the far west edge leaves, and chunks next to it stay.
+    streamer.set_camera({.x = above_hills.x + 4, .y = above_hills.y, .z = above_hills.z});
+    check_rules(streamer);
+    std::size_t back_to_ready = 0;
+    for (const ChunkPos pos : complete) {
+        const ChunkRecord* record = streamer.find(pos);
+        if (record != nullptr && record->state == ChunkState::ready) {
+            ++back_to_ready;
+            CHECK(record->ready_neighbors < 26);
+        }
+    }
+    CHECK(back_to_ready > 0);
+}
+
+TEST_CASE("at the world's edges every drawn chunk completes, with nothing past them to wait for") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    // A corner of the world, a chunk in from its west edge, and its top.
+    const std::array<ChunkPos, 3> cameras = {
+        ChunkPos{.x = vx::highest_chunk, .y = above_hills.y, .z = vx::lowest_chunk},
+        ChunkPos{.x = vx::lowest_chunk + 1, .y = above_hills.y, .z = above_hills.z},
+        ChunkPos{.x = above_hills.x, .y = vx::highest_chunk, .z = above_hills.z}};
+    for (const ChunkPos camera : cameras) {
+        INFO("camera at chunk ", camera.x, ", ", camera.y, ", ", camera.z);
+        WorldStreamer streamer(generator, jobs, wake, small);
+        streamer.set_camera(camera);
+        settle(streamer, jobs);
+        const ChunkRecord* own = streamer.find(camera);
+        REQUIRE(own != nullptr);
+        CHECK(own->drawn);
+        const vx::ChunkRecords& records = streamer.records();
+        for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+            if (records.live(index) && records[index].drawn) {
+                CHECK(records[index].state == ChunkState::complete);
+            }
+        }
+    }
+}
+
+TEST_CASE("with worker threads the region streams in as in the deterministic mode") {
+    // CI's sanitizers watch what the jobs read on the workers.
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem alone({});
+    vx::JobSystem workers({.workers = 3});
+    vx::WakeEvent wake;
+    WorldStreamer expected(generator, alone, wake, small);
+    WorldStreamer streamer(generator, workers, wake, small);
+    expected.set_camera(above_hills);
+    settle(expected, alone);
+    streamer.set_camera(above_hills);
+    for (int pass = 0; pass < 1'000; ++pass) {
+        streamer.feed();
+        if (streamer.stats().jobs_in_flight == 0) {
+            break;
+        }
+        // Every job reports back, in no set order, before the next pass.
+        workers.wait_until_idle();
+        streamer.integrate();
+        check_rules(streamer);
+    }
+    CHECK(streamer.stats().jobs_in_flight == 0);
+    CHECK(streamer.stats().chunks == expected.stats().chunks);
+    CHECK(streamer.records().size() == expected.records().size());
 }
