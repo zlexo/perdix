@@ -7,6 +7,7 @@
 #include <vx/world/coordinates.hpp>
 #include <vx/world/generator.hpp>
 #include <vx/world/job_record.hpp>
+#include <vx/world/region.hpp>
 #include <vx/world/versions.hpp>
 
 #include <cassert>
@@ -82,6 +83,9 @@ struct ChunkRecord {
     JobRecord* job_record = nullptr;
 };
 
+// Whether the mesh half has been told to mesh a chunk: complete and drawn.
+[[nodiscard]] bool shown(const ChunkRecord& record) noexcept;
+
 // The world's chunk records (RFC 0006): a pool at stable indices behind the
 // chunk map, with each record's counts of planned and ready neighbors kept
 // up to date as states change, 26 lookups a change. World thread only.
@@ -130,6 +134,34 @@ public:
         return map_.find(pos);
     }
     [[nodiscard]] std::size_t size() const noexcept { return map_.size(); }
+    // The records whose counts or state break RFC 0006's rules, recounted
+    // from their neighbors: planned and ready neighbors, drawn and loaded
+    // chunks near, a drawn chunk loaded, a queued build with 26 planned
+    // neighbors, a ready chunk short of 26 ready ones and a complete one with
+    // all 26. Walks every record and its 26 neighbors: for checks, such as
+    // the flythrough's in CI, not each frame of a game.
+    [[nodiscard]] std::uint32_t broken() const;
+    // The records the mesh half holds and that are not shown, or that are
+    // shown and it does not hold: `meshed(index)` says whether it holds
+    // one. Once the world's events are followed, there are none (RFC 0006).
+    template <class F> [[nodiscard]] std::uint32_t disagreements(F&& meshed) const {
+        std::uint32_t count = 0;
+        for (std::uint32_t index = 0; index < end_index(); ++index) {
+            if (live(index) && shown(records_[index]) != meshed(index)) {
+                ++count;
+            }
+        }
+        return count;
+    }
+    // The records outside `kept`'s planned columns, but an edited one and
+    // one whose job runs on: what streaming should have let go, `kept` being
+    // the region around the camera grown by the hysteresis.
+    [[nodiscard]] std::uint32_t outside(const Region& kept) const;
+    // The records' memory and the map's: what the bookkeeping costs.
+    [[nodiscard]] std::size_t memory_bytes() const noexcept {
+        return (records_.capacity() * sizeof(ChunkRecord)) + map_.memory_bytes() +
+               (free_.capacity() * sizeof(std::uint32_t));
+    }
     // One past the highest index in use: live records are those whose
     // position maps to their index.
     [[nodiscard]] std::uint32_t end_index() const noexcept {

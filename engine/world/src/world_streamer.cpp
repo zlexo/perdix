@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -109,11 +110,6 @@ struct BuildJob {
         results->push(std::move(result));
     }
 };
-
-// Whether the mesh half has been told to mesh it: complete and drawn.
-bool shown(const ChunkRecord& record) noexcept {
-    return record.state == ChunkState::complete && record.drawn;
-}
 
 // Calls `visit` with each chunk within one of `pos`, itself included, that
 // the world holds.
@@ -391,6 +387,7 @@ bool WorldStreamer::make_uniform(std::uint32_t index) {
         return false;
     }
     chunks_[index].uniform = *uniform;
+    ++classified_uniform_;
     set_state(index, ChunkState::ready);
     advance(index);
     plan_current(index);
@@ -750,6 +747,7 @@ void WorldStreamer::regenerate_uniform(std::uint32_t index, BlockState uniform) 
         record.uniform = uniform;
         report_changed_around(index);
     }
+    ++classified_uniform_;
     set_regeneration(index, Regeneration::none);
     plan_current(index);
 }
@@ -1023,6 +1021,8 @@ bool WorldStreamer::integrate() {
             break;
         }
     }
+    longest_step_ = std::max(longest_step_,
+                             std::chrono::duration_cast<std::chrono::nanoseconds>(time() - start));
     if (pending_at_ == pending_.size()) {
         pending_.clear();
         pending_at_ = 0;
@@ -1146,6 +1146,7 @@ void WorldStreamer::integrate_build(StreamResult& result) {
             } else {
                 record.blocks = &blocks_.make(std::move(result.blocks));
             }
+            ++generated_;
             report_changed_around(*index);
         }
         set_regeneration(*index, Regeneration::none);
@@ -1156,6 +1157,7 @@ void WorldStreamer::integrate_build(StreamResult& result) {
     } else {
         record.blocks = &blocks_.make(std::move(result.blocks));
     }
+    ++generated_;
     set_state(*index, ChunkState::ready);
     advance(*index);
 }
@@ -1273,7 +1275,25 @@ StreamingStats WorldStreamer::stats() const noexcept {
     stats.regenerating = regenerating_;
     stats.block_versions = blocks_.live();
     stats.plan_versions = plans_.live();
+    stats.generated = generated_;
+    stats.uniform = classified_uniform_;
     return stats;
+}
+
+std::size_t WorldStreamer::chunk_bytes() const noexcept {
+    std::size_t bytes = chunks_.memory_bytes() + column_map_.memory_bytes() +
+                        (columns_.capacity() * sizeof(Column));
+    // A free record holds no blocks.
+    for (std::uint32_t index = 0; index < chunks_.end_index(); ++index) {
+        if (const Version<ChunkStorage>* blocks = chunks_[index].blocks) {
+            bytes += sizeof(ChunkStorage) + blocks->value().memory_bytes();
+        }
+    }
+    return bytes;
+}
+
+std::chrono::nanoseconds WorldStreamer::take_longest_step() noexcept {
+    return std::exchange(longest_step_, std::chrono::nanoseconds{0});
 }
 
 } // namespace vx

@@ -1906,3 +1906,75 @@ TEST_CASE("plans made for an older version are dropped, and their chunks plan ag
     CHECK(generator.mixed.load() == 0);
     CHECK(not_built_at(streamer, 1) == 0);
 }
+
+TEST_CASE("the streamer counts the chunks it builds and those it finds uniform, once each") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    CHECK(streamer.stats().generated == 0);
+    CHECK(streamer.stats().uniform == 0);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    const vx::StreamingStats first = streamer.stats();
+    // The records' own check agrees with the streamer's counts.
+    CHECK(streamer.records().broken() == 0);
+    // Every chunk ready got there once: built by a job, or found uniform.
+    CHECK(first.generated > 0);
+    CHECK(first.uniform > 0);
+    CHECK(first.generated + first.uniform ==
+          count(streamer, ChunkState::ready) + count(streamer, ChunkState::complete));
+    // Elsewhere, the counts go on from there.
+    streamer.set_camera({.x = above_hills.x + 64, .y = above_hills.y, .z = above_hills.z});
+    settle(streamer, jobs);
+    CHECK(streamer.stats().generated > first.generated);
+    CHECK(streamer.stats().uniform > first.uniform);
+}
+
+TEST_CASE("the chunk data counts every loaded chunk's blocks once, beside the bookkeeping") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    std::size_t chunk_blocks = 0;
+    const vx::ChunkRecords& records = streamer.records();
+    for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+        if (records.live(index) && records[index].blocks != nullptr) {
+            chunk_blocks +=
+                sizeof(vx::ChunkStorage) + records[index].blocks->value().memory_bytes();
+        }
+    }
+    REQUIRE(chunk_blocks > 0);
+    // The rest is the records and their map, and the columns, at most a
+    // kilobyte each.
+    const std::size_t total = streamer.chunk_bytes();
+    CHECK(total >= chunk_blocks + records.memory_bytes());
+    CHECK(total <= chunk_blocks + records.memory_bytes() + (streamer.stats().columns * 1'024));
+}
+
+TEST_CASE("the longest step is the longest integrate took, and taking it starts the count over") {
+    using std::chrono::microseconds;
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    const FiveAStep clock;
+    streamer.set_clock(clock);
+    CHECK(streamer.take_longest_step() == microseconds(0));
+    streamer.set_camera(above_hills);
+    streamer.feed();
+    jobs.run_until_idle();
+    // With results left over, a step reads the clock at its start and after
+    // each result, stops at 500 us after five, and is timed with one more
+    // reading: 600 us on this clock.
+    REQUIRE(streamer.integrate());
+    CHECK(streamer.take_longest_step() == microseconds(600));
+    CHECK(streamer.take_longest_step() == microseconds(0));
+    // A shorter step later does not lower the longest since the last take.
+    integrate_all(streamer);
+    const std::chrono::nanoseconds longest = streamer.take_longest_step();
+    CHECK(longest > microseconds(0));
+    CHECK(longest <= microseconds(600));
+}

@@ -72,6 +72,10 @@ struct StreamingStats {
     // Versions alive: current ones and frozen ones jobs still read.
     std::size_t block_versions = 0;
     std::size_t plan_versions = 0;
+    // Since the streamer started: chunks built by a job, and chunks found
+    // uniform without one (RFC 0006's flythrough counts both per second).
+    std::uint64_t generated = 0;
+    std::uint64_t uniform = 0;
 };
 
 // Where streaming looks from (RFC 0006): the camera's chunk, around which
@@ -187,6 +191,13 @@ public:
     // the overlay.
     [[nodiscard]] std::optional<ChunkRange> surface(ColumnPos pos) const noexcept;
     [[nodiscard]] StreamingStats stats() const noexcept;
+    // The chunk data held, in bytes: the blocks of every chunk loaded, and
+    // the records, columns and maps that keep them (RFC 0006's flythrough
+    // reports it). Walks every record: a few times a second, not each frame.
+    [[nodiscard]] std::size_t chunk_bytes() const noexcept;
+    // The longest step integrate() took since the last call, which starts
+    // the next count: RFC 0006's longest streaming step.
+    [[nodiscard]] std::chrono::nanoseconds take_longest_step() noexcept;
     // The block at `pos`, if its chunk is ready or complete.
     [[nodiscard]] std::optional<BlockState> block(BlockPos pos) const noexcept;
 
@@ -305,6 +316,9 @@ private:
 
     Versions<ChunkStorage> blocks_;
     Versions<ChunkPlan> plans_;
+    std::uint64_t generated_ = 0;
+    std::uint64_t classified_uniform_ = 0;
+    std::chrono::nanoseconds longest_step_{0};
     JobRecords job_records_;
     std::vector<GenScratch> scratch_; // one for each worker
     Inbox<StreamResult> results_;

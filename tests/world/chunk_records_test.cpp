@@ -234,3 +234,130 @@ TEST_CASE("under random adds, state changes and removes, every count matches its
     check_counts(records);
     CHECK(changes > 1'000);
 }
+
+TEST_CASE("the check counts a record whose counts or state break the rules, and only those") {
+    ChunkRecords records;
+    const auto nothing = [](std::uint32_t) {};
+    // A chunk and its 26 neighbors, all ready: the chunk is complete.
+    std::vector<std::uint32_t> around;
+    const std::uint32_t chunk = records.add(middle, 1);
+    for (std::int32_t dy = -1; dy <= 1; ++dy) {
+        for (std::int32_t dz = -1; dz <= 1; ++dz) {
+            for (std::int32_t dx = -1; dx <= 1; ++dx) {
+                if (dx != 0 || dy != 0 || dz != 0) {
+                    around.push_back(records.add(
+                        {.x = middle.x + dx, .y = middle.y + dy, .z = middle.z + dz}, 2));
+                }
+            }
+        }
+    }
+    for (const std::uint32_t index : around) {
+        records.set_state(index, ChunkState::ready, nothing);
+    }
+    records.set_state(chunk, ChunkState::complete, nothing);
+    CHECK(records.broken() == 0);
+    // A count off by one, which no state rule sees: only the recount.
+    ++records[chunk].planned_neighbors;
+    CHECK(records.broken() == 1);
+    --records[chunk].planned_neighbors;
+    records[around.front()].loaded_near = 3;
+    CHECK(records.broken() == 1);
+    records[around.front()].loaded_near = 0;
+    // One a state rule sees too: complete with 27 ready.
+    ++records[chunk].ready_neighbors;
+    CHECK(records.broken() == 1);
+    --records[chunk].ready_neighbors;
+    // Drawn but not loaded.
+    records[chunk].drawn = true;
+    CHECK(records.broken() >= 1);
+    records[chunk].drawn = false;
+    // Ready with all 26 around it ready: it should be complete.
+    records.set_state(chunk, ChunkState::ready, nothing);
+    CHECK(records.broken() == 1);
+    records.set_state(chunk, ChunkState::complete, nothing);
+    CHECK(records.broken() == 0);
+}
+
+TEST_CASE("the halves disagree on a chunk the mesh half holds and that is not shown, or the other "
+          "way round") {
+    ChunkRecords records;
+    const auto nothing = [](std::uint32_t) {};
+    std::vector<std::uint32_t> around;
+    const std::uint32_t chunk = records.add(middle, 1);
+    for (std::int32_t dy = -1; dy <= 1; ++dy) {
+        for (std::int32_t dz = -1; dz <= 1; ++dz) {
+            for (std::int32_t dx = -1; dx <= 1; ++dx) {
+                if (dx != 0 || dy != 0 || dz != 0) {
+                    around.push_back(records.add(
+                        {.x = middle.x + dx, .y = middle.y + dy, .z = middle.z + dz}, 2));
+                }
+            }
+        }
+    }
+    for (const std::uint32_t index : around) {
+        records.set_state(index, ChunkState::ready, nothing);
+    }
+    records.set_state(chunk, ChunkState::complete, nothing);
+    records[chunk].drawn = true;
+    records[chunk].loaded = true;
+    REQUIRE(vx::shown(records[chunk]));
+    // The mesh half holds the shown chunk, and nothing else.
+    std::vector<bool> held(records.end_index(), false);
+    held[chunk] = true;
+    const auto holds = [&held](std::uint32_t index) { return static_cast<bool>(held[index]); };
+    CHECK(records.disagreements(holds) == 0);
+    // Shown, and not held.
+    held[chunk] = false;
+    CHECK(records.disagreements(holds) == 1);
+    // Held, and not shown: drawn no more, or not complete.
+    held[chunk] = true;
+    records[chunk].drawn = false;
+    CHECK(records.disagreements(holds) == 1);
+    records[chunk].drawn = true;
+    records.set_state(chunk, ChunkState::ready, nothing);
+    CHECK(records.disagreements(holds) == 1);
+    // A neighbor held, never shown.
+    records.set_state(chunk, ChunkState::complete, nothing);
+    held[around.front()] = true;
+    CHECK(records.disagreements(holds) == 1);
+    // A slot a record left counts for nothing, held or not.
+    const std::uint32_t gone = records.add({.x = middle.x + 5, .y = middle.y, .z = middle.z}, 3);
+    records.remove(gone, nothing);
+    REQUIRE_FALSE(records.live(gone));
+    held.resize(records.end_index(), false);
+    held[gone] = true;
+    CHECK(records.disagreements(holds) == 1);
+}
+
+TEST_CASE("records outside the region grown by the hysteresis are counted, but an edited one and "
+          "one unloading") {
+    ChunkRecords records;
+    const auto nothing = [](std::uint32_t) {};
+    const vx::RegionSettings settings{
+        .view_distance = 3, .near_distance = 1, .near_height = 1, .hysteresis = 2};
+    const vx::Region kept = vx::Region({}, settings).grown(settings.hysteresis);
+    REQUIRE(kept.column_planned({.x = 5, .z = 0}));
+    REQUIRE_FALSE(kept.column_planned({.x = 12, .z = 0}));
+    records.add({}, 1);
+    records.add({.x = 5, .y = 9, .z = 0}, 2);
+    CHECK(records.outside(kept) == 0);
+    const std::uint32_t far = records.add({.x = 12, .y = 0, .z = 0}, 3);
+    CHECK(records.outside(kept) == 1);
+    records[far].edited = true;
+    CHECK(records.outside(kept) == 0);
+    records[far].edited = false;
+    records.set_state(far, ChunkState::unloading, nothing);
+    CHECK(records.outside(kept) == 0);
+    records.set_state(far, ChunkState::ready, nothing);
+    CHECK(records.outside(kept) == 1);
+    // A slot a record left lies at the origin, outside a region elsewhere,
+    // and counts for nothing.
+    const vx::Region elsewhere = vx::Region({.x = 100, .y = 0, .z = 100}, settings).grown(2);
+    ChunkRecords moved;
+    moved.add({.x = 100, .y = 0, .z = 100}, 1);
+    const std::uint32_t gone = moved.add({.x = 101, .y = 0, .z = 100}, 2);
+    moved.remove(gone, nothing);
+    REQUIRE_FALSE(moved.live(gone));
+    REQUIRE_FALSE(elsewhere.column_planned({}));
+    CHECK(moved.outside(elsewhere) == 0);
+}

@@ -5,6 +5,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <utility>
 
 namespace vx {
 namespace {
@@ -19,6 +20,10 @@ std::uint8_t outside_neighbors(ChunkPos pos) noexcept {
 }
 
 } // namespace
+
+bool shown(const ChunkRecord& record) noexcept {
+    return record.state == ChunkState::complete && record.drawn;
+}
 
 std::uint32_t ChunkRecords::add(ChunkPos pos, std::uint32_t load_id) {
     std::uint32_t index = 0;
@@ -46,6 +51,61 @@ std::uint32_t ChunkRecords::add(ChunkPos pos, std::uint32_t load_id) {
                                                            counted(counts_as_ready(other.state)));
     });
     return index;
+}
+
+std::uint32_t ChunkRecords::broken() const {
+    std::uint32_t broken = 0;
+    for (std::uint32_t index = 0; index < end_index(); ++index) {
+        if (!live(index)) {
+            continue;
+        }
+        const ChunkRecord& record = records_[index];
+        int planned = outside_neighbors(record.pos);
+        int ready = planned;
+        int drawn = counted(record.drawn); // itself included
+        int loaded = counted(record.loaded);
+        for_neighbors(record.pos, [&](std::uint32_t neighbor) {
+            const ChunkRecord& other = records_[neighbor];
+            planned += counted(counts_as_planned(other.state));
+            ready += counted(counts_as_ready(other.state));
+            drawn += counted(other.drawn);
+            loaded += counted(other.loaded);
+        });
+        const bool counts = std::cmp_equal(record.planned_neighbors, planned) &&
+                            std::cmp_equal(record.ready_neighbors, ready) &&
+                            std::cmp_equal(record.drawn_near, drawn) &&
+                            std::cmp_equal(record.loaded_near, loaded);
+        bool state = !record.drawn || record.loaded;
+        switch (record.state) {
+        case ChunkState::build_queued:
+            state = state && record.loaded && record.planned_neighbors == 26;
+            break;
+        case ChunkState::ready:
+            state = state && record.ready_neighbors < 26;
+            break;
+        case ChunkState::complete:
+            state = state && record.ready_neighbors == 26;
+            break;
+        default:
+            break;
+        }
+        if (!counts || !state) {
+            ++broken;
+        }
+    }
+    return broken;
+}
+
+std::uint32_t ChunkRecords::outside(const Region& kept) const {
+    std::uint32_t count = 0;
+    for (std::uint32_t index = 0; index < end_index(); ++index) {
+        const ChunkRecord& record = records_[index];
+        if (live(index) && !record.edited && record.state != ChunkState::unloading &&
+            !kept.column_planned({.x = record.pos.x, .z = record.pos.z})) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 } // namespace vx
