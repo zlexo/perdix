@@ -214,6 +214,13 @@ Vec3d guard_edge(const Box& box, Vec3d wanted, double max_drop,
     return {.x = x, .y = wanted.y, .z = z};
 }
 
+Box gathered_region(const Box& box, Vec3d wanted, const MoveRules& rules) noexcept {
+    Box region = swept(box, wanted);
+    region.min.y -= std::max(rules.edge_drop, 0.0);
+    region.max.y += std::max(rules.step_height, 0.0);
+    return region;
+}
+
 Move move_box(const Box& box, Vec3d wanted, const BlockBoxes& world, std::vector<Box>& scratch,
               const MoveRules& rules) {
     const auto finite = [](const Vec3d& v) {
@@ -223,11 +230,8 @@ Move move_box(const Box& box, Vec3d wanted, const BlockBoxes& world, std::vector
         !std::isfinite(rules.step_height) || !std::isfinite(rules.edge_drop)) {
         return {};
     }
-    Box region = swept(box, wanted);
-    region.min.y -= std::max(rules.edge_drop, 0.0);
-    region.max.y += std::max(rules.step_height, 0.0);
     scratch.clear();
-    world.collect(region, scratch);
+    world.collect(gathered_region(box, wanted, rules), scratch);
     const Vec3d guarded =
         rules.edge_drop > 0.0 ? guard_edge(box, wanted, rules.edge_drop, scratch) : wanted;
     return clip_move_stepping(box, guarded, rules.started_on_ground, rules.step_height, scratch);
