@@ -46,6 +46,13 @@ TEST_CASE("every option is read, and none at all is a run with nothing set") {
     const vx::Result<vx::app::Options> off = parse({"--no-minecraft"});
     REQUIRE(off.has_value());
     CHECK(off.value().no_minecraft);
+    CHECK(none.value().flythrough == vx::app::Flythrough::none);
+    const vx::Result<vx::app::Options> fly = parse({"--flythrough"});
+    REQUIRE(fly.has_value());
+    CHECK(fly.value().flythrough == vx::app::Flythrough::full);
+    const vx::Result<vx::app::Options> quick = parse({"--flythrough=quick"});
+    REQUIRE(quick.has_value());
+    CHECK(quick.value().flythrough == vx::app::Flythrough::quick);
 }
 
 TEST_CASE("options that cannot be used say which, and why") {
@@ -58,6 +65,7 @@ TEST_CASE("options that cannot be used say which, and why") {
           "--no-minecraft goes without --minecraft and --minecraft-version");
     CHECK(error_of({"--frames=many"}) == "--frames takes a whole number, not \"many\"");
     CHECK(error_of({"--fly"}).starts_with("unknown option \"--fly\": try --frames=N"));
+    CHECK(error_of({"--flythrough=slow"}).starts_with("unknown option \"--flythrough=slow\""));
 }
 
 TEST_CASE("--no-minecraft turns the game off, and the environment fills the search") {

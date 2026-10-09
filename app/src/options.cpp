@@ -27,6 +27,8 @@ Result<Options> parse_options(std::span<const std::string_view> args) {
     constexpr std::string_view minecraft_flag = "--minecraft=";
     constexpr std::string_view minecraft_version_flag = "--minecraft-version=";
     constexpr std::string_view no_minecraft_flag = "--no-minecraft";
+    constexpr std::string_view flythrough_flag = "--flythrough";
+    constexpr std::string_view quick_flythrough_flag = "--flythrough=quick";
     Options options;
     for (const std::string_view arg : args) {
         if (arg == overlay_flag) {
@@ -45,6 +47,10 @@ Result<Options> parse_options(std::span<const std::string_view> args) {
             options.minecraft_version = std::string(arg.substr(minecraft_version_flag.size()));
         } else if (arg == no_minecraft_flag) {
             options.no_minecraft = true;
+        } else if (arg == flythrough_flag) {
+            options.flythrough = Flythrough::full;
+        } else if (arg == quick_flythrough_flag) {
+            options.flythrough = Flythrough::quick;
         } else if (arg.starts_with(frames_flag)) {
             const std::string_view value = arg.substr(frames_flag.size());
             const auto [parsed_to, error] =
@@ -55,7 +61,7 @@ Result<Options> parse_options(std::span<const std::string_view> args) {
         } else {
             return Error{"unknown option \"" + std::string(arg) +
                          "\": try --frames=N, --overlay, --pack=DIR, --minecraft=PATH, "
-                         "--minecraft-version=ID or --no-minecraft"};
+                         "--minecraft-version=ID, --no-minecraft or --flythrough[=quick]"};
         }
     }
     if (options.no_minecraft && (options.minecraft || options.minecraft_version)) {

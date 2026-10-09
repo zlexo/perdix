@@ -167,6 +167,7 @@ add_executable(vx_app_tests
     main.cpp
     app/flythrough_run_test.cpp
     app/flythrough_test.cpp
+    app/footprint_test.cpp
     app/options_test.cpp
     app/startup_pack_test.cpp
     app/streamed_meshes_test.cpp

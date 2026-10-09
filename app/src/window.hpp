@@ -60,6 +60,10 @@ public:
     // The drawable size in pixels, which on a high-density display is larger
     // than the window's size in points; zero while the window is minimized.
     [[nodiscard]] render::Extent framebuffer_size() const;
+    // Sizes the window so that its drawable is `pixels`, at the display's
+    // pixel density, as RFC 0006's flythrough asks. False when it is not:
+    // the display is too small, or the density does not divide it.
+    [[nodiscard]] bool set_framebuffer_size(render::Extent pixels);
 
     [[nodiscard]] SDL_Window* handle() const noexcept { return window_; }
 
