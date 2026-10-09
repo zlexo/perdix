@@ -57,6 +57,13 @@ target_link_libraries(vx_app_world PUBLIC vx::core vx::world vx::mesh vx_app_pla
 vx_target_warnings(vx_app_world)
 vx_target_engine_options(vx_app_world)
 
+# RFC 0006's benchmark flythrough: its camera path.
+add_library(vx_app_flythrough STATIC src/flythrough.cpp)
+target_include_directories(vx_app_flythrough PUBLIC src)
+target_link_libraries(vx_app_flythrough PUBLIC vx::core)
+vx_target_warnings(vx_app_flythrough)
+vx_target_engine_options(vx_app_flythrough)
+
 # The world thread's meshes handed to RFC 0007's uploads, on the main thread.
 add_library(vx_app_stream STATIC src/streamed_meshes.cpp)
 target_include_directories(vx_app_stream PUBLIC src)
