@@ -37,3 +37,16 @@ vx_target_warnings(vx_bench)
 if(VX_BUILD_TESTS)
     add_test(NAME "the benchmarks run" COMMAND vx_bench --quick)
 endif()
+
+# RFC 0007's draw overhead benchmark (its pull request plan item 2): a
+# program of its own, since it needs a Vulkan driver, which only CI's
+# lavapipe job has. Run a release build once with each driver for numbers.
+add_executable(vx_draw_bench render/draw_overhead_main.cpp)
+target_link_libraries(vx_draw_bench PRIVATE vx::render)
+vx_add_shaders(vx_draw_bench render/shaders/draw_overhead.slang)
+vx_target_warnings(vx_draw_bench)
+
+if(VX_BUILD_TESTS)
+    add_test(NAME "the draw overhead benchmark runs" COMMAND vx_draw_bench --quick)
+    set_tests_properties("the draw overhead benchmark runs" PROPERTIES LABELS vulkan)
+endif()
