@@ -165,6 +165,7 @@ doctest_discover_tests(vx_render_vulkan_tests PROPERTIES ${VX_VULKAN_DOCTEST_PRO
 # 0009), from packs and jars the tests write; no window, no GPU.
 add_executable(vx_app_tests
     main.cpp
+    app/flythrough_run_test.cpp
     app/flythrough_test.cpp
     app/options_test.cpp
     app/startup_pack_test.cpp
