@@ -53,6 +53,8 @@ public:
     std::vector<Box> boxes;
     mutable std::vector<Box> regions;
 
+    [[nodiscard]] double slipperiness(BlockPos /*block*/) const override { return 0.6; }
+
     void collect(const Box& region, std::vector<Box>& out) const override {
         regions.push_back(region);
         for (const Box& box : boxes) {
@@ -83,6 +85,11 @@ public:
     static constexpr double reach = 1e6;
 
     std::vector<Box> boxes;
+    double floor_slipperiness = 0.6; // the floor's blocks; the loose boxes are 0.6
+
+    [[nodiscard]] double slipperiness(BlockPos block) const override {
+        return block.y < 0 ? floor_slipperiness : 0.6;
+    }
 
     void collect(const Box& region, std::vector<Box>& out) const override {
         // The blocks under y = 0 that the region overlaps or touches, as far

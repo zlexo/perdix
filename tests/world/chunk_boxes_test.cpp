@@ -1,4 +1,5 @@
 #include <vx/core/vec3d.hpp>
+#include <vx/world/block_physics.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/chunk_boxes.hpp>
 #include <vx/world/chunk_storage.hpp>
@@ -8,6 +9,8 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
+#include <initializer_list>
 #include <limits>
 #include <vector>
 
@@ -158,4 +161,52 @@ TEST_CASE("a box falls onto a chunk's floor and stands on it") {
     const vx::Move move = vx::move_box(falling, {.x = 0.0, .y = -5.0, .z = 0.0}, boxes, scratch);
     CHECK(move.motion.y == -3.0);
     CHECK(move.on_ground);
+}
+
+TEST_CASE("a state the physics do not cover is a full cube on default ground") {
+    // RFC 0010: a chunk holding a state past the registry's physics, as one
+    // from another registry would, still collides with it.
+    vx::ChunkStorage chunk;
+    chunk.set(vx::local_index(4, 0, 4), stone);
+    const Box region{.min = {.x = 4.2, .y = 0.5, .z = 4.2}, .max = {.x = 4.8, .y = 0.9, .z = 4.8}};
+    const std::array<vx::BlockPhysics, 1> air_only{};
+    const vx::ChunkBoxes past(chunk, {}, air_only);
+    std::vector<Box> out;
+    past.collect(region, out);
+    CHECK(out == std::vector<Box>{block(4.0, 0.0, 4.0)});
+    CHECK(past.slipperiness({.x = 4, .y = 0, .z = 4}) == 0.6);
+    // Covered, the same state is as its physics say.
+    const std::array<vx::BlockPhysics, 2> covered{
+        vx::BlockPhysics{},
+        vx::BlockPhysics{.collision = vx::Collision::none, .slipperiness = 0.98}};
+    const vx::ChunkBoxes read(chunk, {}, covered);
+    out.clear();
+    read.collect(region, out);
+    CHECK(out.empty());
+    CHECK(read.slipperiness({.x = 4, .y = 0, .z = 4}) == 0.98);
+}
+
+TEST_CASE("one block past each face of the chunk, the slipperiness is default ground") {
+    vx::ChunkStorage chunk;
+    for (int y = 0; y < vx::chunk_size; ++y) {
+        for (int z = 0; z < vx::chunk_size; ++z) {
+            for (int x = 0; x < vx::chunk_size; ++x) {
+                chunk.set(vx::local_index(x, y, z), stone);
+            }
+        }
+    }
+    const std::array<vx::BlockPhysics, 2> icy{
+        vx::BlockPhysics{},
+        vx::BlockPhysics{.collision = vx::Collision::full, .slipperiness = 0.98}};
+    // The chunk at (1, -1, 0): its blocks run from (32, -32, 0) to (63, -1, 31).
+    const vx::ChunkBoxes boxes(chunk, {.x = 1, .y = -1, .z = 0}, icy);
+    CHECK(boxes.slipperiness({.x = 32, .y = -32, .z = 0}) == 0.98);
+    CHECK(boxes.slipperiness({.x = 63, .y = -1, .z = 31}) == 0.98);
+    for (const vx::BlockPos past :
+         {vx::BlockPos{.x = 31, .y = -32, .z = 0}, vx::BlockPos{.x = 64, .y = -32, .z = 0},
+          vx::BlockPos{.x = 32, .y = -33, .z = 0}, vx::BlockPos{.x = 32, .y = 0, .z = 0},
+          vx::BlockPos{.x = 32, .y = -32, .z = -1}, vx::BlockPos{.x = 32, .y = -32, .z = 32}}) {
+        INFO(past.x, " ", past.y, " ", past.z);
+        CHECK(boxes.slipperiness(past) == 0.6);
+    }
 }

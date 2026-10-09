@@ -2,8 +2,10 @@
 
 #include <vx/core/vec3d.hpp>
 #include <vx/world/collision.hpp>
+#include <vx/world/coordinates.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace vx {
@@ -65,12 +67,16 @@ struct Player {
     // Whether that cut was a graze, the move going less than 8 degrees from
     // where the keys pointed; a graze keeps a sprint.
     bool minor_horizontal_collision = false;
-    int jump_cooldown = 0;  // ticks before a held jump may jump again
-    int sprint_window = 0;  // ticks left for W's second press to start a sprint
-    bool flying = false;    // in creative flight
-    bool may_fly = true;    // in creative mode: Space pressed twice toggles flight
-    int fly_window = 0;     // ticks left for Space's second press to toggle flight
-    MovementKeys last_held; // the last tick's keys, to tell a fresh press
+    int jump_cooldown = 0; // ticks before a held jump may jump again
+    int sprint_window = 0; // ticks left for W's second press to start a sprint
+    bool flying = false;   // in creative flight
+    bool may_fly = true;   // in creative mode: Space pressed twice toggles flight
+    int fly_window = 0;    // ticks left for Space's second press to toggle flight
+    // The block that holds the player up, chosen after each move on the
+    // ground (RFC 0010; 26.2's way, from its jar); none in the air.
+    std::optional<BlockPos> supporting;
+    bool ground_without_block = false; // the last move on the ground found none
+    MovementKeys last_held;            // the last tick's keys, to tell a fresh press
 };
 
 // The box of a body at `position` in `pose`: 0.6 wide, and 1.8 tall standing

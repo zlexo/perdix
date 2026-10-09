@@ -1,6 +1,7 @@
 #include <vx/world/chunk_boxes.hpp>
 
 #include <vx/core/vec3d.hpp>
+#include <vx/world/block_physics.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/chunk_storage.hpp>
 #include <vx/world/collision.hpp>
@@ -8,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <vector>
@@ -34,8 +36,34 @@ Span touching(double low, double high, std::int32_t origin) noexcept {
 
 } // namespace
 
-ChunkBoxes::ChunkBoxes(const ChunkStorage& chunk, ChunkPos position) noexcept
-    : chunk_(&chunk), origin_(block_at(position, {})) {}
+ChunkBoxes::ChunkBoxes(const ChunkStorage& chunk, ChunkPos position,
+                       std::span<const BlockPhysics> physics) noexcept
+    : chunk_(&chunk), origin_(block_at(position, {})), physics_(physics) {}
+
+BlockPhysics ChunkBoxes::physics_of(BlockState state) const noexcept {
+    const auto index = static_cast<std::size_t>(state);
+    if (index < physics_.size()) {
+        return physics_[index];
+    }
+    const bool air = physics_.empty() && state == BlockState::air;
+    return {.collision = air ? Collision::none : Collision::full,
+            .slipperiness = BlockPhysics{}.slipperiness};
+}
+
+double ChunkBoxes::slipperiness(BlockPos block) const {
+    // In 64 bits, so a block far from the chunk never overflows the
+    // difference.
+    const std::int64_t x = std::int64_t{block.x} - origin_.x;
+    const std::int64_t y = std::int64_t{block.y} - origin_.y;
+    const std::int64_t z = std::int64_t{block.z} - origin_.z;
+    const auto inside = [](std::int64_t value) { return value >= 0 && value < chunk_size; };
+    if (!inside(x) || !inside(y) || !inside(z)) {
+        return BlockPhysics{}.slipperiness;
+    }
+    return physics_of(chunk_->get(local_index(static_cast<int>(x), static_cast<int>(y),
+                                              static_cast<int>(z))))
+        .slipperiness;
+}
 
 void ChunkBoxes::collect(const Box& region, std::vector<Box>& out) const {
     for (const double coordinate :
@@ -50,7 +78,7 @@ void ChunkBoxes::collect(const Box& region, std::vector<Box>& out) const {
     for (int y = ys.first; y <= ys.last; ++y) {
         for (int z = zs.first; z <= zs.last; ++z) {
             for (int x = xs.first; x <= xs.last; ++x) {
-                if (chunk_->get(local_index(x, y, z)) == BlockState::air) {
+                if (physics_of(chunk_->get(local_index(x, y, z))).collision == Collision::none) {
                     continue;
                 }
                 const Vec3d low{.x = static_cast<double>(origin_.x + x),

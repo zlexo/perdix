@@ -307,7 +307,7 @@ int main(int argc, char* argv[]) {
     // The player stands on the grass in one corner of the chunk, looking
     // across it at the oak (RFC 0010); F4 switches to RFC 0001's noclip
     // camera and back.
-    const vx::ChunkBoxes blocks(demo.blocks, {});
+    const vx::ChunkBoxes blocks(demo.blocks, {}, pack.registry->physics());
     vx::render::Camera camera;
     camera.yaw = 0.785F;   // toward -x and -z, an eighth of a turn left of north
     camera.pitch = -0.15F; // a little down, at the oak
