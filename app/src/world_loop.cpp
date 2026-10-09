@@ -3,6 +3,7 @@
 #include <vx/core/inbox.hpp>
 #include <vx/core/job_system.hpp>
 #include <vx/core/mesh_result_pool.hpp>
+#include <vx/core/vec3d.hpp>
 #include <vx/mesh/mesh_chunk.hpp>
 #include <vx/mesh/padded_chunk.hpp>
 #include <vx/mesh/quad.hpp>
@@ -10,8 +11,10 @@
 #include <vx/world/block_visual.hpp>
 #include <vx/world/chunk_records.hpp>
 #include <vx/world/chunk_storage.hpp>
+#include <vx/world/collision.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/job_record.hpp>
+#include <vx/world/movement.hpp>
 #include <vx/world/versions.hpp>
 #include <vx/world/world_streamer.hpp>
 
@@ -92,10 +95,13 @@ WorldLoop::WorldLoop(const Generator& generator, std::span<const BlockVisual> vi
       from_main_(64, wake_), mesh_results_(std::size_t{2} * jobs.slot_count(), wake_),
       scratch_(std::max<std::uint32_t>(1, jobs.worker_count())),
       context_{.visuals = visuals, .pool = &pool, .results = &mesh_results_, .scratch = nullptr},
-      to_main_(1'024, main_wake_) {
+      to_main_(1'024, main_wake_), boxes_(streamer_, settings.physics) {
     context_.scratch = scratch_.data();
     if (settings.clock != nullptr) {
         streamer_.set_clock(*settings.clock);
+    }
+    if (settings.player) {
+        walking_.emplace(settings.player->spawn, settings.player->lowest);
     }
 }
 
@@ -164,24 +170,36 @@ std::chrono::steady_clock::time_point WorldLoop::step(std::chrono::steady_clock:
         next_tick_ = now;
     }
     while (now >= next_tick_) {
-        tick();
+        tick(next_tick_);
         next_tick_ += tick_length;
     }
     // Results left from a step: the next pass comes now, not at the tick.
     return behind_ ? now : next_tick_;
 }
 
-void WorldLoop::tick() {
+void WorldLoop::tick(std::chrono::steady_clock::time_point due) {
     FrameMarkStart(tick_frame);
     {
         ZoneScopedN("Tick");
-        run_tick();
+        run_tick(due);
     }
     FrameMarkEnd(tick_frame);
 }
 
-void WorldLoop::run_tick() {
+void WorldLoop::run_tick(std::chrono::steady_clock::time_point due) {
     ++ticks_;
+    last_tick_ = due;
+    // The player moves with the keys held now, against the streamed chunks,
+    // unless its move could touch one not ready yet: then it waits where it
+    // is, keeping its speed, until that chunk is (RFC 0010's open question 7).
+    if (walking_) {
+        if (boxes_.ready(tick_reach(walking_->player()))) {
+            walking_->tick(input_, boxes_);
+        } else {
+            walking_->hold();
+        }
+        send_player(due);
+    }
     const bool catching_up = missing_near_camera();
     if (catching_up != catching_up_) {
         catching_up_ = catching_up;
@@ -233,6 +251,12 @@ void WorldLoop::handle(ToWorld& message) {
         // difference would wrap and hold streaming back for good.
         uploaded_ = std::min(std::max(uploaded_, message.uploaded), sent_);
         break;
+    case ToWorld::Kind::input:
+        input_ = message.input;
+        break;
+    case ToWorld::Kind::land:
+        land(message.feet);
+        break;
     case ToWorld::Kind::meshing:
         remesh(message.meshing);
         break;
@@ -253,6 +277,36 @@ void WorldLoop::remesh(MeshOptions options) {
             queue_mesh(index, false);
         }
     }
+}
+
+void WorldLoop::land(Vec3d feet) {
+    // Where a standing player fits, inside no block and no chunk still
+    // loading: the noclip camera may not land the player in a wall.
+    bool landed = false;
+    if (walking_) {
+        const Box body = body_box(feet, Pose::standing);
+        std::vector<Box> inside;
+        boxes_.collect(body, inside);
+        if (!overlaps_any(body, inside)) {
+            walking_->place(feet);
+            landed = true;
+            // At once, so the camera never shows where the player was.
+            send_player(last_tick_);
+        }
+    }
+    ToMain message;
+    message.kind = ToMain::Kind::landed;
+    message.landed = landed;
+    to_main_.push(std::move(message));
+}
+
+void WorldLoop::send_player(std::chrono::steady_clock::time_point at) {
+    assert(walking_.has_value());
+    ToMain message;
+    message.kind = ToMain::Kind::player;
+    message.player = walking_->frame();
+    message.tick_at = at;
+    to_main_.push(std::move(message));
 }
 
 void WorldLoop::edit(BlockPos block, BlockState state) {

@@ -152,6 +152,13 @@ public:
                 held.erase(chunk_of(message.pos));
                 ++unloads;
                 break;
+            case ToMain::Kind::player:
+                player = message.player;
+                tick_times.push_back(message.tick_at);
+                break;
+            case ToMain::Kind::landed:
+                landings.push_back(message.landed);
+                break;
             }
         }
     }
@@ -179,6 +186,9 @@ public:
     std::size_t batches = 0;
     std::size_t unloads = 0;
     std::vector<Chunk> last_batch;
+    vx::app::WalkingFrame player;
+    std::vector<std::chrono::steady_clock::time_point> tick_times;
+    std::vector<bool> landings;
 
 private:
     void take(const vx::app::MeshUpdate& update) {
@@ -877,6 +887,183 @@ TEST_CASE("held back by the main thread, the meshes known empty at the front sti
     CHECK(main.meshes == loop.meshes_skipped());
     CHECK(loop.meshes_in_flight() == 0);
     CHECK(main.held.size() < shown(loop).size());
+}
+
+namespace {
+
+// A loop with a player standing over block column (100, 100), streamed in
+// around it unless `streamed` is false, and the main thread's view of what it
+// sends.
+struct Walker {
+    vx::PlaceholderGenerator generator{0x5EED, blocks};
+    std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs{{}};
+    vx::MeshResultPool pool;
+    std::int32_t ground = generator.height(100, 100);
+    std::optional<WorldLoop> loop;
+    MainThread main;
+    std::chrono::steady_clock::time_point now{};
+
+    explicit Walker(double above, bool streamed = true) {
+        vx::app::WorldLoopSettings settings{.region = small};
+        settings.player = vx::app::WorldLoopSettings::PlayerStart{
+            .spawn = {.x = 100.5, .y = ground + above, .z = 100.5}, .lowest = -64.0};
+        loop.emplace(generator, table, jobs, pool, settings);
+        if (streamed) {
+            stream_in();
+        }
+    }
+
+    // The region streamed in around the player.
+    void stream_in() {
+        move_camera(*loop, {.x = 3, .y = ground / 32, .z = 3});
+        loop->settle();
+    }
+
+    // `count` ticks on the loop's clock, 50 ms apart.
+    void ticks(int count) {
+        for (int tick = 0; tick < count; ++tick) {
+            now += WorldLoop::tick_length;
+            loop->step(now);
+        }
+        std::vector<ToMain> messages;
+        loop->take(messages);
+        main.receive(messages);
+    }
+
+    void send(const vx::TickInput& input) {
+        ToWorld message;
+        message.kind = ToWorld::Kind::input;
+        message.input = input;
+        loop->to_world().push(std::move(message));
+    }
+
+    void land(vx::Vec3d feet) {
+        ToWorld message;
+        message.kind = ToWorld::Kind::land;
+        message.feet = feet;
+        loop->to_world().push(std::move(message));
+        loop->pass();
+        std::vector<ToMain> messages;
+        loop->take(messages);
+        main.receive(messages);
+    }
+};
+
+} // namespace
+
+TEST_CASE("the player falls onto the streamed hills on the loop's ticks, and walks with the keys") {
+    Walker walker(3.0);
+    // The first step starts the clock; each after it runs a tick, and every
+    // tick's frame goes to the main thread with when it fell due.
+    walker.ticks(41);
+    REQUIRE(walker.main.tick_times.size() == 40);
+    for (std::size_t at = 1; at < walker.main.tick_times.size(); ++at) {
+        CHECK(walker.main.tick_times[at] - walker.main.tick_times[at - 1] ==
+              WorldLoop::tick_length);
+    }
+    CHECK(walker.main.player.on_ground);
+    CHECK(walker.main.player.position.y == doctest::Approx(walker.ground));
+    CHECK(walker.main.player.ticks == 40);
+    // W held, facing north (-z): a second of walking, 4.3 blocks.
+    walker.send({.held = {.forward = true}, .yaw = 0.0F});
+    walker.ticks(20);
+    CHECK(walker.main.player.position.z < 100.5 - 3.0);
+    CHECK(walker.main.player.position.x == doctest::Approx(100.5));
+    // Let go: it stops.
+    walker.send({});
+    walker.ticks(20);
+    CHECK(walker.main.player.speed() == doctest::Approx(0.0));
+}
+
+TEST_CASE("a player in a chunk not ready yet waits there, keys and all, until it is") {
+    // Nothing streamed in: the chunk the player starts in is a solid cube to
+    // moves, which cannot hold up a body already inside it.
+    Walker walker(3.0, false);
+    const vx::Vec3d spawn{.x = 100.5, .y = walker.ground + 3.0, .z = 100.5};
+    walker.send({.held = {.forward = true}, .yaw = 0.0F});
+    walker.ticks(41);
+    // Every tick still sends its frame, with the player where it started.
+    CHECK(walker.main.tick_times.size() == 40);
+    CHECK(walker.main.player.position == spawn);
+    CHECK(walker.main.player.previous == spawn);
+    CHECK(walker.main.player.ticks == 0);
+    // Streamed in, it falls onto the ground below and walks from there.
+    walker.send({});
+    walker.stream_in();
+    walker.ticks(20);
+    CHECK(walker.main.player.ticks == 20);
+    CHECK(walker.main.player.on_ground);
+    CHECK(walker.main.player.position.y == doctest::Approx(walker.ground));
+    walker.send({.held = {.forward = true}, .yaw = 0.0F});
+    walker.ticks(20);
+    CHECK(walker.main.player.position.z < 100.5 - 3.0);
+}
+
+TEST_CASE(
+    "a player whose move could touch a chunk not loaded waits short of it, keeping its speed") {
+    // Streamed in around chunk x = 3: chunks up to x = 7 are loaded, and x =
+    // 8, from block 256 on, is not.
+    Walker walker(3.0);
+    walker.ticks(41);
+    std::int32_t top = 0;
+    for (std::int32_t x = 248; x < 280; ++x) {
+        top = std::max(top, walker.generator.height(x, 100));
+    }
+    const vx::Vec3d start{.x = 248.5, .y = top + 4.0, .z = 100.5};
+    walker.land(start);
+    REQUIRE(walker.main.landings.back());
+    // Space twice to fly, then east (+x) over the hills.
+    constexpr float east = -1.5707964F;
+    walker.send({.held = {.jump = true}, .yaw = east});
+    walker.ticks(1);
+    walker.send({.held = {}, .yaw = east});
+    walker.ticks(1);
+    walker.send({.held = {.jump = true}, .yaw = east});
+    walker.ticks(1);
+    REQUIRE(walker.main.player.flying);
+    walker.send({.held = {.forward = true}, .yaw = east});
+    walker.ticks(40);
+    // Stopped short of block 256 by what its next move could touch, still,
+    // and with its speed kept for when it goes on.
+    const vx::app::WalkingFrame held = walker.main.player;
+    CHECK(held.position.x > start.x + 3.0);
+    CHECK(held.position.x < 256.0 - 1.0);
+    CHECK(held.previous == held.position);
+    REQUIRE(walker.loop->walking() != nullptr);
+    CHECK(walker.loop->walking()->player().velocity.x > 0.2);
+    // Streamed in further east, it flies on.
+    move_camera(*walker.loop, {.x = 7, .y = walker.ground / 32, .z = 3});
+    walker.loop->settle();
+    walker.ticks(20);
+    CHECK(walker.main.player.position.x > 256.0);
+}
+
+TEST_CASE("the noclip camera lands the player only where a standing player fits") {
+    Walker walker(3.0);
+    walker.ticks(41);
+    // Inside the ground: refused, and the player stays where it was.
+    const vx::Vec3d before = walker.main.player.position;
+    walker.land({.x = 100.5, .y = walker.ground - 3.0, .z = 100.5});
+    REQUIRE(walker.main.landings.size() == 1);
+    CHECK_FALSE(walker.main.landings.back());
+    CHECK(walker.main.player.position == before);
+    // In a chunk still loading, past the streamed region: refused too.
+    walker.land({.x = 400.5, .y = walker.ground + 5.0, .z = 100.5});
+    REQUIRE(walker.main.landings.size() == 2);
+    CHECK_FALSE(walker.main.landings.back());
+    CHECK(walker.main.player.position == before);
+    // In the air above it: landed there at once, still, before any tick.
+    const vx::Vec3d air{.x = 101.5, .y = walker.ground + 5.0, .z = 98.5};
+    walker.land(air);
+    REQUIRE(walker.main.landings.size() == 3);
+    CHECK(walker.main.landings.back());
+    CHECK(walker.main.player.position == air);
+    CHECK(walker.main.player.previous == air);
+    // Then it falls to the ground on the ticks.
+    walker.ticks(40);
+    CHECK(walker.main.player.on_ground);
+    CHECK(walker.main.player.position.y == doctest::Approx(walker.generator.height(101, 98)));
 }
 
 TEST_CASE("switching merging off meshes every chunk shown again, unmerged") {

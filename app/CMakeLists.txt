@@ -53,7 +53,7 @@ vx_target_engine_options(vx_app_play)
 # lifecycle and the messages to and from the main thread, without a window.
 add_library(vx_app_world STATIC src/world_loop.cpp src/world_thread.cpp)
 target_include_directories(vx_app_world PUBLIC src)
-target_link_libraries(vx_app_world PUBLIC vx::core vx::world vx::mesh)
+target_link_libraries(vx_app_world PUBLIC vx::core vx::world vx::mesh vx_app_play)
 vx_target_warnings(vx_app_world)
 vx_target_engine_options(vx_app_world)
 
