@@ -225,7 +225,6 @@ void Overlay::draw_chunk(render::Renderer& renderer, ChunkMeshing& meshing) {
     // RFC 0003's toggles for looking at the mesh: merging, which meshes the
     // chunk again, occlusion's strength, and the wireframe, shown only where
     // the device offers fillModeNonSolid (the report above says when not).
-    ImGui::Text("Chunk: %zu quads, %zu of them cutout", meshing.quads, meshing.cutout);
     ImGui::Checkbox("Merge faces", &meshing.merge);
     if (renderer.wireframe_offered()) {
         bool wireframe = renderer.wireframe();
@@ -271,11 +270,11 @@ void Overlay::draw_chunk_rendering(render::Renderer& renderer) {
     ImGui::Text("Arena: %.1f of %.1f MiB, largest free %.1f MiB, fragmentation %.2f",
                 quads_mib(arena_.live + arena_.retired), quads_mib(arena_.capacity),
                 quads_mib(arena_.largest_free), arena_.fragmentation);
-    // Refusals, not the backlog: offers stop at the first one, and what
-    // still waits is the app's to count.
-    ImGui::Text("Uploads: %u (%llu quads), %u dropped, %u refused", uploads.uploads,
+    // The backlog is what waits on the main thread; refusals are this
+    // frame's, where the offers stopped.
+    ImGui::Text("Uploads: %u (%llu quads), %u dropped, %u refused, %zu waiting", uploads.uploads,
                 static_cast<unsigned long long>(uploads.quads_uploaded), uploads.dropped,
-                uploads.refused);
+                uploads.refused, chunk_backlog_);
     render::DrawSwitches switches = chunks.switches();
     bool changed = ImGui::Checkbox("Frustum culling", &switches.frustum);
     ImGui::SameLine();

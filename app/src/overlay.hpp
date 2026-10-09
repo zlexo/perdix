@@ -18,12 +18,10 @@ union SDL_Event;
 
 namespace vx::app {
 
-// The chunk's meshing, as the overlay shows it and switches it (RFC 0003):
-// whether faces that look the same merge, and the quads the mesh holds.
+// How chunks are meshed, as the overlay switches it (RFC 0003): whether
+// faces that look the same merge.
 struct ChunkMeshing {
     bool merge = true;
-    std::size_t quads = 0;
-    std::size_t cutout = 0; // of the quads, those the cutout pass draws
 };
 
 // The player's movement, as the overlay shows it (RFC 0010).
@@ -74,13 +72,16 @@ public:
     // Builds this frame's overlay: its draw lists, or null while it is
     // hidden. A captured mouse flies the camera, and the overlay ignores it.
     // Switching the present mode asks `renderer` for it. Switching merging
-    // changes `meshing.merge`, and the caller meshes the chunk again. The
+    // changes `meshing.merge`, and the caller meshes the chunks again. The
     // View Bobbing switch changes `bobbing`.
     [[nodiscard]] ImDrawData* build(render::Renderer& renderer, const render::Camera& camera,
                                     bool mouse_captured, ChunkMeshing& meshing, bool& bobbing);
 
     // What the next build shows of the player's movement.
     void set_movement(const MovementReport& movement) noexcept { movement_ = movement; }
+    // The meshes and unloads waiting on the main thread for the next frames'
+    // uploads (RFC 0007's backlog).
+    void set_chunk_backlog(std::size_t waiting) noexcept { chunk_backlog_ = waiting; }
 
 private:
     // A measure's last samples, in milliseconds, for its graph.
@@ -117,6 +118,7 @@ private:
 
     ImGuiContext* context_;
     MovementReport movement_;
+    std::size_t chunk_backlog_ = 0;
     bool validation_;
     bool shown_;
     History frame_;

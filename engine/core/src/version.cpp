@@ -4,7 +4,7 @@
 
 namespace vx {
 
-Version version() noexcept {
+EngineVersion version() noexcept {
     return {
         .major = config::version_major,
         .minor = config::version_minor,

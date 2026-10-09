@@ -5,7 +5,7 @@
 #include <string>
 
 TEST_CASE("version string matches the version numbers") {
-    const vx::Version v = vx::version();
+    const vx::EngineVersion v = vx::version();
     const std::string expected =
         std::to_string(v.major) + '.' + std::to_string(v.minor) + '.' + std::to_string(v.patch);
 
@@ -13,7 +13,7 @@ TEST_CASE("version string matches the version numbers") {
 }
 
 TEST_CASE("version numbers are not negative") {
-    const vx::Version v = vx::version();
+    const vx::EngineVersion v = vx::version();
 
     CHECK(v.major >= 0);
     CHECK(v.minor >= 0);
