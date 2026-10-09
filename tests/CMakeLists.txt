@@ -156,6 +156,20 @@ target_link_libraries(vx_app_vulkan_tests PRIVATE vx_app_overlay doctest::doctes
 vx_target_warnings(vx_app_vulkan_tests)
 doctest_discover_tests(vx_app_vulkan_tests PROPERTIES ${VX_VULKAN_DOCTEST_PROPERTIES})
 
+# ThreadSanitizer's control (RFC 0005), in its builds only: a program with a
+# planted data race, which passes only when the race is reported, so the TSan
+# job cannot stay green by no longer finding races.
+string(FIND "${CMAKE_CXX_FLAGS}" "-fsanitize=thread" vx_thread_sanitizer)
+if(NOT vx_thread_sanitizer EQUAL -1)
+    find_package(Threads REQUIRED)
+    add_executable(vx_planted_race core/planted_race.cpp)
+    target_link_libraries(vx_planted_race PRIVATE Threads::Threads)
+    vx_target_warnings(vx_planted_race)
+    add_test(NAME "ThreadSanitizer reports a planted race" COMMAND vx_planted_race)
+    set_tests_properties("ThreadSanitizer reports a planted race" PROPERTIES
+        PASS_REGULAR_EXPRESSION "WARNING: ThreadSanitizer: data race")
+endif()
+
 # Debug names reach validation messages (RFC 0001): a program that records
 # one command breaking a rule about a named buffer passes when the layer's
 # message about it carries the buffer's name.

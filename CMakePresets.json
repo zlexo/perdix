@@ -87,6 +87,18 @@
         "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-sanitize=vptr -fno-sanitize-recover=all -fno-omit-frame-pointer -O1",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
       }
+    },
+    {
+      "name": "linux-tsan",
+      "displayName": "Linux, Clang 18, ThreadSanitizer",
+      "inherits": "linux",
+      "description": "ThreadSanitizer alone: it cannot share a build with AddressSanitizer (RFC 0005). It cannot run on macOS 26 either: Apple Clang 17's and Homebrew Clang 20's builds crash before main.",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-18", "CMAKE_CXX_COMPILER": "clang++-18",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer -O1",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
+      }
     }
   ],
   "buildPresets": [
@@ -97,7 +109,8 @@
     { "name": "linux-gcc", "configurePreset": "linux-gcc" },
     { "name": "linux-clang", "configurePreset": "linux-clang" },
     { "name": "linux-lavapipe", "configurePreset": "linux-lavapipe" },
-    { "name": "linux-asan", "configurePreset": "linux-asan" }
+    { "name": "linux-asan", "configurePreset": "linux-asan" },
+    { "name": "linux-tsan", "configurePreset": "linux-tsan" }
   ],
   "testPresets": [
     {
@@ -132,6 +145,13 @@
         "ASAN_OPTIONS": "detect_leaks=1:abort_on_error=1",
         "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"
       }
+    },
+    {
+      "name": "linux-tsan",
+      "inherits": "base",
+      "configurePreset": "linux-tsan",
+      "filter": { "exclude": { "label": "vulkan" } },
+      "environment": { "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1" }
     }
   ]
 }
