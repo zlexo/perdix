@@ -108,6 +108,7 @@ add_executable(vx_render_tests
     render/chunk_uploads_test.cpp
     render/device_report_test.cpp
     render/device_selection_test.cpp
+    render/draw_lists_test.cpp
     render/feature_floor_test.cpp
     render/projection_test.cpp
     render/swapchain_choice_test.cpp
