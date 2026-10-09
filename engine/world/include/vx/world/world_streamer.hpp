@@ -1,8 +1,11 @@
 #pragma once
 
+#include <vx/core/frustum.hpp>
 #include <vx/core/inbox.hpp>
 #include <vx/core/job_system.hpp>
+#include <vx/core/vec3d.hpp>
 #include <vx/core/wake_event.hpp>
+#include <vx/world/backlog.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/chunk_map.hpp>
 #include <vx/world/chunk_records.hpp>
@@ -62,6 +65,23 @@ struct StreamingStats {
     std::size_t plan_versions = 0;
 };
 
+// Where streaming looks from (RFC 0006): the camera's chunk, around which
+// the region lies, and the eye and view that rank what waits for a job.
+struct Viewer {
+    ChunkPos chunk;
+    // In blocks, 64-bit (RFC 0001).
+    Vec3d eye;
+    // The unit vector the eye looks along: a turn of more than 15 degrees
+    // ranks the waiting jobs again.
+    Vec3d forward{.x = 0.0, .y = 0.0, .z = -1.0};
+    // By default it holds everything, so only distance ranks.
+    Frustum view;
+};
+
+// A viewer at the chunk's middle that sees everything: for tests, and for
+// a camera with no view yet.
+[[nodiscard]] Viewer viewer_at(ChunkPos chunk) noexcept;
+
 // The data half of RFC 0006's streaming, on RFC 0005's world thread: which
 // chunks exist around the camera, and the jobs that make them. Every column
 // near the region gets its surface range first. Once a column's terrain band
@@ -73,7 +93,9 @@ struct StreamingStats {
 // reach, or above its column's surface, is uniform: it is ready at once, with
 // no job. Every other chunk is planned, then built once it is loaded and it
 // and its 26 neighbors have plans, then complete once they are all ready.
-// Events tell the mesh half when a chunk can be meshed.
+// Events tell the mesh half when a chunk can be meshed. Columns, plans and
+// builds wait in backlogs, nearest and in view first, and go to the job
+// queue in that order with their score as the job's key.
 class WorldStreamer {
 public:
     // Results come back through an inbox that signals `results_ready`.
@@ -86,11 +108,16 @@ public:
     // Cancels what is queued; every running job must have reported back.
     ~WorldStreamer();
 
-    // The camera's chunk. When it changes, chunks join the region and those
-    // outside the region grown for hysteresis leave it.
+    // Where the camera is and looks. When its chunk changes, chunks join
+    // the region and those outside the region grown for hysteresis leave
+    // it; when its chunk changes or it turns more than 15 degrees, every
+    // waiting job is ranked again (RFC 0006), and true says so, for the
+    // mesh half's.
+    bool set_viewer(const Viewer& viewer);
+    // set_viewer(viewer_at(camera)), keeping the view's direction.
     void set_camera(ChunkPos camera);
-    // Submits the jobs that can start, at most `room` of them: surfaces,
-    // then plans, then builds.
+    // Submits the jobs that can start, at most `room` of them: surfaces
+    // first, then plans and builds, each lowest score first.
     void feed(std::size_t room = std::numeric_limits<std::size_t>::max());
     // Takes in every result the jobs have sent back.
     void integrate();
@@ -122,6 +149,12 @@ public:
     // Results the jobs sent that integrate has not taken yet.
     [[nodiscard]] std::size_t results_waiting() const { return results_.size(); }
 
+    // A chunk's rank for its jobs (RFC 0006), lowest first: also the mesh
+    // half's.
+    [[nodiscard]] std::uint32_t score(ChunkPos pos) const noexcept {
+        return chunk_score(pos, viewer_.chunk, viewer_.eye, viewer_.view);
+    }
+
     [[nodiscard]] const ChunkRecord* find(ChunkPos pos) const noexcept;
     // Every record: for the mesh half, the overlay and tests.
     [[nodiscard]] const ChunkRecords& records() const noexcept { return chunks_; }
@@ -144,13 +177,6 @@ private:
         ColumnRuns drawn_kept;
     };
 
-    // A chunk or column waiting for its job, as it was when it started
-    // waiting: stale once its load id or state moves on.
-    struct Waiting {
-        std::uint32_t index = 0;
-        std::uint32_t load_id = 0;
-    };
-
     void update_columns();
     void add_column(ColumnPos pos);
     void remove_column(std::uint32_t index);
@@ -160,13 +186,18 @@ private:
     // Marks which of the column's chunks are drawn, once its band is known.
     void refresh(ColumnPos pos);
 
-    // What start_waiting's callback did with an entry.
+    // The region around `camera`, with the columns and records it brings.
+    void move_region(ChunkPos camera);
+    // Ranks every waiting entry for the viewer as it is now.
+    void rescore();
+
+    // What became of a backlog's entry.
     enum class Start : std::uint8_t {
-        done,  // started, or stale: the entry goes
-        later, // not yet: the entry stays, and the next ones are tried
-        full,  // no job slot or record: this entry and the rest stay
+        started, // a job was submitted
+        dropped, // stale, or done without a job
+        parked,  // its column's surface is not known yet
+        full,    // no job slot or record: back in the backlog
     };
-    template <class F> static void start_waiting(std::vector<Waiting>& waiting, F&& try_start);
 
     // The chunk's record, made if it has none.
     std::uint32_t ensure(ChunkPos pos);
@@ -192,8 +223,12 @@ private:
     void report(ChunkEvent::Kind kind, std::uint32_t index);
 
     void feed_surfaces(std::size_t& room);
-    void feed_plans(std::size_t& room);
-    void feed_builds(std::size_t& room);
+    // Plans and builds, the lower score of the two first.
+    void feed_chunks(std::size_t& room);
+    [[nodiscard]] Start start_plan(const Backlog::Entry& entry);
+    [[nodiscard]] Start start_build(const Backlog::Entry& entry);
+    // Plans parked until their column's surface came, back in line.
+    void unpark();
     // Pins the 27 plans around a chunk for its build; a uniform neighbor
     // has none.
     void pin_plans(JobRecord& pins, ChunkPos pos) noexcept;
@@ -219,9 +254,13 @@ private:
     std::vector<GenScratch> scratch_; // one for each worker
     Inbox<StreamResult> results_;
 
-    std::vector<Waiting> waiting_surfaces_;
-    std::vector<Waiting> waiting_plans_;
-    std::vector<Waiting> waiting_builds_;
+    Viewer viewer_;
+    Vec3d scored_forward_; // the view the backlogs were ranked for
+    Backlog surfaces_backlog_;
+    Backlog plans_backlog_;
+    Backlog builds_backlog_;
+    std::vector<Backlog::Entry> parked_;
+    bool surfaces_arrived_ = false; // since the parked plans were last tried
     std::vector<ChunkEvent> events_;
     std::vector<ColumnPos> dirty_;          // columns whose surface arrived
     std::vector<std::uint32_t> to_advance_; // neighbors whose counts changed

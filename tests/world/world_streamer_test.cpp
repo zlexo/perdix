@@ -1,4 +1,6 @@
+#include <vx/core/frustum.hpp>
 #include <vx/core/job_system.hpp>
+#include <vx/core/vec3d.hpp>
 #include <vx/core/wake_event.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/chunk_records.hpp>
@@ -15,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -974,4 +977,73 @@ TEST_CASE("canceling the queued jobs leaves none queued, and may run twice") {
     CHECK(jobs.queued(vx::JobLevel::normal) == 0);
     streamer.cancel_queued();
     CHECK(jobs.queued(vx::JobLevel::normal) == 0);
+}
+
+namespace {
+
+// A viewer at the chunk's middle looking along +x, with RFC 0001's 70
+// degree vertical field of view on a 16:9 screen.
+vx::Viewer looking_east(ChunkPos chunk) {
+    vx::Viewer viewer = vx::viewer_at(chunk);
+    viewer.forward = {.x = 1.0, .y = 0.0, .z = 0.0};
+    viewer.view = vx::Frustum({.x = 1.0, .y = 0.0, .z = 0.0}, {.x = 0.0, .y = 0.0, .z = 1.0},
+                              {.x = 0.0, .y = 1.0, .z = 0.0}, 0.7002075382097097, 16.0 / 9.0, 0.05);
+    return viewer;
+}
+
+} // namespace
+
+TEST_CASE("chunks in view are built before nearer ones behind the camera") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    const CountingGenerator generator(placeholder);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_viewer(looking_east(above_hills));
+    settle(streamer, jobs);
+    // Three chunks ahead scores 9, two behind 4 doubled twice, 16: the one
+    // ahead is built first, at every height where both are.
+    const auto built_at = [&](ChunkPos pos) -> std::optional<std::size_t> {
+        const auto at = std::ranges::find(generator.built, pos);
+        if (at == generator.built.end()) {
+            return std::nullopt;
+        }
+        return static_cast<std::size_t>(at - generator.built.begin());
+    };
+    std::size_t compared = 0;
+    for (std::int32_t y = above_hills.y - 3; y <= above_hills.y + 3; ++y) {
+        const std::optional<std::size_t> ahead =
+            built_at({.x = above_hills.x + 3, .y = y, .z = above_hills.z});
+        const std::optional<std::size_t> behind =
+            built_at({.x = above_hills.x - 2, .y = y, .z = above_hills.z});
+        if (ahead && behind) {
+            INFO("height ", y);
+            CHECK(*ahead < *behind);
+            ++compared;
+        }
+    }
+    CHECK(compared > 0);
+}
+
+TEST_CASE("a new chunk or a turn of more than 15 degrees ranks the waiting jobs again") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    vx::Viewer viewer = looking_east(above_hills);
+    CHECK(streamer.set_viewer(viewer));
+    CHECK_FALSE(streamer.set_viewer(viewer));
+    // 10 degrees: the scores stand. 20 degrees from the view they were made
+    // for: ranked again.
+    const auto turned = [](double degrees) {
+        const double radians = degrees * 3.141592653589793 / 180.0;
+        return vx::Vec3d{.x = std::cos(radians), .y = 0.0, .z = std::sin(radians)};
+    };
+    viewer.forward = turned(10.0);
+    CHECK_FALSE(streamer.set_viewer(viewer));
+    viewer.forward = turned(20.0);
+    CHECK(streamer.set_viewer(viewer));
+    // A step to the next chunk, looking the same way.
+    viewer.chunk.x += 1;
+    CHECK(streamer.set_viewer(viewer));
 }

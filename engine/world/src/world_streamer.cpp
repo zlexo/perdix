@@ -131,19 +131,6 @@ template <class F> void around(ChunkPos pos, F&& visit) {
 
 } // namespace
 
-template <class F> void WorldStreamer::start_waiting(std::vector<Waiting>& waiting, F&& try_start) {
-    std::size_t kept = 0;
-    bool full = false;
-    for (const Waiting entry : waiting) {
-        const Start started = full ? Start::full : try_start(entry);
-        if (started != Start::done) {
-            full = started == Start::full;
-            waiting[kept++] = entry;
-        }
-    }
-    waiting.resize(kept);
-}
-
 WorldStreamer::WorldStreamer(const Generator& generator, JobSystem& jobs, WakeEvent& results_ready,
                              RegionSettings settings)
     : generator_(&generator), jobs_(&jobs), settings_(settings),
@@ -180,10 +167,43 @@ WorldStreamer::~WorldStreamer() {
     assert(job_records_.in_use() == 0 && "a job still runs: the world loop drains them first");
 }
 
-void WorldStreamer::set_camera(ChunkPos camera) {
-    if (region_ && region_->camera() == camera) {
-        return;
+Viewer viewer_at(ChunkPos chunk) noexcept {
+    const auto middle = [](std::int32_t at) {
+        return (static_cast<double>(at) * chunk_size) + (chunk_size / 2.0);
+    };
+    return {.chunk = chunk,
+            .eye = {.x = middle(chunk.x), .y = middle(chunk.y), .z = middle(chunk.z)},
+            .forward = {.x = 0.0, .y = 0.0, .z = -1.0},
+            .view = {}};
+}
+
+bool WorldStreamer::set_viewer(const Viewer& viewer) {
+    const bool moved = !region_ || region_->camera() != viewer.chunk;
+    // More than 15 degrees from the view the scores were made for.
+    constexpr double cos_15_degrees = 0.9659258262890683;
+    const Vec3d& was = scored_forward_;
+    const bool turned =
+        (viewer.forward.x * was.x) + (viewer.forward.y * was.y) + (viewer.forward.z * was.z) <
+        cos_15_degrees;
+    viewer_ = viewer;
+    if (moved) {
+        move_region(viewer.chunk);
     }
+    if (!moved && !turned) {
+        return false;
+    }
+    scored_forward_ = viewer.forward;
+    rescore();
+    return true;
+}
+
+void WorldStreamer::set_camera(ChunkPos camera) {
+    Viewer viewer = viewer_at(camera);
+    viewer.forward = viewer_.forward;
+    set_viewer(viewer);
+}
+
+void WorldStreamer::move_region(ChunkPos camera) {
     region_.emplace(camera, settings_);
     kept_.emplace(region_->grown(settings_.hysteresis));
     // Every column with a known band marks its drawn chunks afresh, then
@@ -249,7 +269,9 @@ void WorldStreamer::add_column(ColumnPos pos) {
     column.pos = pos;
     column.load_id = next_load_id_++;
     column_map_.insert(column_key(pos), index);
-    waiting_surfaces_.push_back({.index = index, .load_id = column.load_id});
+    surfaces_backlog_.push({.key = column_score(pos.x, pos.z, viewer_.chunk),
+                            .index = index,
+                            .load_id = column.load_id});
 }
 
 void WorldStreamer::remove_column(std::uint32_t index) {
@@ -340,7 +362,7 @@ std::uint32_t WorldStreamer::ensure(ChunkPos pos) {
 std::uint32_t WorldStreamer::add_chunk(ChunkPos pos) {
     const std::uint32_t index = chunks_.add(pos, next_load_id_++);
     if (!make_uniform(index)) {
-        waiting_plans_.push_back({.index = index, .load_id = chunks_[index].load_id});
+        plans_backlog_.push({.key = score(pos), .index = index, .load_id = chunks_[index].load_id});
     }
     return index;
 }
@@ -493,7 +515,8 @@ void WorldStreamer::advance(std::uint32_t index) {
     case ChunkState::planned:
         if (record.loaded && record.planned_neighbors == 26) {
             next = ChunkState::build_queued;
-            waiting_builds_.push_back({.index = index, .load_id = record.load_id});
+            builds_backlog_.push(
+                {.key = score(record.pos), .index = index, .load_id = record.load_id});
         }
         break;
     case ChunkState::build_queued:
@@ -528,100 +551,156 @@ void WorldStreamer::report(ChunkEvent::Kind kind, std::uint32_t index) {
     events_.push_back({.kind = kind, .pos = chunks_[index].pos, .record = index});
 }
 
+void WorldStreamer::rescore() {
+    surfaces_backlog_.rescore([this](const Backlog::Entry& entry) -> std::optional<std::uint32_t> {
+        const Column& column = columns_[entry.index];
+        if (column.load_id != entry.load_id) {
+            return std::nullopt;
+        }
+        return column_score(column.pos.x, column.pos.z, viewer_.chunk);
+    });
+    const auto chunk = [this](const Backlog::Entry& entry) -> std::optional<std::uint32_t> {
+        if (!chunks_.live(entry.index) || chunks_[entry.index].load_id != entry.load_id) {
+            return std::nullopt;
+        }
+        return score(chunks_[entry.index].pos);
+    };
+    plans_backlog_.rescore(chunk);
+    builds_backlog_.rescore(chunk);
+}
+
 void WorldStreamer::feed(std::size_t room) {
     feed_surfaces(room);
-    feed_plans(room);
-    feed_builds(room);
+    unpark();
+    feed_chunks(room);
 }
 
 void WorldStreamer::feed_surfaces(std::size_t& room) {
-    start_waiting(waiting_surfaces_, [this, &room](Waiting entry) {
+    while (room > 0 && !surfaces_backlog_.empty()) {
+        const Backlog::Entry entry = surfaces_backlog_.top();
         Column& column = columns_[entry.index];
         if (column.load_id != entry.load_id || column.known || column.job) {
-            return Start::done;
+            surfaces_backlog_.pop();
+            continue;
         }
-        if (room == 0) {
-            return Start::full;
-        }
-        column.job = jobs_->submit({}, SurfaceJob{.generator = generator_,
-                                                  .scratch = scratch_.data(),
-                                                  .results = &results_,
-                                                  .column = column.pos,
-                                                  .load_id = column.load_id});
+        column.job = jobs_->submit({.level = JobLevel::normal, .key = entry.key},
+                                   SurfaceJob{.generator = generator_,
+                                              .scratch = scratch_.data(),
+                                              .results = &results_,
+                                              .column = column.pos,
+                                              .load_id = column.load_id});
         if (!column.job) {
-            return Start::full;
+            return; // no job slot: it stays first in line
         }
+        surfaces_backlog_.pop();
         ++in_flight_;
         --room;
-        return Start::done;
-    });
+    }
 }
 
-void WorldStreamer::feed_plans(std::size_t& room) {
-    start_waiting(waiting_plans_, [this, &room](Waiting entry) {
-        if (!chunks_.live(entry.index) || chunks_[entry.index].load_id != entry.load_id ||
-            chunks_[entry.index].state != ChunkState::queued) {
-            return Start::done;
+void WorldStreamer::unpark() {
+    if (!surfaces_arrived_) {
+        return;
+    }
+    surfaces_arrived_ = false;
+    std::erase_if(parked_, [this](const Backlog::Entry& entry) {
+        if (!chunks_.live(entry.index) || chunks_[entry.index].load_id != entry.load_id) {
+            return true;
         }
-        // Its column's surface tells whether it is above every surface, so
-        // uniform, or needs a plan.
         const ChunkPos pos = chunks_[entry.index].pos;
         const Column* own = column({.x = pos.x, .z = pos.z});
         if (own == nullptr || !own->known) {
-            return Start::later;
+            return false;
         }
-        if (make_uniform(entry.index)) {
-            return Start::done;
-        }
-        if (room == 0) {
-            return Start::full;
-        }
-        ChunkRecord& record = chunks_[entry.index];
-        record.job = jobs_->submit({}, PlanJob{.generator = generator_,
-                                               .scratch = scratch_.data(),
-                                               .results = &results_,
-                                               .pos = record.pos,
-                                               .load_id = record.load_id});
-        if (!record.job) {
-            return Start::full;
-        }
-        ++in_flight_;
-        --room;
-        set_state(entry.index, ChunkState::planning);
-        return Start::done;
+        plans_backlog_.push({.key = score(pos), .index = entry.index, .load_id = entry.load_id});
+        return true;
     });
 }
 
-void WorldStreamer::feed_builds(std::size_t& room) {
-    start_waiting(waiting_builds_, [this, &room](Waiting entry) {
-        if (!chunks_.live(entry.index) || chunks_[entry.index].load_id != entry.load_id ||
-            chunks_[entry.index].state != ChunkState::build_queued) {
-            return Start::done;
+void WorldStreamer::feed_chunks(std::size_t& room) {
+    while (room > 0) {
+        const bool plans = !plans_backlog_.empty();
+        const bool builds = !builds_backlog_.empty();
+        if (!plans && !builds) {
+            return;
         }
-        if (room == 0) {
-            return Start::full;
+        // The lower score next; a plan first on a tie, since builds wait for
+        // plans.
+        const bool plan =
+            plans && (!builds || plans_backlog_.top().key <= builds_backlog_.top().key);
+        Backlog& backlog = plan ? plans_backlog_ : builds_backlog_;
+        const Backlog::Entry entry = backlog.top();
+        backlog.pop();
+        switch (plan ? start_plan(entry) : start_build(entry)) {
+        case Start::started:
+            --room;
+            break;
+        case Start::dropped:
+        case Start::parked:
+            break;
+        case Start::full:
+            backlog.push(entry);
+            return;
         }
-        ChunkRecord& record = chunks_[entry.index];
-        JobRecord* pins = job_records_.acquire(record.load_id, 0);
-        if (pins == nullptr) {
-            return Start::full;
-        }
-        pin_plans(*pins, record.pos);
-        record.job = jobs_->submit({}, BuildJob{.generator = generator_,
-                                                .scratch = scratch_.data(),
-                                                .results = &results_,
-                                                .record = pins,
-                                                .pos = record.pos});
-        if (!record.job) {
-            job_records_.release(*pins);
-            return Start::full;
-        }
-        ++in_flight_;
-        --room;
-        record.job_record = pins;
-        set_state(entry.index, ChunkState::building);
-        return Start::done;
-    });
+    }
+}
+
+WorldStreamer::Start WorldStreamer::start_plan(const Backlog::Entry& entry) {
+    if (!chunks_.live(entry.index) || chunks_[entry.index].load_id != entry.load_id ||
+        chunks_[entry.index].state != ChunkState::queued) {
+        return Start::dropped;
+    }
+    // Its column's surface tells whether it is above every surface, so
+    // uniform, or needs a plan.
+    const ChunkPos pos = chunks_[entry.index].pos;
+    const Column* own = column({.x = pos.x, .z = pos.z});
+    if (own == nullptr || !own->known) {
+        parked_.push_back(entry);
+        return Start::parked;
+    }
+    if (make_uniform(entry.index)) {
+        return Start::dropped;
+    }
+    ChunkRecord& record = chunks_[entry.index];
+    record.job = jobs_->submit({.level = JobLevel::normal, .key = entry.key},
+                               PlanJob{.generator = generator_,
+                                       .scratch = scratch_.data(),
+                                       .results = &results_,
+                                       .pos = record.pos,
+                                       .load_id = record.load_id});
+    if (!record.job) {
+        return Start::full;
+    }
+    ++in_flight_;
+    set_state(entry.index, ChunkState::planning);
+    return Start::started;
+}
+
+WorldStreamer::Start WorldStreamer::start_build(const Backlog::Entry& entry) {
+    if (!chunks_.live(entry.index) || chunks_[entry.index].load_id != entry.load_id ||
+        chunks_[entry.index].state != ChunkState::build_queued) {
+        return Start::dropped;
+    }
+    ChunkRecord& record = chunks_[entry.index];
+    JobRecord* pins = job_records_.acquire(record.load_id, 0);
+    if (pins == nullptr) {
+        return Start::full;
+    }
+    pin_plans(*pins, record.pos);
+    record.job = jobs_->submit({.level = JobLevel::normal, .key = entry.key},
+                               BuildJob{.generator = generator_,
+                                        .scratch = scratch_.data(),
+                                        .results = &results_,
+                                        .record = pins,
+                                        .pos = record.pos});
+    if (!record.job) {
+        job_records_.release(*pins);
+        return Start::full;
+    }
+    ++in_flight_;
+    record.job_record = pins;
+    set_state(entry.index, ChunkState::building);
+    return Start::started;
 }
 
 void WorldStreamer::pin_plans(JobRecord& pins, ChunkPos pos) noexcept {
@@ -673,6 +752,7 @@ void WorldStreamer::integrate_surface(StreamResult& result) {
     column.known = true;
     column.job = {};
     dirty_.push_back(column.pos);
+    surfaces_arrived_ = true;
 }
 
 void WorldStreamer::integrate_plan(StreamResult& result) {
