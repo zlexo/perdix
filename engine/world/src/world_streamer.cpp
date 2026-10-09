@@ -98,6 +98,11 @@ struct BuildJob {
     }
 };
 
+// Whether the mesh half has been told to mesh it: complete and drawn.
+bool shown(const ChunkRecord& record) noexcept {
+    return record.state == ChunkState::complete && record.drawn;
+}
+
 // Calls `visit` with each chunk within one of `pos`, itself included, that
 // the world holds.
 template <class F> void around(ChunkPos pos, F&& visit) {
@@ -351,10 +356,19 @@ void WorldStreamer::set_drawn(ChunkPos pos, bool drawn) {
         return;
     }
     if (drawn) {
+        // Shown now if complete already; if the loads below complete it,
+        // advance reports it then, once.
         const std::uint32_t index = ensure(pos);
         chunks_[index].drawn = true;
+        if (shown(chunks_[index])) {
+            report(ChunkEvent::Kind::shown, index);
+        }
         around(pos, [this](ChunkPos near) { add_drawn_near(near, 1); });
         return;
+    }
+    // Before the counts drop: the record may go with them.
+    if (shown(chunks_[*found])) {
+        report(ChunkEvent::Kind::hidden, *found);
     }
     chunks_[*found].drawn = false;
     around(pos, [this](ChunkPos near) { add_drawn_near(near, -1); });
@@ -410,7 +424,8 @@ void WorldStreamer::add_loaded_near(ChunkPos pos, int delta) {
 
 void WorldStreamer::leave(std::uint32_t index) {
     ChunkRecord& record = chunks_[index];
-    if (record.state == ChunkState::unloading) {
+    // Edited chunks stay until saving exists (M8), outside every region.
+    if (record.edited || record.state == ChunkState::unloading) {
         return;
     }
     if (record.job) {
@@ -430,13 +445,18 @@ void WorldStreamer::leave(std::uint32_t index) {
 
 void WorldStreamer::free_chunk(std::uint32_t index) {
     const ChunkRecord& record = chunks_[index];
+    if (shown(record)) {
+        report(ChunkEvent::Kind::hidden, index);
+    }
     if (record.blocks != nullptr) {
         blocks_.retire(*record.blocks);
     }
     if (record.plan != nullptr) {
         plans_.retire(*record.plan);
     }
+    const ChunkPos pos = record.pos;
     chunks_.remove(index, [this](std::uint32_t neighbor) { to_advance_.push_back(neighbor); });
+    events_.push_back({.kind = ChunkEvent::Kind::freed, .pos = pos, .record = index});
     advance_neighbors();
 }
 
@@ -456,6 +476,7 @@ void WorldStreamer::advance_neighbors() {
 
 void WorldStreamer::advance(std::uint32_t index) {
     const ChunkRecord& record = chunks_[index];
+    const bool was_shown = shown(record);
     std::optional<ChunkState> next;
     switch (record.state) {
     case ChunkState::planned:
@@ -487,6 +508,13 @@ void WorldStreamer::advance(std::uint32_t index) {
         // do ready and complete: no neighbor's count moves.
         chunks_.set_state(index, *next, [](std::uint32_t /*neighbor*/) {});
     }
+    if (shown(record) != was_shown) {
+        report(was_shown ? ChunkEvent::Kind::hidden : ChunkEvent::Kind::shown, index);
+    }
+}
+
+void WorldStreamer::report(ChunkEvent::Kind kind, std::uint32_t index) {
+    events_.push_back({.kind = kind, .pos = chunks_[index].pos, .record = index});
 }
 
 void WorldStreamer::feed() {
@@ -662,9 +690,61 @@ void WorldStreamer::integrate_build(StreamResult& result) {
     advance(*index);
 }
 
+void WorldStreamer::take_events(std::vector<ChunkEvent>& out) {
+    out.clear();
+    std::swap(out, events_);
+}
+
+bool WorldStreamer::set_block(BlockPos pos, BlockState state) {
+    const ChunkPos chunk = chunk_of(pos);
+    const std::optional<std::uint32_t> index = chunks_.find(chunk);
+    if (!index || !counts_as_ready(chunks_[*index].state)) {
+        return false;
+    }
+    ChunkRecord& record = chunks_[*index];
+    const LocalPos local = local_of(pos);
+    if (record.blocks == nullptr) {
+        record.blocks = &blocks_.make(ChunkStorage::uniform(record.uniform));
+    }
+    blocks_.write(record.blocks).set(local_index(local.x, local.y, local.z), state);
+    record.version = next_version_++;
+    record.edited = true;
+    // It, and each neighbor whose padded border holds the block.
+    const auto reach = [](std::int32_t at) {
+        return std::pair{at == 0 ? -1 : 0, at == chunk_size - 1 ? 1 : 0};
+    };
+    const auto [low_x, high_x] = reach(local.x);
+    const auto [low_y, high_y] = reach(local.y);
+    const auto [low_z, high_z] = reach(local.z);
+    for (std::int32_t dy = low_y; dy <= high_y; ++dy) {
+        for (std::int32_t dz = low_z; dz <= high_z; ++dz) {
+            for (std::int32_t dx = low_x; dx <= high_x; ++dx) {
+                const ChunkPos near{.x = chunk.x + dx, .y = chunk.y + dy, .z = chunk.z + dz};
+                const std::optional<std::uint32_t> neighbor = chunks_.find(near);
+                if (neighbor && counts_as_ready(chunks_[*neighbor].state)) {
+                    report(ChunkEvent::Kind::changed, *neighbor);
+                }
+            }
+        }
+    }
+    return true;
+}
+
 const ChunkRecord* WorldStreamer::find(ChunkPos pos) const noexcept {
     const std::optional<std::uint32_t> index = chunks_.find(pos);
     return index ? &chunks_[*index] : nullptr;
+}
+
+std::optional<BlockState> WorldStreamer::block(BlockPos pos) const noexcept {
+    const ChunkRecord* record = find(chunk_of(pos));
+    if (record == nullptr || !counts_as_ready(record->state)) {
+        return std::nullopt;
+    }
+    if (record->blocks == nullptr) {
+        return record->uniform;
+    }
+    const LocalPos local = local_of(pos);
+    return record->blocks->value().get(local_index(local.x, local.y, local.z));
 }
 
 std::optional<ChunkRange> WorldStreamer::surface(ColumnPos pos) const noexcept {

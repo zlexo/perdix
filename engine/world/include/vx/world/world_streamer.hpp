@@ -3,6 +3,7 @@
 #include <vx/core/inbox.hpp>
 #include <vx/core/job_system.hpp>
 #include <vx/core/wake_event.hpp>
+#include <vx/world/block_state.hpp>
 #include <vx/world/chunk_map.hpp>
 #include <vx/world/chunk_records.hpp>
 #include <vx/world/chunk_storage.hpp>
@@ -19,6 +20,20 @@
 #include <vector>
 
 namespace vx {
+
+// What the world tells the mesh half about a chunk (RFC 0006).
+struct ChunkEvent {
+    enum class Kind : std::uint8_t {
+        shown,   // complete and in the drawn region: it can be meshed
+        changed, // its blocks changed, or a neighbor's next to its border
+        hidden,  // no longer complete, or no longer in the drawn region
+        freed,   // its record is gone, and the index will be reused
+    };
+    Kind kind = Kind::shown;
+    ChunkPos pos;
+    // The mesh half keeps its records at the same index.
+    std::uint32_t record = 0;
+};
 
 // A job's result, on its way from a worker to the world thread (RFC 0005).
 struct StreamResult {
@@ -57,6 +72,7 @@ struct StreamingStats {
 // reach, or above its column's surface, is uniform: it is ready at once, with
 // no job. Every other chunk is planned, then built once it is loaded and it
 // and its 26 neighbors have plans, then complete once they are all ready.
+// Events tell the mesh half when a chunk can be meshed.
 class WorldStreamer {
 public:
     // Results come back through an inbox that signals `results_ready`.
@@ -76,6 +92,14 @@ public:
     void feed();
     // Takes in every result the jobs have sent back.
     void integrate();
+    // The events since the last call, moved into `out`.
+    void take_events(std::vector<ChunkEvent>& out);
+
+    // Writes a block of a ready or complete chunk (M5): bumps its version,
+    // marks it edited, so it never leaves, and reports it and each neighbor
+    // whose padded border holds the block as changed. False, changing
+    // nothing, when the chunk is not ready.
+    bool set_block(BlockPos pos, BlockState state);
 
     [[nodiscard]] const ChunkRecord* find(ChunkPos pos) const noexcept;
     // Every record: for the mesh half, the overlay and tests.
@@ -84,6 +108,8 @@ public:
     // the overlay.
     [[nodiscard]] std::optional<ChunkRange> surface(ColumnPos pos) const noexcept;
     [[nodiscard]] StreamingStats stats() const noexcept;
+    // The block at `pos`, if its chunk is ready or complete.
+    [[nodiscard]] std::optional<BlockState> block(BlockPos pos) const noexcept;
 
 private:
     struct Column {
@@ -142,6 +168,7 @@ private:
     // Moves a chunk on when a count or a flag lets it: to build_queued,
     // complete, or back. Never changes a neighbor's count.
     void advance(std::uint32_t index);
+    void report(ChunkEvent::Kind kind, std::uint32_t index);
 
     void feed_surfaces();
     void feed_plans();
@@ -174,9 +201,11 @@ private:
     std::vector<Waiting> waiting_surfaces_;
     std::vector<Waiting> waiting_plans_;
     std::vector<Waiting> waiting_builds_;
+    std::vector<ChunkEvent> events_;
     std::vector<ColumnPos> dirty_;          // columns whose surface arrived
     std::vector<std::uint32_t> to_advance_; // neighbors whose counts changed
     std::uint32_t next_load_id_ = 1;
+    std::uint32_t next_version_ = 1;
     std::size_t in_flight_ = 0;
 };
 
