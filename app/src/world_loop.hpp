@@ -6,6 +6,7 @@
 #include <vx/core/wake_event.hpp>
 #include <vx/mesh/mesh_chunk.hpp>
 #include <vx/mesh/padded_chunk.hpp>
+#include <vx/world/backlog.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
 #include <vx/world/coordinates.hpp>
@@ -54,13 +55,13 @@ struct ToMain {
 // What the main thread tells the world thread.
 struct ToWorld {
     enum class Kind : std::uint8_t {
-        camera,   // the camera's chunk
+        camera,   // where the camera is and looks
         edit,     // a block to set; M5's actions will bring the view ray
         uploaded, // how far the main thread is with the meshes sent alone
         stop,
     };
     Kind kind = Kind::camera;
-    ChunkPos camera;
+    Viewer camera;
     BlockPos block;
     BlockState state = BlockState::air;
     // Of the meshes sent alone (ToMain::Kind::mesh, never a batch's), how
@@ -193,12 +194,14 @@ private:
     void follow_events();
     MeshRecord& mesh_record(std::uint32_t index);
     void queue_mesh(std::uint32_t index, bool urgent);
+    // The streaming meshes waiting, ranked as the streamer ranks its jobs.
+    void rescore_meshes();
     void drop_mesh(std::uint32_t index, ChunkPos pos);
     void integrate_mesh(MeshResult& result);
     void forward(std::uint32_t index, MeshUpdate&& update);
     void send_ready_batches();
     void feed();
-    bool start_mesh(std::uint32_t index);
+    bool start_mesh(std::uint32_t index, std::uint32_t key);
     // A tick in Tracy: a frame of its own set, and a zone.
     void tick();
     void run_tick();
@@ -215,7 +218,7 @@ private:
 
     std::vector<MeshRecord> meshes_; // by the streamer's record index
     std::vector<std::uint32_t> waiting_urgent_;
-    std::vector<std::uint32_t> waiting_meshes_;
+    Backlog waiting_meshes_;
     std::vector<Batch> batches_;
     std::uint32_t next_batch_ = 1;
     std::uint32_t next_generation_ = 1;

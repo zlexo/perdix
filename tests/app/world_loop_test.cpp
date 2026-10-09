@@ -73,7 +73,7 @@ Chunk chunk_of(ChunkPos pos) {
 void move_camera(WorldLoop& loop, ChunkPos camera) {
     ToWorld message;
     message.kind = ToWorld::Kind::camera;
-    message.camera = camera;
+    message.camera = vx::viewer_at(camera);
     loop.to_world().push(std::move(message));
 }
 
