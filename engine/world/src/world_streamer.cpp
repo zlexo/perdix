@@ -3,10 +3,12 @@
 #include <vx/core/inbox.hpp>
 #include <vx/core/job_system.hpp>
 #include <vx/core/wake_event.hpp>
+#include <vx/world/block_state.hpp>
 #include <vx/world/chunk_records.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/generator.hpp>
 #include <vx/world/region.hpp>
+#include <vx/world/versions.hpp>
 
 #include <algorithm>
 #include <array>
@@ -42,6 +44,24 @@ struct SurfaceJob {
         result.pos = column_key(column);
         result.load_id = load_id;
         result.surface = generator->surface_range(column, scratch[context.worker()]);
+        // NOLINTNEXTLINE(performance-move-const-arg): trivially copyable until builds bring blocks
+        results->push(std::move(result));
+    }
+};
+
+struct PlanJob {
+    const Generator* generator;
+    GenScratch* scratch;
+    Inbox<StreamResult>* results;
+    ChunkPos pos;
+    std::uint32_t load_id;
+
+    void operator()(JobContext& context) const noexcept {
+        StreamResult result;
+        result.kind = StreamResult::Kind::plan;
+        result.pos = pos;
+        result.load_id = load_id;
+        result.plan = generator->plan(pos, scratch[context.worker()]);
         // NOLINTNEXTLINE(performance-move-const-arg): trivially copyable until builds bring blocks
         results->push(std::move(result));
     }
@@ -90,6 +110,11 @@ WorldStreamer::WorldStreamer(const Generator& generator, JobSystem& jobs, WakeEv
 
 WorldStreamer::~WorldStreamer() {
     // What is still queued never runs; what ran has sent its result.
+    for (std::uint32_t index = 0; index < chunks_.end_index(); ++index) {
+        if (chunks_.live(index) && chunks_[index].job) {
+            jobs_->cancel(chunks_[index].job);
+        }
+    }
     for (const Column& column : columns_) {
         if (column.job) {
             jobs_->cancel(column.job);
@@ -256,7 +281,27 @@ std::uint32_t WorldStreamer::ensure(ChunkPos pos) {
 }
 
 std::uint32_t WorldStreamer::add_chunk(ChunkPos pos) {
-    return chunks_.add(pos, next_load_id_++);
+    const std::uint32_t index = chunks_.add(pos, next_load_id_++);
+    if (!make_uniform(index)) {
+        waiting_plans_.push_back({.index = index, .load_id = chunks_[index].load_id});
+    }
+    return index;
+}
+
+bool WorldStreamer::make_uniform(std::uint32_t index) {
+    const ChunkPos pos = chunks_[index].pos;
+    std::optional<BlockState> uniform = generator_->out_of_reach(pos);
+    const Column* own = column({.x = pos.x, .z = pos.z});
+    if (!uniform && own != nullptr && own->known && pos.y > own->surface.max_y) {
+        uniform = BlockState::air;
+    }
+    if (!uniform) {
+        return false;
+    }
+    chunks_[index].uniform = *uniform;
+    set_state(index, ChunkState::ready);
+    advance(index);
+    return true;
 }
 
 void WorldStreamer::set_drawn(ChunkPos pos, bool drawn) {
@@ -309,18 +354,82 @@ void WorldStreamer::add_loaded_near(ChunkPos pos, int delta) {
     const bool was = record.loaded_near > 0;
     record.loaded_near = static_cast<std::uint8_t>(record.loaded_near + delta);
     assert(record.loaded_near <= 27);
-    if (was && record.loaded_near == 0) {
-        free_chunk(index);
+    if (!was && record.loaded_near > 0 && record.state == ChunkState::unloading) {
+        // Back before its job reported: as it was.
+        set_state(index, record.before_unloading);
+        advance(index);
+    } else if (was && record.loaded_near == 0) {
+        leave(index);
     }
 }
 
+void WorldStreamer::leave(std::uint32_t index) {
+    ChunkRecord& record = chunks_[index];
+    if (record.state == ChunkState::unloading) {
+        return;
+    }
+    if (record.job) {
+        if (!jobs_->cancel(record.job)) {
+            // It runs: the record goes when the job reports back.
+            record.before_unloading = record.state;
+            set_state(index, ChunkState::unloading);
+            return;
+        }
+        --in_flight_;
+    }
+    free_chunk(index);
+}
+
 void WorldStreamer::free_chunk(std::uint32_t index) {
-    // Every record is queued so far: no neighbor's count moves.
-    chunks_.remove(index, [](std::uint32_t /*neighbor*/) {});
+    const ChunkRecord& record = chunks_[index];
+    if (record.plan != nullptr) {
+        plans_.retire(*record.plan);
+    }
+    chunks_.remove(index, [this](std::uint32_t neighbor) { to_advance_.push_back(neighbor); });
+    advance_neighbors();
+}
+
+void WorldStreamer::set_state(std::uint32_t index, ChunkState state) {
+    chunks_.set_state(index, state,
+                      [this](std::uint32_t neighbor) { to_advance_.push_back(neighbor); });
+    advance_neighbors();
+}
+
+void WorldStreamer::advance_neighbors() {
+    while (!to_advance_.empty()) {
+        const std::uint32_t neighbor = to_advance_.back();
+        to_advance_.pop_back();
+        advance(neighbor);
+    }
+}
+
+void WorldStreamer::advance(std::uint32_t index) {
+    const ChunkRecord& record = chunks_[index];
+    std::optional<ChunkState> next;
+    switch (record.state) {
+    case ChunkState::ready:
+        if (record.ready_neighbors == 26) {
+            next = ChunkState::complete;
+        }
+        break;
+    case ChunkState::complete:
+        if (record.ready_neighbors < 26) {
+            next = ChunkState::ready;
+        }
+        break;
+    default:
+        break;
+    }
+    if (next) {
+        // Ready and complete count the same for the neighbors: no neighbor's
+        // count moves.
+        chunks_.set_state(index, *next, [](std::uint32_t /*neighbor*/) {});
+    }
 }
 
 void WorldStreamer::feed() {
     feed_surfaces();
+    feed_plans();
 }
 
 void WorldStreamer::feed_surfaces() {
@@ -342,12 +451,46 @@ void WorldStreamer::feed_surfaces() {
     });
 }
 
+void WorldStreamer::feed_plans() {
+    start_waiting(waiting_plans_, [this](Waiting entry) {
+        if (!chunks_.live(entry.index) || chunks_[entry.index].load_id != entry.load_id ||
+            chunks_[entry.index].state != ChunkState::queued) {
+            return Start::done;
+        }
+        // Its column's surface tells whether it is above every surface, so
+        // uniform, or needs a plan.
+        const ChunkPos pos = chunks_[entry.index].pos;
+        const Column* own = column({.x = pos.x, .z = pos.z});
+        if (own == nullptr || !own->known) {
+            return Start::later;
+        }
+        if (make_uniform(entry.index)) {
+            return Start::done;
+        }
+        ChunkRecord& record = chunks_[entry.index];
+        record.job = jobs_->submit({}, PlanJob{.generator = generator_,
+                                               .scratch = scratch_.data(),
+                                               .results = &results_,
+                                               .pos = record.pos,
+                                               .load_id = record.load_id});
+        if (!record.job) {
+            return Start::full;
+        }
+        ++in_flight_;
+        set_state(entry.index, ChunkState::planning);
+        return Start::done;
+    });
+}
+
 void WorldStreamer::integrate() {
     results_.drain([this](StreamResult&& result) {
         --in_flight_;
         switch (result.kind) {
         case StreamResult::Kind::surface:
             integrate_surface(result);
+            break;
+        case StreamResult::Kind::plan:
+            integrate_plan(result);
             break;
         }
     });
@@ -372,6 +515,22 @@ void WorldStreamer::integrate_surface(StreamResult& result) {
     column.known = true;
     column.job = {};
     dirty_.push_back(column.pos);
+}
+
+void WorldStreamer::integrate_plan(StreamResult& result) {
+    const std::optional<std::uint32_t> index = chunks_.find(result.pos);
+    if (!index || chunks_[*index].load_id != result.load_id) {
+        return;
+    }
+    ChunkRecord& record = chunks_[*index];
+    record.job = {};
+    record.plan = &plans_.make(result.plan);
+    if (record.state == ChunkState::unloading) {
+        free_chunk(*index);
+        return;
+    }
+    set_state(*index, ChunkState::planned);
+    advance(*index);
 }
 
 const ChunkRecord* WorldStreamer::find(ChunkPos pos) const noexcept {
@@ -403,6 +562,7 @@ StreamingStats WorldStreamer::stats() const noexcept {
         }
     }
     stats.jobs_in_flight = in_flight_;
+    stats.plan_versions = plans_.live();
     return stats;
 }
 
