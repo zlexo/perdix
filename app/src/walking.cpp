@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <numbers>
 
 namespace vx::app {
 namespace {
@@ -17,6 +18,18 @@ constexpr std::chrono::nanoseconds most_behind = std::chrono::seconds(1);
 // flying, and by both sprint-flying.
 constexpr double sprinting_fov = 1.15;
 constexpr double flying_fov = 1.1;
+// Minecraft 26.2's view bobbing, numbers from its jar: the amount at most
+// (walking's speed carried into a tick is 0.118), its easing each tick, the
+// walk distance a block of horizontal motion adds (one step a 1/0.6 of a
+// block), the sideways shift per unit of amount, the lean and the tip in
+// degrees per unit, and how far the tip's phase runs behind, in radians.
+constexpr double bob_most = 0.1;
+constexpr double bob_easing = 0.4;
+constexpr double walk_per_block = 0.6;
+constexpr double bob_sway = 0.5;
+constexpr double bob_roll_degrees = 3.0;
+constexpr double bob_tip_degrees = 5.0;
+constexpr double bob_tip_lead = 0.2;
 // How far below the lowest block a fall returns the player to its spawn.
 constexpr double void_depth = 64.0;
 
@@ -44,6 +57,13 @@ void Walking::advance(std::chrono::nanoseconds elapsed, const TickInput& input,
 }
 
 void Walking::tick(const TickInput& input, const BlockBoxes& world) {
+    // The bob's amount, as the game takes it at the start of a tick: toward
+    // the horizontal speed the player carries into it, at most 0.1, on the
+    // ground; toward 0 off it.
+    previous_bob_ = bob_;
+    const double carried = std::hypot(player_.velocity.x, player_.velocity.z);
+    const double bob_target = player_.on_ground ? std::min(carried, bob_most) : 0.0;
+    bob_ += (bob_target - bob_) * bob_easing;
     previous_ = player_.position;
     vx::tick(player_, input, world, numbers_, scratch_);
     if (player_.position.y < respawn_below_) {
@@ -51,6 +71,10 @@ void Walking::tick(const TickInput& input, const BlockBoxes& world) {
     }
     previous_eye_ = eye_;
     eye_ += (eye_height(player_.pose) - eye_) * 0.5;
+    // Every move, on the ground or not, walks the bob's steps on.
+    const Vec3d moved = player_.position - previous_;
+    previous_walked_ = walked_;
+    walked_ += walk_per_block * std::hypot(moved.x, moved.z);
     previous_fov_ = fov_;
     const double target =
         (player_.flying ? flying_fov : 1.0) * (player_.sprinting ? sprinting_fov : 1.0);
@@ -66,6 +90,25 @@ Vec3d Walking::eye() const noexcept {
     const double t = between();
     return between_points(previous_, player_.position, t) +
            Vec3d{.x = 0.0, .y = previous_eye_ + ((eye_ - previous_eye_) * t), .z = 0.0};
+}
+
+Bob Walking::bob() const noexcept {
+    if (!bobbing) {
+        return {};
+    }
+    // The game reads the walk distance a fraction of a tick past the last
+    // one, negated, and blends the amount between the last two ticks.
+    const double t = between();
+    const double walked = -(walked_ + ((walked_ - previous_walked_) * t));
+    const double amount = previous_bob_ + ((bob_ - previous_bob_) * t);
+    const double phase = std::numbers::pi * walked;
+    constexpr double radians_per_degree = std::numbers::pi / 180.0;
+    return {.shift_x = std::sin(phase) * amount * bob_sway,
+            .shift_y = -std::abs(std::cos(phase) * amount),
+            .turn_z = static_cast<float>(std::sin(phase) * amount * bob_roll_degrees *
+                                         radians_per_degree),
+            .turn_x = static_cast<float>(std::abs(std::cos(phase - bob_tip_lead) * amount) *
+                                         bob_tip_degrees * radians_per_degree)};
 }
 
 double Walking::fov_factor() const noexcept {
@@ -93,6 +136,9 @@ void Walking::place(Vec3d feet) noexcept {
     previous_eye_ = eye_;
     fov_ = 1.0;
     previous_fov_ = 1.0;
+    bob_ = 0.0;
+    previous_bob_ = 0.0;
+    previous_walked_ = walked_;
 }
 
 } // namespace vx::app

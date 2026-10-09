@@ -12,9 +12,15 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <numbers>
+#include <vector>
 
 namespace {
 
@@ -323,4 +329,126 @@ TEST_CASE("placing the player closes Space's window: one press after it does not
     walking.place(on_the_floor);
     walking.advance(50ms, space, blocks);
     CHECK_FALSE(walking.player().flying);
+}
+
+TEST_CASE("standing still the view does not bob, and walking it sways, lifts, leans and tips "
+          "as the game's does") {
+    const vx::ChunkStorage chunk = floor_chunk();
+    const vx::ChunkBoxes blocks(chunk, {});
+    vx::app::Walking walking(on_the_floor, 0.0);
+    walking.advance(1s, no_keys, blocks);
+    const vx::app::Bob still = walking.bob();
+    CHECK(still.shift_x == 0.0);
+    CHECK(still.shift_y == 0.0);
+    CHECK(still.turn_z == 0.0F);
+    CHECK(still.turn_x == 0.0F);
+    // Walking carries 0.118 a tick into each tick, so the amount reaches its
+    // most, 0.1: a shift of 0.05 sideways and 0.1 up and down, a lean of 0.3
+    // degrees and a tip of 0.5, as Minecraft 26.2's.
+    walking.advance(2s, walk, blocks);
+    constexpr double degree = 3.141592653589793 / 180.0;
+    std::array<double, 4> most{};
+    for (int frame = 0; frame < 100; ++frame) {
+        walking.advance(10ms, walk, blocks);
+        const vx::app::Bob bob = walking.bob();
+        most[0] = std::max(most[0], std::abs(bob.shift_x));
+        most[1] = std::max(most[1], std::abs(bob.shift_y));
+        most[2] = std::max(most[2], std::abs(static_cast<double>(bob.turn_z)));
+        most[3] = std::max(most[3], std::abs(static_cast<double>(bob.turn_x)));
+    }
+    const std::array<double, 4> game = {0.05, 0.1, 0.3 * degree, 0.5 * degree};
+    for (std::size_t i = 0; i < game.size(); ++i) {
+        INFO("part ", i);
+        CHECK(most[i] <= game[i] * 1.0001);
+        CHECK(most[i] > game[i] * 0.98);
+    }
+}
+
+TEST_CASE("the bob takes one step for each 1/0.6 of a block walked") {
+    // The lift peaks where the walk distance, 0.6 of the blocks moved, is a
+    // whole number: every 1.667 blocks. Frames of 10 ms catch each peak to
+    // within 0.022 blocks.
+    const vx::ChunkStorage chunk = floor_chunk();
+    const vx::ChunkBoxes blocks(chunk, {});
+    vx::app::Walking walking({.x = 16.5, .y = 1.0, .z = 30.5}, 0.0);
+    walking.advance(2s, walk, blocks);
+    std::vector<double> peaks;
+    double best = 0.0;
+    double best_at = 0.0;
+    for (int frame = 0; frame < 300; ++frame) {
+        walking.advance(10ms, walk, blocks);
+        const double lift = std::abs(walking.bob().shift_y);
+        const double along = -walking.eye().z;
+        if (lift > 0.0995) {
+            if (lift > best) {
+                best = lift;
+                best_at = along;
+            }
+        } else if (best > 0.0) {
+            peaks.push_back(best_at);
+            best = 0.0;
+        }
+    }
+    REQUIRE(peaks.size() >= 3);
+    for (std::size_t i = 1; i < peaks.size(); ++i) {
+        INFO("step ", i);
+        CHECK(peaks[i] - peaks[i - 1] == doctest::Approx(1.0 / 0.6).epsilon(0.03));
+    }
+}
+
+TEST_CASE("the lean follows the sway, and the tip runs 0.2 of a step's phase behind the lift") {
+    // 26.2's (from its jar): the sway and the lean go with the phase's sine,
+    // the lift with its cosine, and the tip with the cosine of the phase 0.2
+    // earlier. The sway and the lift give the phase's sine and the size of
+    // its cosine, so the phase is one of two.
+    const vx::ChunkStorage chunk = floor_chunk();
+    const vx::ChunkBoxes blocks(chunk, {});
+    vx::app::Walking walking({.x = 16.5, .y = 1.0, .z = 30.5}, 0.0);
+    walking.advance(2s, walk, blocks);
+    constexpr double degree = std::numbers::pi / 180.0;
+    for (int frame = 0; frame < 100; ++frame) {
+        INFO("frame ", frame);
+        walking.advance(10ms, walk, blocks);
+        const vx::app::Bob bob = walking.bob();
+        const double amount = std::hypot(2.0 * bob.shift_x, bob.shift_y);
+        REQUIRE(amount > 0.09);
+        const double sine = 2.0 * bob.shift_x / amount;
+        const double cosine = std::abs(bob.shift_y) / amount;
+        CHECK(static_cast<double>(bob.turn_z) / (amount * 3.0 * degree) ==
+              doctest::Approx(sine).epsilon(1e-5));
+        const double tip = static_cast<double>(bob.turn_x) / (amount * 5.0 * degree);
+        double nearest = 1.0;
+        for (const double phase : {std::atan2(sine, cosine), std::atan2(sine, -cosine)}) {
+            nearest = std::min(nearest, std::abs(tip - std::abs(std::cos(phase - 0.2))));
+        }
+        CHECK(nearest < 1e-4);
+    }
+}
+
+TEST_CASE("in the air, or switched off, the bob dies away") {
+    const vx::ChunkStorage chunk = floor_chunk();
+    const vx::ChunkBoxes blocks(chunk, {});
+    vx::app::Walking walking(on_the_floor, 0.0);
+    walking.advance(2s, walk, blocks);
+    // A jump: the tick that jumps began on the ground and keeps the amount
+    // at 0.1; each tick after it keeps 0.6 of it, easing 0.4 of the way to 0.
+    // Drawn right at the 11th tick, the camera shows the 10th's amount: 0.1
+    // times 0.6 to the 9th, 0.001, a hundredth of walking's. Whatever the
+    // step's phase, the amount is the lift and twice the sway, squared and
+    // summed, square-rooted.
+    walking.advance(550ms, {.held = {.forward = true, .jump = true}, .yaw = 0.0F}, blocks);
+    REQUIRE_FALSE(walking.player().on_ground);
+    const vx::app::Bob up = walking.bob();
+    CHECK(std::hypot(2.0 * up.shift_x, up.shift_y) ==
+          doctest::Approx(0.1 * std::pow(0.6, 9)).epsilon(1e-6));
+    // Switched off, nothing at all, walking or not.
+    vx::app::Walking off(on_the_floor, 0.0);
+    off.bobbing = false;
+    off.advance(2s, walk, blocks);
+    off.advance(25ms, walk, blocks);
+    const vx::app::Bob none = off.bob();
+    CHECK(none.shift_x == 0.0);
+    CHECK(none.shift_y == 0.0);
+    CHECK(none.turn_z == 0.0F);
+    CHECK(none.turn_x == 0.0F);
 }

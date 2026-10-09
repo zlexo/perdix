@@ -4,6 +4,7 @@
 #include "overlay.hpp"
 #include "pack.hpp"
 #include "startup_pack.hpp"
+#include "view.hpp"
 #include "walking.hpp"
 #include "window.hpp"
 
@@ -125,15 +126,16 @@ vx::Result<void> draw_demo_chunk(const vx::BlockRegistry& registry, vx::render::
 }
 
 // One frame: the overlay built, the chunk meshed again where the overlay
-// switched merging, and the frame rendered.
+// switched merging, and the frame rendered. The overlay switches `bobbing`.
 vx::Result<vx::render::Frame> draw_frame(vx::render::Renderer& renderer, vx::app::Overlay& overlay,
                                          const vx::app::Window& window,
-                                         const vx::render::Camera& camera, DemoChunk& demo) {
+                                         const vx::render::Camera& camera, DemoChunk& demo,
+                                         bool& bobbing) {
     // A daytime sky blue, #78A7FF in sRGB.
     constexpr vx::render::Color sky = {.r = 0.188F, .g = 0.386F, .b = 1.0F, .a = 1.0F};
     renderer.resize(window.framebuffer_size());
     ImDrawData* const shown =
-        overlay.build(renderer, camera, window.mouse_captured(), demo.meshing);
+        overlay.build(renderer, camera, window.mouse_captured(), demo.meshing, bobbing);
     if (const vx::Result<void> meshed = mesh_demo_chunk(demo, renderer); !meshed.has_value()) {
         return meshed.error();
     }
@@ -350,8 +352,12 @@ int main(int argc, char* argv[]) {
                               .flying = mover.walking.player().flying,
                               .ticks = mover.walking.ticks()});
 
-        const vx::Result<vx::render::Frame> rendered =
-            draw_frame(renderer.value(), overlay, window.value(), camera, demo);
+        // The camera drawn: the player's, swaying with the view's bob while it
+        // walks. The bob never touches the camera the mouse turns.
+        const vx::render::Camera shown =
+            mover.noclip ? camera : vx::app::bobbed(camera, mover.walking.bob());
+        const vx::Result<vx::render::Frame> rendered = draw_frame(
+            renderer.value(), overlay, window.value(), shown, demo, mover.walking.bobbing);
         if (!rendered.has_value()) {
             std::cerr << "error: " << rendered.error().message << '\n';
             return 1;

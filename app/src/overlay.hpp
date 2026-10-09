@@ -71,9 +71,10 @@ public:
     // Builds this frame's overlay: its draw lists, or null while it is
     // hidden. A captured mouse flies the camera, and the overlay ignores it.
     // Switching the present mode asks `renderer` for it. Switching merging
-    // changes `meshing.merge`, and the caller meshes the chunk again.
+    // changes `meshing.merge`, and the caller meshes the chunk again. The
+    // View Bobbing switch changes `bobbing`.
     [[nodiscard]] ImDrawData* build(render::Renderer& renderer, const render::Camera& camera,
-                                    bool mouse_captured, ChunkMeshing& meshing);
+                                    bool mouse_captured, ChunkMeshing& meshing, bool& bobbing);
 
     // What the next build shows of the player's movement.
     void set_movement(const MovementReport& movement) noexcept { movement_ = movement; }
@@ -107,6 +108,7 @@ private:
     static void draw_chunk(render::Renderer& renderer, ChunkMeshing& meshing);
     static void draw_camera(const render::Camera& camera);
     static void draw_movement(const MovementReport& movement);
+
     void draw_validation(const render::Context& context) const;
 
     ImGuiContext* context_;
