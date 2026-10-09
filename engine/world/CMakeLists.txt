@@ -41,6 +41,7 @@ add_library(vx_world STATIC
     src/packed_array.cpp
     src/placeholder_generator.cpp
     src/region.cpp
+    src/streamed_boxes.cpp
     src/world_streamer.cpp)
 add_library(vx::world ALIAS vx_world)
 target_link_libraries(vx_world PUBLIC vx::core PRIVATE vx_tomlplusplus)

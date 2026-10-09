@@ -77,6 +77,7 @@ add_executable(vx_world_tests
     world/slipperiness_test.cpp
     world/sprint_test.cpp
     world/step_up_test.cpp
+    world/streamed_boxes_test.cpp
     world/versions_property_test.cpp
     world/versions_test.cpp
     world/world_streamer_property_test.cpp
