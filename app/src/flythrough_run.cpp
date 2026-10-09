@@ -32,6 +32,12 @@ template <class T> T percentile(std::vector<T>& values, double q) {
     return values[std::clamp<std::size_t>(rank, 1, values.size()) - 1];
 }
 
+// A phase's longest step and pass, with a sample's in them.
+void add_longest(PhaseResult& result, const FlythroughSample& sample) {
+    result.longest_step_ms = std::max(result.longest_step_ms, milliseconds_of(sample.longest_step));
+    result.longest_pass_ms = std::max(result.longest_pass_ms, milliseconds_of(sample.longest_pass));
+}
+
 } // namespace
 
 FlythroughRun::FlythroughRun(const FlythroughPlan& plan, Clock::time_point start)
@@ -92,8 +98,8 @@ void FlythroughRun::add(const FlythroughSample& sample) {
         return;
     }
     if (closes) {
-        if (sample.full && unclosed_ == *closes) {
-            unclosed_.reset();
+        if (sample.full) {
+            close(*closes, sample);
         }
         return;
     }
@@ -102,7 +108,33 @@ void FlythroughRun::add(const FlythroughSample& sample) {
     if (sample.id < phase_first_id_) {
         return;
     }
+    if (!first_) {
+        first_ = sample;
+    }
+    last_ = sample;
     complete_ = complete_ || sample.complete;
+    if (sample.full) {
+        samples_.push_back(sample);
+    }
+}
+
+void FlythroughRun::close(std::size_t index, const FlythroughSample& sample) {
+    PhaseResult& over = results_[index];
+    add_longest(over, sample);
+    over.broken += sample.broken;
+    over.chunk_bytes_end = sample.chunk_bytes;
+    over.chunk_bytes_peak = std::max(over.chunk_bytes_peak, sample.chunk_bytes);
+    over.mesh_bytes_end = sample.mesh_bytes;
+    over.mesh_bytes_peak = std::max(over.mesh_bytes_peak, sample.mesh_bytes);
+    over.footprint_bytes_end = sample.footprint_bytes;
+    over.footprint_bytes_peak = std::max(over.footprint_bytes_peak, sample.footprint_bytes);
+    // Where the phase just before this one ended, this one's rates start.
+    if (index + 1 == results_.size() && !first_) {
+        first_ = sample;
+    }
+    if (unclosed_ == index) {
+        unclosed_.reset();
+    }
 }
 
 void FlythroughRun::finish_phase(Clock::time_point now, bool capped) {
@@ -116,8 +148,44 @@ void FlythroughRun::finish_phase(Clock::time_point now, bool capped) {
         result.frame_p99_ms = milliseconds_of(percentile(frame_times_, 0.99));
         result.frame_max_ms = milliseconds_of(frame_times_.back()); // sorted
     }
+    if (!samples_.empty()) {
+        std::vector<std::uint32_t> near_holes;
+        std::vector<std::uint32_t> holes;
+        for (const FlythroughSample& sample : samples_) {
+            add_longest(result, sample);
+            near_holes.push_back(sample.near_holes);
+            holes.push_back(sample.holes);
+            result.chunk_bytes_peak = std::max(result.chunk_bytes_peak, sample.chunk_bytes);
+            result.mesh_bytes_peak = std::max(result.mesh_bytes_peak, sample.mesh_bytes);
+            result.footprint_bytes_peak =
+                std::max(result.footprint_bytes_peak, sample.footprint_bytes);
+            result.broken += sample.broken;
+        }
+        result.near_holes_p99 = percentile(near_holes, 0.99);
+        result.holes_p99 = percentile(holes, 0.99);
+        const FlythroughSample& last = samples_.back();
+        result.chunk_bytes_end = last.chunk_bytes;
+        result.mesh_bytes_end = last.mesh_bytes;
+        result.footprint_bytes_end = last.footprint_bytes;
+    }
+    if (first_ && last_) {
+        const FlythroughSample& from = *first_;
+        const FlythroughSample& to = *last_;
+        const double between = seconds_of(to.at - from.at);
+        if (between > 0.0) {
+            const auto rate = [between](std::uint64_t start, std::uint64_t end) {
+                return static_cast<double>(end - start) / between;
+            };
+            result.generated_per_second = rate(from.generated, to.generated);
+            result.uniform_per_second = rate(from.uniform, to.uniform);
+            result.meshed_per_second = rate(from.meshed, to.meshed);
+        }
+    }
     results_.push_back(result);
     frame_times_.clear();
+    samples_.clear();
+    first_.reset();
+    last_.reset();
     ++phase_;
     phase_start_ = now;
     phase_sampled_ = false;
