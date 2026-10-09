@@ -79,6 +79,7 @@ add_executable(vx_world_tests
     world/step_up_test.cpp
     world/versions_property_test.cpp
     world/versions_test.cpp
+    world/world_streamer_property_test.cpp
     world/world_streamer_test.cpp)
 target_link_libraries(vx_world_tests PRIVATE vx::world doctest::doctest)
 # RFC 0004's corpus of bad block files, read by the block file tests.

@@ -91,10 +91,11 @@ public:
     Region(ChunkPos camera, const RegionSettings& settings) noexcept
         : camera_(camera), settings_(settings) {}
 
-    // The same region with every distance `by` chunks larger: a loaded chunk
-    // unloads only once it leaves the region grown by the hysteresis, and a
-    // drawn one stops being drawn once it leaves the region grown by one
-    // less, so a drawn chunk never loses a neighbor.
+    // The same region with every distance `by` chunks larger. Streaming keeps
+    // a drawn chunk drawn until it leaves the drawn region grown by the
+    // hysteresis, and loads and plans around the drawn chunks, so a loaded
+    // chunk unloads only once it leaves the loaded region grown as much, and
+    // a drawn chunk never loses a neighbor.
     [[nodiscard]] Region grown(std::int32_t by) const noexcept;
 
     // Whether a column holds drawn chunks: within the view distance or the
