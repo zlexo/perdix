@@ -15,8 +15,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <random>
 #include <set>
+#include <span>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -95,6 +97,7 @@ int outside_by_hand(ChunkPos pos) {
 // its state follows from its counts and flags.
 void check_rules(const WorldStreamer& streamer) {
     const vx::ChunkRecords& records = streamer.records();
+    const bool regenerating = streamer.stats().regenerating > 0;
     for (std::uint32_t index = 0; index < records.end_index(); ++index) {
         if (!records.live(index)) {
             continue;
@@ -115,7 +118,9 @@ void check_rules(const WorldStreamer& streamer) {
             REQUIRE(record.loaded);
             REQUIRE(record.planned_neighbors == 26);
         }
-        if (record.state == ChunkState::planned && record.loaded) {
+        // While regenerating, a planned chunk also waits for its neighbors'
+        // new plans.
+        if (record.state == ChunkState::planned && record.loaded && !regenerating) {
             REQUIRE(record.planned_neighbors < 26);
         }
         if (record.state == ChunkState::complete) {
@@ -249,11 +254,39 @@ std::map<Chunk, std::uint32_t> load_ids(const WorldStreamer& streamer) {
     return ids;
 }
 
+// The placeholder's hills at even versions, solid stone builds at odd ones.
+class FlippingTerrain final : public vx::Generator {
+public:
+    explicit FlippingTerrain(const vx::Generator& inner) : inner_(&inner) {}
+
+    [[nodiscard]] vx::ChunkRange surface_range(vx::ColumnPos column,
+                                               vx::GenScratch& scratch) const override {
+        return inner_->surface_range(column, scratch);
+    }
+    [[nodiscard]] std::optional<BlockState> out_of_reach(ChunkPos pos) const noexcept override {
+        return inner_->out_of_reach(pos);
+    }
+    [[nodiscard]] vx::ChunkPlan plan(ChunkPos pos, vx::GenScratch& scratch) const override {
+        return inner_->plan(pos, scratch);
+    }
+    [[nodiscard]] vx::ChunkStorage build(std::span<const vx::ChunkPlan* const, 27> plans,
+                                         vx::GenScratch& scratch) const override {
+        return version_ % 2 == 0 ? inner_->build(plans, scratch) : vx::ChunkStorage::uniform(stone);
+    }
+    [[nodiscard]] std::uint32_t version() const noexcept override { return version_; }
+
+    std::uint32_t version_ = 0;
+
+private:
+    const vx::Generator* inner_;
+};
+
 } // namespace
 
-TEST_CASE("under a random camera walk with edits, the rules hold at every step, and settled, the "
-          "records are the region") {
-    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+TEST_CASE("under a random camera walk with edits and new generator versions, the rules hold at "
+          "every step, and settled, the records are the region") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    FlippingTerrain generator(placeholder);
     const vx::RegionSettings settings{
         .view_distance = 3, .near_distance = 2, .near_height = 1, .hysteresis = 2};
     vx::JobSystem jobs({.slots = 64});
@@ -272,7 +305,13 @@ TEST_CASE("under a random camera walk with edits, the rules hold at every step, 
     std::size_t settled_checks = 0;
     std::size_t moves_with_jobs_queued = 0;
     std::size_t steps_with_results_left = 0;
+    std::size_t versions = 0;
     for (int move = 0; move < 40; ++move) {
+        // Now and then the generator changes, from the next feed on.
+        if (roll(random) < 12) {
+            ++generator.version_;
+            ++versions;
+        }
         // Mostly short moves, sometimes a jump, sometimes a climb.
         const int kind = roll(random);
         if (kind < 70) {
@@ -386,6 +425,16 @@ TEST_CASE("under a random camera walk with edits, the rules hold at every step, 
         }
         CHECK(streamer.stats().block_versions == with_blocks);
         CHECK(streamer.stats().plan_versions == with_plans);
+        // Settled, nothing is left to regenerate, and at an odd version only
+        // edited chunks hold blocks: every build since was stone.
+        CHECK(streamer.stats().regenerating == 0);
+        if (generator.version_ % 2 == 1) {
+            for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+                if (records.live(index) && records[index].blocks != nullptr) {
+                    CHECK(records[index].edited);
+                }
+            }
+        }
         CHECK(wanted.size() > 50);
         // Every edited chunk is still there, with its edit.
         for (const auto& [x, y, z] : edited) {
@@ -397,6 +446,7 @@ TEST_CASE("under a random camera walk with edits, the rules hold at every step, 
     CHECK(settled_checks > 8);
     CHECK(moves_with_jobs_queued > 3);
     CHECK(steps_with_results_left > 3);
+    CHECK(versions > 2);
     CHECK_FALSE(edited.empty());
     settle(streamer, jobs);
 }
