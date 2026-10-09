@@ -8,8 +8,10 @@
 #include <vx/mesh/mesh_chunk.hpp>
 #include <vx/mesh/padded_chunk.hpp>
 #include <vx/mesh/quad.hpp>
+#include <vx/render/arena_upkeep.hpp>
 #include <vx/render/block_textures.hpp>
 #include <vx/render/camera.hpp>
+#include <vx/render/chunk_arena.hpp>
 #include <vx/render/chunk_renderer.hpp>
 #include <vx/render/chunk_uploads.hpp>
 #include <vx/render/draw_lists.hpp>
@@ -321,6 +323,142 @@ TEST_CASE("a seeded scene draws the same with culling and merging on or off, and
         scene.updates, [](const auto& update) { return !update.mesh.all().empty(); }));
     CHECK(meshes > 100);
     CHECK(staged_offers.frames_waited == meshes - 1);
+}
+
+TEST_CASE("a small arena repacks and compacts while the scene streams in, leaves and comes back, "
+          "and draws the same") {
+    const std::vector<std::byte> textures = layer_bytes(colors);
+    const Scene scene;
+    const vx::render::Camera camera = scene_camera();
+    vx::Result<vx::render::Renderer> reference_created = scene_renderer(textures, false);
+    REQUIRE(reference_created.has_value());
+    Offers reference_offers;
+    offer_all(reference_offers, scene);
+    const std::vector<std::uint8_t> reference =
+        draw_all(reference_created.value(), reference_offers, camera);
+
+    for (const bool staged : {false, true}) {
+        INFO("staged: ", staged);
+        // 4,096 quads to start with: the scene needs several repacks.
+        vx::Result<vx::render::Renderer> created =
+            vx::render::Renderer::create({.surface = std::nullopt,
+                                          .framebuffer = image_size,
+                                          .validation = true,
+                                          .present_mode = vx::render::PresentMode::fifo,
+                                          .overlay = nullptr,
+                                          .block_textures = textures,
+                                          .chunk_arena_quads = 4'096,
+                                          .chunk_arena_limit = 0,
+                                          .stage_chunk_uploads = staged,
+                                          .draw_call_limit = 0});
+        INFO((created.has_value() ? std::string() : created.error().message));
+        REQUIRE(created.has_value());
+        vx::render::Renderer& renderer = created.value();
+        Offers offers;
+        offer_all(offers, scene);
+        CHECK(differing_pixels(reference, draw_all(renderer, offers, camera)) == 0);
+        CHECK(renderer.chunks().upkeep().repacks > 0);
+        CHECK(renderer.chunks().arena().space().stats().capacity > 4'096);
+
+        // Every other chunk leaves; once every frame slot has come round,
+        // their ranges are free and compaction moves the highest meshes
+        // down into them.
+        for (std::size_t at = 0; at < scene.updates.size(); at += 2) {
+            offers.removals.push_back(scene.updates[at].pos);
+        }
+        const vx::render::FrameInputs inputs{.sky = sky,
+                                             .camera = camera,
+                                             .cubes = {},
+                                             .overlay = nullptr,
+                                             .chunk_changes = &offers};
+        for (int frame = 0; frame < 3; ++frame) {
+            REQUIRE(renderer.render(inputs).has_value());
+        }
+        renderer.compact_chunk_arena();
+        REQUIRE(renderer.render(inputs).has_value());
+        for (int frame = 0; frame < 200 && renderer.chunks().upkeep().compacting; ++frame) {
+            REQUIRE(renderer.render(inputs).has_value());
+        }
+        CHECK_FALSE(renderer.chunks().upkeep().compacting);
+        CHECK(renderer.chunks().upkeep().moved_total > 0);
+        // They come back, as newer meshes of the same quads.
+        for (std::size_t at = 0; at < scene.updates.size(); at += 2) {
+            vx::render::ChunkMeshUpdate update = scene.updates[at];
+            update.generation = 2;
+            offers.waiting.push_back(update);
+        }
+        CHECK(differing_pixels(reference, draw_all(renderer, offers, camera)) == 0);
+    }
+}
+
+TEST_CASE("the frame a repack happens in draws from the new arena") {
+    const std::vector<std::byte> textures = layer_bytes(colors);
+    const Scene scene;
+    const vx::render::Camera camera = scene_camera();
+    vx::Result<vx::render::Renderer> reference_created = scene_renderer(textures, false);
+    REQUIRE(reference_created.has_value());
+    Offers reference_offers;
+    offer_all(reference_offers, scene);
+    const std::vector<std::uint8_t> reference =
+        draw_all(reference_created.value(), reference_offers, camera);
+
+    for (const bool staged : {false, true}) {
+        INFO("staged: ", staged);
+        vx::Result<vx::render::Renderer> created =
+            vx::render::Renderer::create({.surface = std::nullopt,
+                                          .framebuffer = image_size,
+                                          .validation = true,
+                                          .present_mode = vx::render::PresentMode::fifo,
+                                          .overlay = nullptr,
+                                          .block_textures = textures,
+                                          .chunk_arena_quads = 4'096,
+                                          .chunk_arena_limit = 0,
+                                          .stage_chunk_uploads = staged,
+                                          .draw_call_limit = 0});
+        REQUIRE(created.has_value());
+        vx::render::Renderer& renderer = created.value();
+        Offers offers;
+        offer_all(offers, scene);
+        static_cast<void>(draw_all(renderer, offers, camera));
+        // Every other chunk again, newer: their meshes move to new ranges,
+        // so a repack now moves meshes to new places, not where they were.
+        for (std::size_t at = 0; at < scene.updates.size(); at += 2) {
+            vx::render::ChunkMeshUpdate update = scene.updates[at];
+            update.generation = 2;
+            offers.waiting.push_back(update);
+        }
+        static_cast<void>(draw_all(renderer, offers, camera));
+        // A mesh far out of view, larger than the room left: the next frame
+        // refuses it, and the one after repacks, uploads it and draws.
+        const vx::render::ArenaSpace& space = renderer.chunks().arena().space();
+        const std::uint32_t room = space.capacity() - space.live();
+        const std::vector<vx::Quad> quads(std::size_t{room} + 1);
+        vx::ChunkMesh big{};
+        std::size_t next = 0;
+        for (std::size_t group = 0; group < 12 && next < quads.size(); ++group) {
+            const std::size_t count = std::min<std::size_t>(32'768, quads.size() - next);
+            big.ranges[group / 6][group % 6] =
+                std::span<const vx::Quad>(quads).subspan(next, count);
+            next += count;
+        }
+        REQUIRE(next == quads.size());
+        offers.waiting.push_back(
+            {.pos = {.x = 0, .y = 1'000, .z = 0}, .generation = 1, .mesh = big});
+        const vx::render::FrameInputs inputs{.sky = sky,
+                                             .camera = camera,
+                                             .cubes = {},
+                                             .overlay = nullptr,
+                                             .chunk_changes = &offers};
+        const std::uint32_t repacks = renderer.chunks().upkeep().repacks;
+        REQUIRE(renderer.render(inputs).has_value());
+        REQUIRE(offers.waiting.size() == 1);
+        REQUIRE(renderer.render(inputs).has_value());
+        REQUIRE(renderer.chunks().upkeep().repacks == repacks + 1);
+        REQUIRE(offers.waiting.empty());
+        vx::Result<std::vector<std::uint8_t>> pixels = renderer.capture();
+        REQUIRE(pixels.has_value());
+        CHECK(differing_pixels(reference, pixels.value()) == 0);
+    }
 }
 
 TEST_CASE("an arena past what a command's vertexOffset reaches is refused, before it is made") {

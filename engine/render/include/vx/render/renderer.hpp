@@ -52,6 +52,10 @@ struct RendererDesc {
     // The chunk arena's room, in quads (RFC 0007): 32 MiB, until the app
     // sizes it from its view distance.
     std::uint32_t chunk_arena_quads = std::uint32_t{1} << 22U;
+    // The most quads the chunk arena starts with or grows to (RFC 0007).
+    // 0 is a quarter of the device's memory budget; tests set less, to fill
+    // it.
+    std::uint32_t chunk_arena_limit = 0;
     // Tests set it to take the staged upload path on any device, as a
     // discrete GPU without host-visible device memory would.
     bool stage_chunk_uploads = false;
@@ -190,6 +194,9 @@ public:
     void set_chunk_budget(std::chrono::nanoseconds budget) noexcept {
         chunks_.uploads().set_budget(budget);
     }
+    // Starts the chunk arena's compaction (RFC 0007) at the next frame, with
+    // no upload refused: for tests.
+    void compact_chunk_arena() noexcept { chunks_.start_compaction(); }
     // The arena, its uploads and the last frame's culling, for the overlay.
     [[nodiscard]] const ChunkRenderer& chunks() const noexcept { return chunks_; }
     // How the chunk's textures are filtered, from the next frame.
