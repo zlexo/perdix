@@ -3,11 +3,16 @@
 #include "flythrough.hpp"
 
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
+#include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -30,6 +35,22 @@ template <class T> T percentile(std::vector<T>& values, double q) {
     std::ranges::sort(values);
     const auto rank = static_cast<std::size_t>(std::ceil(q * static_cast<double>(values.size())));
     return values[std::clamp<std::size_t>(rank, 1, values.size()) - 1];
+}
+
+// `value` with `decimals` places.
+std::string fixed(double value, int decimals) {
+    std::array<char, 64> text{};
+    const std::to_chars_result written = std::to_chars(text.data(), text.data() + text.size(),
+                                                       value, std::chars_format::fixed, decimals);
+    return written.ec == std::errc{} ? std::string(text.data(), written.ptr) : std::string("?");
+}
+
+std::string mebibytes(std::uint64_t bytes) {
+    return fixed(static_cast<double>(bytes) / (1024.0 * 1024.0), 1);
+}
+
+std::string per_second(const std::optional<double>& rate) {
+    return rate ? fixed(*rate, 0) : std::string("-");
 }
 
 // A phase's longest step and pass, with a sample's in them.
@@ -201,6 +222,65 @@ void FlythroughRun::finish_phase(Clock::time_point now, bool capped) {
     if (!done_) {
         unclosed_ = results_.size() - 1;
     }
+}
+
+std::vector<std::string> flythrough_problems(std::span<const PhaseResult> results) {
+    std::vector<std::string> problems;
+    const PhaseResult* load = nullptr;
+    const PhaseResult* teleport = nullptr;
+    for (const PhaseResult& result : results) {
+        const std::string name(phase_name(result.phase));
+        if (result.broken > 0) {
+            problems.push_back(name + ": " + std::to_string(result.broken) +
+                               " invariants broken over its samples");
+        }
+        if (result.capped) {
+            problems.push_back(name + ": the region was not complete by the wait's cap, " +
+                               fixed(result.seconds, 0) + " s");
+        }
+        load = result.phase == Phase::load ? &result : load;
+        teleport = result.phase == Phase::teleport ? &result : teleport;
+    }
+    if (load == nullptr || teleport == nullptr) {
+        problems.emplace_back("the run ended before the teleport");
+    } else if (!load->capped && !teleport->capped) {
+        const auto before = static_cast<double>(load->chunk_bytes_end);
+        const auto after = static_cast<double>(teleport->chunk_bytes_end);
+        if (before <= 0.0 || std::abs(after - before) > 0.05 * before) {
+            problems.push_back("chunk data after the teleport, " +
+                               mebibytes(teleport->chunk_bytes_end) +
+                               " MiB, is more than 5% off its level after the load, " +
+                               mebibytes(load->chunk_bytes_end) + " MiB");
+        }
+    }
+    return problems;
+}
+
+std::string flythrough_report(const FlythroughHeader& header,
+                              std::span<const PhaseResult> results) {
+    std::string report = "### Perdix flythrough " + std::to_string(flythrough_version) + "\n\n";
+    report += "Perdix " + header.engine + ", " + header.build + " build. " + header.device + ", " +
+              header.driver + ". " + header.settings + ".\n\n";
+    report += "| Phase | Time | Frame p50 / p99 / max | Longest step / pass | Generated / uniform "
+              "/ meshed a second | Holes p99 within 256 / all | Chunk data end / peak | GPU "
+              "meshes end / peak | Footprint end / peak |\n";
+    report += "|---|---|---|---|---|---|---|---|---|\n";
+    for (const PhaseResult& result : results) {
+        report +=
+            "| " + std::string(phase_name(result.phase)) + " | " + fixed(result.seconds, 2) + " s" +
+            (result.capped ? " (cap)" : "") + " | " + fixed(result.frame_p50_ms, 1) + " / " +
+            fixed(result.frame_p99_ms, 1) + " / " + fixed(result.frame_max_ms, 1) + " ms | " +
+            fixed(result.longest_step_ms, 2) + " / " + fixed(result.longest_pass_ms, 2) + " ms | " +
+            per_second(result.generated_per_second) + " / " +
+            per_second(result.uniform_per_second) + " / " + per_second(result.meshed_per_second) +
+            " | " + std::to_string(result.near_holes_p99) + " / " +
+            std::to_string(result.holes_p99) + " | " + mebibytes(result.chunk_bytes_end) + " / " +
+            mebibytes(result.chunk_bytes_peak) + " MiB | " + mebibytes(result.mesh_bytes_end) +
+            " / " + mebibytes(result.mesh_bytes_peak) + " MiB | " +
+            mebibytes(result.footprint_bytes_end) + " / " + mebibytes(result.footprint_bytes_peak) +
+            " MiB |\n";
+    }
+    return report;
 }
 
 } // namespace vx::app
