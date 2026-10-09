@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 // RFC 0006's flythrough as the app runs it: phases that end at their
@@ -425,4 +426,80 @@ TEST_CASE("a phase's rates run between its first and last samples, with holes at
     CHECK(result.footprint_bytes_peak == 300);
     // The hover had no sample of its own: no rates.
     CHECK_FALSE(run.results().at(1).generated_per_second.has_value());
+}
+
+TEST_CASE("the report opens with what was run, then a row for each phase") {
+    vx::app::PhaseResult load;
+    load.phase = Phase::load;
+    load.seconds = 1.834;
+    load.frame_p50_ms = 4.21;
+    load.frame_p99_ms = 9.06;
+    load.frame_max_ms = 15.3;
+    load.longest_step_ms = 0.714;
+    load.longest_pass_ms = 1.5;
+    load.generated_per_second = 9'876.4;
+    load.uniform_per_second = 21'000.0;
+    load.meshed_per_second = 8'765.0;
+    load.chunk_bytes_end = 100 * 1024 * 1024;
+    load.chunk_bytes_peak = 101 * 1024 * 1024;
+    vx::app::PhaseResult teleport;
+    teleport.phase = Phase::teleport;
+    teleport.seconds = 30.0;
+    teleport.capped = true;
+    const std::string report = vx::app::flythrough_report(
+        {.engine = "0.0.0 (c3a3bff)",
+         .build = "release",
+         .device = "Apple M3 (integrated GPU)",
+         .driver = "KosmicKrisp",
+         .settings = "2560x1440, view distance 32, 6 workers, immediate present"},
+        std::vector<vx::app::PhaseResult>{load, teleport});
+    CHECK(report.starts_with("### Perdix flythrough 1\n"));
+    CHECK(report.find("Perdix 0.0.0 (c3a3bff), release build. Apple M3 (integrated GPU), "
+                      "KosmicKrisp. 2560x1440, view distance 32, 6 workers, immediate present.") !=
+          std::string::npos);
+    CHECK(report.find("| load | 1.83 s | 4.2 / 9.1 / 15.3 ms | 0.71 / 1.50 ms | 9876 / 21000 / "
+                      "8765 | 0 / 0 | 100.0 / 101.0 MiB |") != std::string::npos);
+    CHECK(report.find("| teleport | 30.00 s (cap) |") != std::string::npos);
+    CHECK(report.find("| - / - / - |") != std::string::npos);
+}
+
+TEST_CASE("a checked run's problems: invariants broken, a wait that hit its cap, and chunk data "
+          "that did not come back") {
+    const auto phase = [](Phase which, std::uint64_t chunk_bytes) {
+        vx::app::PhaseResult result;
+        result.phase = which;
+        result.seconds = 1.0;
+        result.chunk_bytes_end = chunk_bytes;
+        return result;
+    };
+    std::vector<vx::app::PhaseResult> results;
+    for (const Phase which : vx::app::flythrough_phases) {
+        results.push_back(phase(which, 100 * 1024 * 1024));
+    }
+    CHECK(vx::app::flythrough_problems(results).empty());
+    // 4% more after the teleport is still the same level; 6% is not.
+    results.back().chunk_bytes_end = 104 * 1024 * 1024;
+    CHECK(vx::app::flythrough_problems(results).empty());
+    results.back().chunk_bytes_end = 106 * 1024 * 1024;
+    REQUIRE(vx::app::flythrough_problems(results).size() == 1);
+    CHECK(vx::app::flythrough_problems(results).front().find("more than 5% off") !=
+          std::string::npos);
+    results.back().chunk_bytes_end = 100 * 1024 * 1024;
+    // A broken invariant names its phase.
+    results[2].broken = 3;
+    REQUIRE(vx::app::flythrough_problems(results).size() == 1);
+    CHECK(vx::app::flythrough_problems(results).front() ==
+          "cruise: 3 invariants broken over its samples");
+    results[2].broken = 0;
+    // A wait that ran into its cap says so, and the comparison is skipped.
+    results.front().capped = true;
+    results.front().chunk_bytes_end = 1;
+    REQUIRE(vx::app::flythrough_problems(results).size() == 1);
+    CHECK(vx::app::flythrough_problems(results).front() ==
+          "load: the region was not complete by the wait's cap, 1 s");
+    // A run that stopped before the teleport cannot compare.
+    results.front().capped = false;
+    results.pop_back();
+    REQUIRE(vx::app::flythrough_problems(results).size() == 1);
+    CHECK(vx::app::flythrough_problems(results).front() == "the run ended before the teleport");
 }

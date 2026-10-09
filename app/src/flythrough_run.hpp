@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
+#include <string>
 #include <vector>
 
 namespace vx::app {
@@ -141,5 +143,25 @@ private:
     std::optional<FlythroughSample> last_;
     std::vector<PhaseResult> results_;
 };
+
+// What the report opens with: the versions, the build, the machine and the
+// settings.
+struct FlythroughHeader {
+    std::string engine; // version and commit
+    std::string build;  // "release", "debug"
+    std::string device; // the GPU
+    std::string driver;
+    std::string settings; // resolution, view distance, workers, present mode
+};
+
+// What a checked flythrough found wrong (RFC 0006's CI run): invariants
+// broken, a wait for the region that ran into its cap, or chunk data after
+// the teleport more than 5% off its level after the load. Empty when all is
+// well.
+[[nodiscard]] std::vector<std::string> flythrough_problems(std::span<const PhaseResult> results);
+
+// RFC 0006's Markdown block, for pull requests and benchmark results.
+[[nodiscard]] std::string flythrough_report(const FlythroughHeader& header,
+                                            std::span<const PhaseResult> results);
 
 } // namespace vx::app
