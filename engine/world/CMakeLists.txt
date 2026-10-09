@@ -36,7 +36,8 @@ add_library(vx_world STATIC
     src/collision.cpp
     src/movement.cpp
     src/names.cpp
-    src/packed_array.cpp)
+    src/packed_array.cpp
+    src/region.cpp)
 add_library(vx::world ALIAS vx_world)
 target_link_libraries(vx_world PUBLIC vx::core PRIVATE vx_tomlplusplus)
 
