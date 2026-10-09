@@ -41,6 +41,7 @@ constexpr std::size_t around_index(std::int32_t dx, std::int32_t dy, std::int32_
 }
 
 struct SurfaceJob {
+    [[maybe_unused]] static constexpr const char* profile_name = "Surface";
     const Generator* generator;
     GenScratch* scratch;
     Inbox<StreamResult>* results;
@@ -48,6 +49,7 @@ struct SurfaceJob {
     std::uint32_t load_id;
 
     void operator()(JobContext& context) const noexcept {
+        context.describe(column.x, column.z);
         StreamResult result;
         result.kind = StreamResult::Kind::surface;
         result.pos = column_key(column);
@@ -58,6 +60,7 @@ struct SurfaceJob {
 };
 
 struct PlanJob {
+    [[maybe_unused]] static constexpr const char* profile_name = "Plan";
     const Generator* generator;
     GenScratch* scratch;
     Inbox<StreamResult>* results;
@@ -65,6 +68,7 @@ struct PlanJob {
     std::uint32_t load_id;
 
     void operator()(JobContext& context) const noexcept {
+        context.describe(pos.x, pos.y, pos.z);
         StreamResult result;
         result.kind = StreamResult::Kind::plan;
         result.pos = pos;
@@ -74,8 +78,9 @@ struct PlanJob {
     }
 };
 
-// Reads the 27 plans its record pinned.
+// Reads the 27 plans its record pinned. "Generate" in RFC 0005's Tracy.
 struct BuildJob {
+    [[maybe_unused]] static constexpr const char* profile_name = "Generate";
     const Generator* generator;
     GenScratch* scratch;
     Inbox<StreamResult>* results;
@@ -83,6 +88,7 @@ struct BuildJob {
     ChunkPos pos;
 
     void operator()(JobContext& context) const noexcept {
+        context.describe(pos.x, pos.y, pos.z);
         std::array<const ChunkPlan*, 27> plans{};
         for (std::size_t at = 0; at < plans.size(); ++at) {
             const Version<ChunkPlan>* plan = record->plans[at];
