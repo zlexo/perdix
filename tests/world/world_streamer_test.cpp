@@ -153,6 +153,7 @@ int outside_by_hand(ChunkPos pos) {
 // and its state follows from its counts and its place in the region.
 void check_rules(const WorldStreamer& streamer) {
     const vx::ChunkRecords& records = streamer.records();
+    const bool regenerating = streamer.stats().regenerating > 0;
     for (std::uint32_t index = 0; index < records.end_index(); ++index) {
         if (!records.live(index)) {
             continue;
@@ -173,7 +174,8 @@ void check_rules(const WorldStreamer& streamer) {
         }
         switch (record.state) {
         case ChunkState::planned:
-            REQUIRE((!record.loaded || record.planned_neighbors < 26));
+            // While regenerating, it also waits for its neighbors' new plans.
+            REQUIRE((!record.loaded || record.planned_neighbors < 26 || regenerating));
             break;
         case ChunkState::build_queued:
             REQUIRE(record.loaded);
@@ -1123,4 +1125,154 @@ TEST_CASE("a burst of results is taken in by steps of half a millisecond and one
     CHECK(streamer.stats().jobs_in_flight == 0);
     CHECK(streamer.stats().surfaces_known == streamer.stats().columns);
     CHECK(steps == (burst + 499) / 500);
+}
+
+namespace {
+
+// The placeholder's hills at version 0; at version 1 every chunk it builds is
+// solid stone, so new blocks are told from old. Notes each chunk built at 1.
+class VersionedTerrain final : public vx::Generator {
+public:
+    explicit VersionedTerrain(const vx::Generator& inner) : inner_(&inner) {}
+
+    [[nodiscard]] vx::ChunkRange surface_range(vx::ColumnPos column,
+                                               vx::GenScratch& scratch) const override {
+        return inner_->surface_range(column, scratch);
+    }
+    [[nodiscard]] std::optional<BlockState> out_of_reach(ChunkPos pos) const noexcept override {
+        return inner_->out_of_reach(pos);
+    }
+    [[nodiscard]] vx::ChunkPlan plan(ChunkPos pos, vx::GenScratch& scratch) const override {
+        return inner_->plan(pos, scratch);
+    }
+    [[nodiscard]] vx::ChunkStorage build(std::span<const vx::ChunkPlan* const, 27> plans,
+                                         vx::GenScratch& scratch) const override {
+        if (version_ == 0) {
+            return inner_->build(plans, scratch);
+        }
+        rebuilt.push_back(plans[13]->pos);
+        return vx::ChunkStorage::uniform(stone);
+    }
+    [[nodiscard]] std::uint32_t version() const noexcept override { return version_; }
+
+    std::uint32_t version_ = 0;
+    mutable std::vector<ChunkPos> rebuilt;
+
+private:
+    const vx::Generator* inner_;
+};
+
+// The chunks holding blocks: those built, and not uniform.
+std::vector<ChunkPos> with_blocks(const WorldStreamer& streamer) {
+    std::vector<ChunkPos> out;
+    const vx::ChunkRecords& records = streamer.records();
+    for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+        if (records.live(index) && records[index].blocks != nullptr) {
+            out.push_back(records[index].pos);
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("a new generator version regenerates every chunk nearest first, and nothing leaves "
+          "the screen meanwhile") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    VersionedTerrain generator(placeholder);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    std::vector<ChunkEvent> events;
+    streamer.take_events(events);
+    const std::vector<ChunkPos> built = with_blocks(streamer);
+    REQUIRE(built.size() > 27);
+    const std::size_t records = streamer.records().size();
+    generator.version_ = 1;
+    settle(streamer, jobs);
+    CHECK(streamer.stats().regenerating == 0);
+    // Shown chunks kept their meshes until new blocks came: changed, never
+    // hidden, and no record came or went.
+    streamer.take_events(events);
+    CHECK(count_events(events, ChunkEvent::Kind::hidden) == 0);
+    CHECK(count_events(events, ChunkEvent::Kind::freed) == 0);
+    CHECK(count_events(events, ChunkEvent::Kind::changed) > built.size());
+    CHECK(streamer.records().size() == records);
+    // Every chunk built before holds the new version's blocks.
+    for (const ChunkPos pos : built) {
+        const ChunkRecord* record = streamer.find(pos);
+        REQUIRE(record != nullptr);
+        INFO("chunk ", pos.x, ", ", pos.y, ", ", pos.z);
+        CHECK(record->blocks == nullptr);
+        CHECK(record->uniform == stone);
+        CHECK(record->state == (record->drawn ? ChunkState::complete : record->state));
+    }
+    CHECK(streamer.stats().block_versions == 0);
+    // Nearest first: the camera's chunk before any chunk three or more away.
+    const auto camera_at = std::ranges::find(generator.rebuilt, above_hills);
+    REQUIRE(camera_at != generator.rebuilt.end());
+    for (auto at = generator.rebuilt.begin(); at != generator.rebuilt.end(); ++at) {
+        const std::int32_t far =
+            std::max({std::abs(at->x - above_hills.x), std::abs(at->y - above_hills.y),
+                      std::abs(at->z - above_hills.z)});
+        if (far >= 3) {
+            CHECK(at > camera_at);
+        }
+    }
+}
+
+TEST_CASE("an edited chunk keeps its edit through a regeneration, its neighbors regenerate") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    VersionedTerrain generator(placeholder);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    constexpr BlockState glass = static_cast<BlockState>(7);
+    const vx::BlockPos inside{.x = 100, .y = 70, .z = 100};
+    REQUIRE(streamer.set_block(inside, glass));
+    generator.version_ = 1;
+    settle(streamer, jobs);
+    CHECK(streamer.block(inside) == glass);
+    const ChunkRecord* own = streamer.find(above_hills);
+    REQUIRE(own != nullptr);
+    CHECK(own->blocks != nullptr);
+    CHECK(std::ranges::find(generator.rebuilt, above_hills) == generator.rebuilt.end());
+    const ChunkRecord* east =
+        streamer.find({.x = above_hills.x + 1, .y = above_hills.y, .z = above_hills.z});
+    REQUIRE(east != nullptr);
+    CHECK(east->uniform == stone);
+}
+
+TEST_CASE("results made for an older version are dropped, and their chunks start over") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    VersionedTerrain generator(placeholder);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    // Surfaces, then plans, taken in; the builds of version 0 wait in the
+    // inbox when the version changes.
+    for (int pass = 0; pass < 3; ++pass) {
+        streamer.feed();
+        jobs.run_until_idle();
+        if (pass < 2) {
+            integrate_all(streamer);
+        }
+    }
+    REQUIRE(count(streamer, ChunkState::building) > 0);
+    REQUIRE(streamer.results_waiting() > 0);
+    generator.version_ = 1;
+    settle(streamer, jobs);
+    // Nothing of version 0 was kept: every chunk built is the new stone.
+    CHECK(streamer.stats().block_versions == 0);
+    CHECK_FALSE(generator.rebuilt.empty());
+    CHECK(count(streamer, ChunkState::queued) == 0);
+    const ChunkRecord* own = streamer.find(above_hills);
+    REQUIRE(own != nullptr);
+    CHECK(own->state == ChunkState::complete);
+    CHECK(own->uniform == stone);
 }
