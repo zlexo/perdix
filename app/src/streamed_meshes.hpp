@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <vector>
 
 namespace vx::app {
@@ -24,6 +25,13 @@ namespace vx::app {
 // Where the camera is and looks, for what streams in first (RFC 0006): its
 // chunk, eye and heading, and its view `aspect` wide.
 [[nodiscard]] Viewer camera_viewer(const render::Camera& camera, float aspect);
+
+// Chunks in a view with no mesh on screen, and of them those near the eye
+// (RFC 0006's flythrough).
+struct Holes {
+    std::uint32_t all = 0;
+    std::uint32_t near = 0;
+};
 
 // The world thread's meshes and unloads on the main thread (RFC 0005),
 // handed to RFC 0007's uploads frame by frame. Each frame the unloads go
@@ -40,6 +48,13 @@ public:
     // Takes the meshes, batches and unloads among `messages`, in order; the
     // rest stay for the caller, in order.
     void receive(std::vector<ToMain>& messages);
+    // As receive, but each sample goes to `sampled` as it comes: after the
+    // meshes, batches and unloads before it are taken, and before those
+    // after it. The flythrough reads its samples so: the holes it counts
+    // here are then those of the meshes sent before the world's answer
+    // (RFC 0006).
+    void receive(std::vector<ToMain>& messages,
+                 const std::function<void(const WorldSample&)>& sampled);
 
     [[nodiscard]] Result<void> apply(render::ChunkUploader& uploader) override;
 
@@ -50,6 +65,13 @@ public:
     [[nodiscard]] std::size_t waiting() const noexcept {
         return meshes_.size() + batches_.size() + unloads_.size();
     }
+    // The holes the meshes waiting here leave: chunks whose newest mesh
+    // waiting has quads and that have none on screen in `uploads`, in
+    // `viewer`'s view, and of them those within `near` blocks. A world
+    // sample counts the chunks with no mesh sent; once every message before
+    // its answer was received, these are the rest (RFC 0006).
+    [[nodiscard]] Holes holes(const render::ChunkUploads& uploads, const Viewer& viewer,
+                              double near) const;
 
 private:
     struct Mesh {
@@ -57,6 +79,10 @@ private:
         MeshUpdate update;
     };
 
+    // Takes `messages` as receive does, handing the samples to `sampled`
+    // when it is set and leaving them for the caller when not.
+    void take(std::vector<ToMain>& messages,
+              const std::function<void(const WorldSample&)>& sampled);
     // The chunk's place in the batches waiting goes, and the meshes of it
     // waiting are dropped when they come up: they came before it.
     void take_unload(ChunkPos pos);

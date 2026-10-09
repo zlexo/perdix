@@ -1,6 +1,7 @@
 #include "streamed_meshes.hpp"
 #include "world_loop.hpp"
 
+#include <vx/core/frustum.hpp>
 #include <vx/core/mesh_result_pool.hpp>
 #include <vx/core/result.hpp>
 #include <vx/mesh/quad.hpp>
@@ -8,6 +9,7 @@
 #include <vx/render/chunk_renderer.hpp>
 #include <vx/render/chunk_uploads.hpp>
 #include <vx/world/coordinates.hpp>
+#include <vx/world/world_streamer.hpp>
 
 #include <doctest/doctest.h>
 
@@ -353,4 +355,84 @@ TEST_CASE(
     for (const vx::MeshPoolClass& size_class : pool.stats()) {
         CHECK(size_class.in_use == 0);
     }
+}
+
+TEST_CASE("the holes meshes waiting leave: the newest of a chunk with quads, none on screen, in "
+          "view, each chunk once") {
+    vx::MeshResultPool pool;
+    Arena arena;
+    vx::app::StreamedMeshes meshes;
+    constexpr std::array<std::uint32_t, 12> some{1};
+    // At the middle of chunk 0, looking along +x.
+    vx::Viewer viewer = vx::viewer_at({});
+    viewer.view = vx::Frustum({.x = 1.0, .y = 0.0, .z = 0.0}, {.x = 0.0, .y = 0.0, .z = 1.0},
+                              {.x = 0.0, .y = 1.0, .z = 0.0}, 0.7, 16.0 / 9.0, 0.05);
+    const auto holes = [&] {
+        return meshes.holes(arena.uploads, viewer, vx::app::near_holes_distance);
+    };
+    // One on screen already.
+    std::vector<ToMain> messages;
+    messages.push_back(message_of(mesh_of(pool, {.x = 5}, 1, some)));
+    meshes.receive(messages);
+    arena.offer(meshes);
+    REQUIRE(meshes.waiting() == 0);
+    CHECK(holes().all == 0);
+    // Ahead, near: one with two meshes, one empty, one unloaded after its
+    // mesh came, one on screen with a newer one waiting, and one in a batch.
+    messages.push_back(message_of(mesh_of(pool, {.x = 2}, 1, some)));
+    messages.push_back(message_of(mesh_of(pool, {.x = 2}, 2, some)));
+    messages.push_back(message_of(mesh_of(pool, {.x = 3}, 1, {})));
+    messages.push_back(message_of(mesh_of(pool, {.x = 4}, 1, some)));
+    messages.push_back(unload_of({.x = 4}));
+    messages.push_back(message_of(mesh_of(pool, {.x = 5}, 2, some)));
+    std::vector<MeshUpdate> batch;
+    batch.push_back(mesh_of(pool, {.x = 6}, 1, some));
+    messages.push_back(batch_of(std::move(batch)));
+    // Behind, and ahead beyond 256 blocks.
+    messages.push_back(message_of(mesh_of(pool, {.x = -3}, 1, some)));
+    messages.push_back(message_of(mesh_of(pool, {.x = 12}, 1, some)));
+    // A newer empty one: nothing left to draw.
+    messages.push_back(message_of(mesh_of(pool, {.x = 7}, 1, some)));
+    messages.push_back(message_of(mesh_of(pool, {.x = 7}, 2, {})));
+    meshes.receive(messages);
+    const vx::app::Holes waiting = holes();
+    CHECK(waiting.all == 3);  // 2, 6 and 12
+    CHECK(waiting.near == 2); // 2 and 6
+    // Drawn, they are holes no more.
+    for (int frame = 0; frame < 20 && meshes.waiting() > 0; ++frame) {
+        arena.offer(meshes);
+    }
+    REQUIRE(meshes.waiting() == 0);
+    CHECK(holes().all == 0);
+}
+
+TEST_CASE("samples go to their reader in order: after the meshes before them, before those after") {
+    vx::MeshResultPool pool;
+    vx::app::StreamedMeshes meshes;
+    const auto sample_of = [](std::uint32_t id) {
+        ToMain sample;
+        sample.kind = ToMain::Kind::sample;
+        sample.sample.id = id;
+        return sample;
+    };
+    std::vector<ToMain> messages;
+    messages.push_back(message_of(mesh_of(pool, {.x = 1}, 1, {1})));
+    messages.push_back(sample_of(1));
+    messages.push_back(message_of(mesh_of(pool, {.x = 2}, 1, {1})));
+    messages.push_back(unload_of({.x = 1}));
+    messages.push_back(sample_of(2));
+    ToMain player;
+    player.kind = ToMain::Kind::player;
+    messages.push_back(std::move(player));
+    // What waits when each sample is read.
+    std::vector<std::pair<std::uint32_t, std::size_t>> seen;
+    meshes.receive(messages, [&](const vx::app::WorldSample& sample) {
+        seen.emplace_back(sample.id, meshes.waiting());
+    });
+    REQUIRE(seen.size() == 2);
+    CHECK(seen[0] == std::pair<std::uint32_t, std::size_t>{1, 1});
+    CHECK(seen[1] == std::pair<std::uint32_t, std::size_t>{2, 3});
+    // The rest stay for the caller.
+    REQUIRE(messages.size() == 1);
+    CHECK(messages.front().kind == ToMain::Kind::player);
 }
