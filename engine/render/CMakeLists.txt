@@ -81,6 +81,7 @@ add_library(vx_render STATIC
     src/buffer.cpp
     src/chunk_arena.cpp
     src/chunk_uploads.cpp
+    src/draw_lists.cpp
     src/camera.cpp
     src/camera_relative.cpp
     src/context.cpp
