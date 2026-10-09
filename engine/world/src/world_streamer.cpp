@@ -1021,15 +1021,6 @@ bool WorldStreamer::integrate() {
         pending_.clear();
         pending_at_ = 0;
     }
-    // A new surface completes its own column's band, or a side's.
-    for (const ColumnPos pos : dirty_) {
-        refresh(pos);
-        refresh({.x = pos.x + 1, .z = pos.z});
-        refresh({.x = pos.x - 1, .z = pos.z});
-        refresh({.x = pos.x, .z = pos.z + 1});
-        refresh({.x = pos.x, .z = pos.z - 1});
-    }
-    dirty_.clear();
     return pending_at_ < pending_.size();
 }
 
@@ -1049,8 +1040,15 @@ void WorldStreamer::integrate_surface(StreamResult& result) {
     column.surface = result.surface;
     column.known = true;
     column.current = true;
-    dirty_.push_back(column.pos);
     surfaces_arrived_ = true;
+    // It completes its own column's band, or a side's: the records that
+    // brings are made now, within the step, as they are most of its cost.
+    const ColumnPos pos = column.pos;
+    refresh(pos);
+    refresh({.x = pos.x + 1, .z = pos.z});
+    refresh({.x = pos.x - 1, .z = pos.z});
+    refresh({.x = pos.x, .z = pos.z + 1});
+    refresh({.x = pos.x, .z = pos.z - 1});
 }
 
 void WorldStreamer::integrate_plan(StreamResult& result) {

@@ -132,9 +132,10 @@ public:
     // first, then plans and builds, each lowest score first.
     void feed(std::size_t room = std::numeric_limits<std::size_t>::max());
     // Takes in the results the jobs sent back, one step at a time (RFC
-    // 0006): it stops once a step's length has passed after a result, so a
-    // burst such as a teleport's never holds the world thread long. True
-    // while results are left for the next call.
+    // 0006): it stops once a step's length has passed after a result, a
+    // surface's including the records its column brings, so a burst such
+    // as a teleport's never holds the world thread long. True while results
+    // are left for the next call.
     bool integrate();
     static constexpr std::chrono::microseconds step_length{500};
     // The clock steps are measured on, instead of the steady clock: a
@@ -322,7 +323,6 @@ private:
     std::size_t regenerating_ = 0;  // records whose regeneration is not none
     bool surfaces_arrived_ = false; // since the parked plans were last tried
     std::vector<ChunkEvent> events_;
-    std::vector<ColumnPos> dirty_;          // columns whose surface arrived
     std::vector<std::uint32_t> to_advance_; // neighbors whose counts changed
     std::uint32_t next_load_id_ = 1;
     std::uint32_t next_version_ = 1;

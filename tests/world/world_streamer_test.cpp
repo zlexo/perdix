@@ -938,14 +938,14 @@ TEST_CASE("Tracy's counts: results waiting, pins on plans and chunks, and copies
     CHECK(streamer.results_waiting() == 0);
     jobs.run_until_idle();
     CHECK(streamer.results_waiting() == queued);
-    streamer.integrate();
+    integrate_all(streamer);
     CHECK(streamer.results_waiting() == 0);
     // A queued build pins its neighbors' plans.
     for (int pass = 0; pass < 100 && count(streamer, ChunkState::building) == 0; ++pass) {
         streamer.feed();
         if (count(streamer, ChunkState::building) == 0) {
             jobs.run_until_idle();
-            streamer.integrate();
+            integrate_all(streamer);
         }
     }
     REQUIRE(count(streamer, ChunkState::building) > 0);
@@ -1504,4 +1504,62 @@ TEST_CASE("while a build of the old version runs, its neighbors do not read its 
         CHECK(not_built_at(streamer, 1) == 0);
     }
     jobs.wait_until_idle();
+}
+
+namespace {
+
+// A flat surface in chunk 0 of every column, every chunk air and out of
+// reach, so no job but the surfaces; each record made costs a microsecond
+// on the test's clock, as a record asks out_of_reach once, when made.
+class CostlyRecords final : public vx::Generator {
+public:
+    explicit CostlyRecords(TickingClock& clock) : clock_(&clock) {}
+
+    [[nodiscard]] vx::ChunkRange surface_range(vx::ColumnPos /*column*/,
+                                               vx::GenScratch& /*scratch*/) const override {
+        return {.min_y = 0, .max_y = 0};
+    }
+    [[nodiscard]] std::optional<BlockState> out_of_reach(ChunkPos pos) const noexcept override {
+        clock_->at += std::chrono::microseconds(1);
+        return terrain_.out_of_reach(pos);
+    }
+    [[nodiscard]] vx::ChunkPlan plan(ChunkPos pos, vx::GenScratch& scratch) const override {
+        return terrain_.plan(pos, scratch);
+    }
+    [[nodiscard]] vx::ChunkStorage build(std::span<const vx::ChunkPlan* const, 27> plans,
+                                         vx::GenScratch& scratch) const override {
+        return terrain_.build(plans, scratch);
+    }
+
+private:
+    NoTerrain terrain_;
+    TickingClock* clock_;
+};
+
+} // namespace
+
+TEST_CASE("a step's half millisecond includes the records its surfaces bring") {
+    TickingClock clock;
+    const CostlyRecords generator(clock);
+    vx::JobSystem jobs({.slots = 16'384});
+    vx::WakeEvent wake;
+    const vx::RegionSettings wide{
+        .view_distance = 60, .near_distance = 1, .near_height = 1, .hysteresis = 2};
+    WorldStreamer streamer(generator, jobs, wake, wide);
+    streamer.set_clock(clock);
+    streamer.set_camera(above_hills);
+    streamer.feed();
+    jobs.run_until_idle();
+    REQUIRE(streamer.results_waiting() >= 10'000);
+    const std::size_t before = streamer.records().size();
+    std::chrono::microseconds longest{0};
+    for (bool left = true; left;) {
+        const std::chrono::steady_clock::time_point started = clock.at;
+        left = streamer.integrate();
+        longest = std::max(
+            longest, std::chrono::duration_cast<std::chrono::microseconds>(clock.at - started));
+    }
+    CHECK(streamer.records().size() - before > 10'000);
+    // Half a millisecond, then the last surface's records: a few columns'.
+    CHECK(longest <= std::chrono::microseconds(1'000));
 }
