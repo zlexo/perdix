@@ -133,10 +133,15 @@ TEST_CASE("an upload into a mapped buffer goes through the mapping, without stag
         vx::render::Buffer::create(device, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                    vx::render::BufferMemory::upload_target, "mapped destination");
     REQUIRE(dst.has_value());
-    // Upload targets are mapped wherever the device has device-local memory
-    // the CPU can write, as on unified memory; elsewhere the test above covers
-    // the staged path they take.
-    if (dst.value().mapping().empty()) {
+    // Upload targets are mapped on unified memory, which Apple's GPUs have on
+    // both drivers and lavapipe has too; elsewhere the test above covers the
+    // staged path they may take.
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(device.physical_device(), &properties);
+    if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ||
+        properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+        REQUIRE_FALSE(dst.value().mapping().empty());
+    } else if (dst.value().mapping().empty()) {
         MESSAGE("this device's upload targets are not host-visible");
         return;
     }
