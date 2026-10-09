@@ -22,6 +22,7 @@ add_executable(vx_bench
     render/block_pack_bench.cpp
     render/block_textures_bench.cpp
     world/block_registry_bench.cpp
+    world/chunk_map_bench.cpp
     world/chunk_storage_bench.cpp
     world/movement_bench.cpp
     world/packed_array_bench.cpp)
