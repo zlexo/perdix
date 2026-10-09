@@ -4,6 +4,7 @@
 #include "overlay.hpp"
 #include "pack.hpp"
 #include "startup_pack.hpp"
+#include "view.hpp"
 #include "walking.hpp"
 #include "window.hpp"
 
@@ -28,13 +29,11 @@
 #include <vx/world/movement.hpp>
 
 #include <SDL3/SDL_stdinc.h>
-#include <glm/ext/vector_double3.hpp>
 #include <tracy/Tracy.hpp>
 
 #include <algorithm>
 #include <charconv>
 #include <chrono>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -354,20 +353,9 @@ int main(int argc, char* argv[]) {
                               .ticks = mover.walking.ticks()});
 
         // The camera drawn: the player's, swaying with the view's bob while it
-        // walks. The game turns and shifts the scene; the camera undoes both,
-        // its shift taken back through the turned view, so the frame is the
-        // game's exactly. The bob never touches the camera the mouse turns.
-        vx::render::Camera shown = camera;
-        if (!mover.noclip) {
-            const vx::app::Bob bob = mover.walking.bob();
-            shown.roll = -bob.turn_z;
-            shown.pitch -= bob.turn_x;
-            const glm::mat4 turned = vx::render::view_rotation(shown.yaw, shown.pitch, shown.roll);
-            const glm::vec4 shift =
-                glm::transpose(turned) * glm::vec4(static_cast<float>(bob.shift_x),
-                                                   static_cast<float>(bob.shift_y), 0.0F, 0.0F);
-            shown.position -= glm::dvec3(shift.x, shift.y, shift.z);
-        }
+        // walks. The bob never touches the camera the mouse turns.
+        const vx::render::Camera shown =
+            mover.noclip ? camera : vx::app::bobbed(camera, mover.walking.bob());
         const vx::Result<vx::render::Frame> rendered = draw_frame(
             renderer.value(), overlay, window.value(), shown, demo, mover.walking.bobbing);
         if (!rendered.has_value()) {

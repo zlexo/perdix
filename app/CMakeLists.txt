@@ -49,6 +49,13 @@ target_link_libraries(vx_app_play PUBLIC vx::world)
 vx_target_warnings(vx_app_play)
 vx_target_engine_options(vx_app_play)
 
+# The view the player sees: the camera with RFC 0010's view bobbing.
+add_library(vx_app_view STATIC src/view.cpp)
+target_include_directories(vx_app_view PUBLIC src)
+target_link_libraries(vx_app_view PUBLIC vx::render vx_app_play)
+vx_target_warnings(vx_app_view)
+vx_target_engine_options(vx_app_view)
+
 add_executable(vx_app
     src/allocation_profiling.cpp
     src/fly_controls.cpp
@@ -56,7 +63,7 @@ add_executable(vx_app
     src/pack.cpp
     src/window.cpp)
 target_link_libraries(vx_app PRIVATE vx::core vx::world vx::mesh vx::render vx::minecraft
-    vx_app_overlay vx_app_play vx_app_startup vx_imgui_sdl3 SDL3::SDL3-static)
+    vx_app_overlay vx_app_play vx_app_startup vx_app_view vx_imgui_sdl3 SDL3::SDL3-static)
 set_target_properties(vx_app PROPERTIES OUTPUT_NAME perdix)
 vx_target_warnings(vx_app)
 vx_target_engine_options(vx_app)
