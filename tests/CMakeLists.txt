@@ -26,6 +26,7 @@ add_executable(vx_core_tests
     core/crc32_test.cpp
     core/diagnostic_test.cpp
     core/file_test.cpp
+    core/job_system_test.cpp
     core/result_test.cpp
     core/thread_test.cpp
     core/vec3d_test.cpp
