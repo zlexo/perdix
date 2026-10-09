@@ -121,7 +121,7 @@ ArenaStats ArenaSpace::stats() const noexcept {
 }
 
 Result<ChunkArena> ChunkArena::create(const Device& device, std::uint32_t capacity_quads,
-                                      std::uint32_t slots) {
+                                      std::uint32_t slots, BufferMemory memory) {
     Result<ArenaSpace> space = ArenaSpace::create(capacity_quads, slots);
     if (!space.has_value()) {
         return space.error();
@@ -130,8 +130,8 @@ Result<ChunkArena> ChunkArena::create(const Device& device, std::uint32_t capaci
     constexpr VkBufferUsageFlags usage =
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    Result<Buffer> buffer = Buffer::create(device, quad_bytes * capacity_quads, usage,
-                                           BufferMemory::upload_target, "chunk arena");
+    Result<Buffer> buffer =
+        Buffer::create(device, quad_bytes * capacity_quads, usage, memory, "chunk arena");
     if (!buffer.has_value()) {
         return buffer.error();
     }

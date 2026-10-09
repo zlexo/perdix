@@ -4,8 +4,11 @@
 #include <vx/mesh/mesh_chunk.hpp>
 #include <vx/mesh/quad.hpp>
 #include <vx/render/chunk_arena.hpp>
+#include <vx/render/upload.hpp>
 #include <vx/world/chunk_map.hpp>
 #include <vx/world/coordinates.hpp>
+
+#include <volk.h>
 
 #include <array>
 #include <chrono>
@@ -59,6 +62,23 @@ public:
 
     // Writes `quads` into the arena from quad `first` on.
     [[nodiscard]] virtual Result<void> write(std::uint32_t first, std::span<const Quad> quads) = 0;
+};
+
+// Writes quads into the arena's buffer through RFC 0001's upload: in place
+// where the arena is host-visible, as on unified memory; elsewhere into a
+// staging buffer, with a copy recorded into `commands` that the context's
+// finish() makes visible before the chunk passes.
+class ArenaWriter final : public QuadWriter {
+public:
+    ArenaWriter(UploadContext& context, VkCommandBuffer commands, const ChunkArena& arena) noexcept
+        : context_(&context), commands_(commands), arena_(&arena) {}
+
+    [[nodiscard]] Result<void> write(std::uint32_t first, std::span<const Quad> quads) override;
+
+private:
+    UploadContext* context_;
+    VkCommandBuffer commands_;
+    const ChunkArena* arena_;
 };
 
 // What an upload did with an update.

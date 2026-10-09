@@ -81,8 +81,11 @@ class ChunkArena {
 public:
     static constexpr VkDeviceSize quad_bytes = 8;
 
+    // `memory` stays an upload target but in tests, which force the staged
+    // path with BufferMemory::device_local.
     [[nodiscard]] static Result<ChunkArena>
-    create(const Device& device, std::uint32_t capacity_quads, std::uint32_t slots);
+    create(const Device& device, std::uint32_t capacity_quads, std::uint32_t slots,
+           BufferMemory memory = BufferMemory::upload_target);
 
     [[nodiscard]] ArenaSpace& space() noexcept { return space_; }
     [[nodiscard]] const ArenaSpace& space() const noexcept { return space_; }
