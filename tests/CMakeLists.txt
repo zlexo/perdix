@@ -104,6 +104,7 @@ add_executable(vx_render_tests
     render/block_textures_test.cpp
     render/camera_relative_test.cpp
     render/camera_test.cpp
+    render/chunk_uploads_test.cpp
     render/device_report_test.cpp
     render/device_selection_test.cpp
     render/feature_floor_test.cpp
