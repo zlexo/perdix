@@ -2,8 +2,11 @@
 
 #include <vx/core/thread.hpp>
 
+#include <tracy/Tracy.hpp>
+
 #include <array>
 #include <cassert>
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -22,6 +25,14 @@
 
 namespace vx {
 namespace {
+
+// Tracy's lockable is no std::mutex, and only condition_variable_any waits on
+// it; without Tracy the plain one serves.
+#ifdef TRACY_ENABLE
+using Condition = std::condition_variable_any;
+#else
+using Condition = std::condition_variable;
+#endif
 
 constexpr std::uint32_t none = 0xFFFF'FFFFU;
 
@@ -65,7 +76,7 @@ struct JobSystem::State {
     // job knows which worker it wakes, and can raise that one for an urgent
     // job (RFC 0005).
     struct Worker {
-        std::condition_variable wake;
+        Condition wake;
         // The class it last set itself to, so a waker knows whether to raise
         // it.
         ThreadQos qos = ThreadQos::utility;
@@ -336,12 +347,35 @@ struct JobSystem::State {
     const JobClock* clock;
     std::vector<std::unique_ptr<Worker>> workers;
     std::vector<std::uint32_t> sleepers; // a stack of the workers waiting for a job
-    std::condition_variable idle;
+    Condition idle;
     std::uint32_t running = 0;
     bool catching_up = false;
     bool stopping = false;
-    mutable std::mutex lock;
+    // A lockable Tracy shows waits on, in profiling builds (RFC 0005).
+    mutable TracyLockableN(std::mutex, lock, "Job queue");
 };
+
+PositionText::PositionText(std::int32_t x, std::int32_t y, std::int32_t z) noexcept {
+    add(x);
+    add(y);
+    add(z);
+}
+
+PositionText::PositionText(std::int32_t x, std::int32_t z) noexcept {
+    add(x);
+    add(z);
+}
+
+void PositionText::add(std::int32_t value) noexcept {
+    if (size_ > 0) {
+        chars_[size_++] = ',';
+        chars_[size_++] = ' ';
+    }
+    // The array holds the longest, so to_chars never runs out of room.
+    const std::to_chars_result end =
+        std::to_chars(chars_.data() + size_, chars_.data() + chars_.size(), value);
+    size_ = static_cast<std::size_t>(end.ptr - chars_.data());
+}
 
 JobSystem::JobSystem(const JobSystemDesc& desc) : state_(std::make_unique<State>(desc)) {
     assert(desc.slots > 0 && desc.slots < none);

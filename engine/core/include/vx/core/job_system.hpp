@@ -1,10 +1,14 @@
 #pragma once
 
+#include <tracy/Tracy.hpp>
+
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <new>
+#include <string_view>
 #include <type_traits>
 
 namespace vx {
@@ -23,6 +27,22 @@ struct JobPriority {
     std::uint32_t key = 0;
 };
 
+// A position as a job's zone in Tracy shows it (RFC 0005): "x, y, z" for a
+// chunk, "x, z" for a column, formatted on the stack.
+class PositionText {
+public:
+    PositionText(std::int32_t x, std::int32_t y, std::int32_t z) noexcept;
+    PositionText(std::int32_t x, std::int32_t z) noexcept;
+
+    [[nodiscard]] std::string_view view() const noexcept { return {chars_.data(), size_}; }
+
+private:
+    void add(std::int32_t value) noexcept;
+
+    std::array<char, 40> chars_{}; // room for three of -2147483648
+    std::size_t size_ = 0;
+};
+
 // What a running job knows of where it runs.
 class JobContext {
 public:
@@ -31,9 +51,53 @@ public:
     // The worker running the job, from 0: an index into per-worker scratch.
     [[nodiscard]] std::uint32_t worker() const noexcept { return worker_; }
 
+    // Text on the job's zone in Tracy (RFC 0005), such as the chunk it works
+    // on; copied, so it may be temporary.
+    void describe([[maybe_unused]] std::string_view text) const noexcept {
+#ifdef TRACY_ENABLE
+        if (zone_ != nullptr) {
+            zone_->Text(text.data(), text.size());
+        }
+#endif
+    }
+    // The chunk or the column it works on: formatted only in a zone, so
+    // never without Tracy.
+    void describe([[maybe_unused]] std::int32_t x, [[maybe_unused]] std::int32_t y,
+                  [[maybe_unused]] std::int32_t z) const noexcept {
+#ifdef TRACY_ENABLE
+        if (zone_ != nullptr) {
+            describe(PositionText(x, y, z).view());
+        }
+#endif
+    }
+    void describe([[maybe_unused]] std::int32_t x, [[maybe_unused]] std::int32_t z) const noexcept {
+#ifdef TRACY_ENABLE
+        if (zone_ != nullptr) {
+            describe(PositionText(x, z).view());
+        }
+#endif
+    }
+
 private:
+    friend class JobSystem;
     std::uint32_t worker_;
+#ifdef TRACY_ENABLE
+    tracy::ScopedZone* zone_ = nullptr;
+#endif
 };
+
+// A job's name in Tracy (RFC 0005): its type's `profile_name`, such as
+// "Generate" or "Mesh", or "Job" when it has none. One of another type
+// fails to compile rather than become "Job".
+template <class F> constexpr const char* job_profile_name() noexcept {
+    if constexpr (requires { F::profile_name; }) {
+        static_assert(std::is_convertible_v<decltype(F::profile_name), const char*>,
+                      "profile_name is a string literal: Tracy keeps the pointer");
+        return F::profile_name;
+    } else {
+        return "Job";
+    }
+}
 
 // A job (RFC 0005): a callable the job system copies byte for byte into a
 // slot, so it owns nothing: positions, ids and pointers, at most 64 bytes of
@@ -127,8 +191,16 @@ private:
     // Runs the job whose bytes were copied to `bytes`: copying the bytes of
     // a type with a trivial copy constructor and destructor into suitably
     // aligned storage creates an object there.
+    // In Tracy, each job is a zone named for its kind.
     template <class F> static void run_bytes(const std::byte* bytes, JobContext& context) noexcept {
+#ifdef TRACY_ENABLE
+        ZoneNamedN(zone, job_profile_name<F>(), true);
+        context.zone_ = &zone;
+#endif
         (*std::launder(reinterpret_cast<const F*>(bytes)))(context);
+#ifdef TRACY_ENABLE
+        context.zone_ = nullptr;
+#endif
     }
 
     JobHandle submit_bytes(JobPriority priority, const void* job, std::size_t size,
