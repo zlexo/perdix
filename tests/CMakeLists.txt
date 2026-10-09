@@ -49,6 +49,7 @@ add_executable(vx_world_tests
     world/body_test.cpp
     world/chunk_boxes_test.cpp
     world/chunk_conversion_test.cpp
+    world/chunk_map_test.cpp
     world/chunk_storage_test.cpp
     world/collision_test.cpp
     world/coordinates_test.cpp
