@@ -159,11 +159,12 @@ void WorldStreamer::cancel_queued() noexcept {
 WorldStreamer::~WorldStreamer() {
     // What is still queued never runs; what ran has sent its result.
     cancel_queued();
-    results_.drain([this](StreamResult&& result) {
-        if (result.record != nullptr) {
-            job_records_.release(*result.record);
+    results_.drain([this](StreamResult&& result) { pending_.push_back(std::move(result)); });
+    for (std::size_t at = pending_at_; at < pending_.size(); ++at) {
+        if (pending_[at].record != nullptr) {
+            job_records_.release(*pending_[at].record);
         }
-    });
+    }
     assert(job_records_.in_use() == 0 && "a job still runs: the world loop drains them first");
 }
 
@@ -716,8 +717,11 @@ void WorldStreamer::pin_plans(JobRecord& pins, ChunkPos pos) noexcept {
     }
 }
 
-void WorldStreamer::integrate() {
-    results_.drain([this](StreamResult&& result) {
+bool WorldStreamer::integrate() {
+    results_.drain([this](StreamResult&& result) { pending_.push_back(std::move(result)); });
+    const std::chrono::steady_clock::time_point start = time();
+    while (pending_at_ < pending_.size()) {
+        StreamResult& result = pending_[pending_at_++];
         --in_flight_;
         switch (result.kind) {
         case StreamResult::Kind::surface:
@@ -730,7 +734,14 @@ void WorldStreamer::integrate() {
             integrate_build(result);
             break;
         }
-    });
+        if (time() - start >= step_length) {
+            break;
+        }
+    }
+    if (pending_at_ == pending_.size()) {
+        pending_.clear();
+        pending_at_ = 0;
+    }
     // A new surface completes its own column's band, or a side's.
     for (const ColumnPos pos : dirty_) {
         refresh(pos);
@@ -740,6 +751,7 @@ void WorldStreamer::integrate() {
         refresh({.x = pos.x, .z = pos.z - 1});
     }
     dirty_.clear();
+    return pending_at_ < pending_.size();
 }
 
 void WorldStreamer::integrate_surface(StreamResult& result) {

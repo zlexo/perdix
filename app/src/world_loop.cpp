@@ -92,6 +92,9 @@ WorldLoop::WorldLoop(const Generator& generator, std::span<const BlockVisual> vi
       context_{.visuals = visuals, .pool = &pool, .results = &mesh_results_, .scratch = nullptr},
       to_main_(1'024, main_wake_) {
     context_.scratch = scratch_.data();
+    if (settings.clock != nullptr) {
+        streamer_.set_clock(*settings.clock);
+    }
 }
 
 WorldLoop::~WorldLoop() {
@@ -120,7 +123,7 @@ bool WorldLoop::pass() {
     if (stopping_) {
         return false;
     }
-    streamer_.integrate();
+    behind_ = streamer_.integrate();
     follow_events();
     mesh_results_.drain([this](MeshResult&& result) { integrate_mesh(result); });
     send_ready_batches();
@@ -162,7 +165,8 @@ std::chrono::steady_clock::time_point WorldLoop::step(std::chrono::steady_clock:
         tick();
         next_tick_ += tick_length;
     }
-    return next_tick_;
+    // Results left from a step: the next pass comes now, not at the tick.
+    return behind_ ? now : next_tick_;
 }
 
 void WorldLoop::tick() {

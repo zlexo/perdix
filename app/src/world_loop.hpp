@@ -79,6 +79,8 @@ struct WorldLoopSettings {
     // Streaming meshes sent but not yet uploaded, above which new streaming
     // mesh jobs wait (RFC 0005); an edit's remeshes never wait.
     std::uint32_t unuploaded_limit = 512;
+    // What the streamer's steps are measured on; null for the steady clock.
+    const JobClock* clock = nullptr;
 };
 
 // A worker's memory for meshing (RFC 0005): RFC 0003's padded chunk and the
@@ -114,8 +116,8 @@ public:
     bool pass();
     // A pass, then each tick that falls due by `now`, 20 a second: more than
     // a second behind, the rest are skipped. Returns when the next tick is
-    // due, the deadline the world thread sleeps until. After a stop, no tick
-    // runs.
+    // due, the deadline the world thread sleeps until, or `now` while the
+    // streamer has results left from its step. After a stop, no tick runs.
     std::chrono::steady_clock::time_point step(std::chrono::steady_clock::time_point now);
     // Waits for no job, then integrates their results, until nothing runs or
     // waits, or a stop arrives: for tests. The destructor does shutdown's
@@ -234,6 +236,7 @@ private:
     std::uint64_t sent_ = 0;     // streaming meshes sent
     std::uint64_t uploaded_ = 0; // of them, uploaded, as the main thread last said
     std::size_t meshes_in_flight_ = 0;
+    bool behind_ = false; // the streamer has results left from its last step
     bool stopping_ = false;
 };
 

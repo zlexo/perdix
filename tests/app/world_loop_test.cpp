@@ -569,6 +569,42 @@ TEST_CASE("ticks come 20 a second on the loop's clock, and over a second behind 
     CHECK(loop.skipped_ticks() == 100);
 }
 
+namespace {
+
+// Each reading moves it on by 100 us: a streaming step takes in five results.
+class TickingClock final : public vx::JobClock {
+public:
+    [[nodiscard]] std::chrono::steady_clock::time_point now() const noexcept override {
+        at += std::chrono::microseconds(100);
+        return at;
+    }
+
+private:
+    mutable std::chrono::steady_clock::time_point at;
+};
+
+} // namespace
+
+TEST_CASE("while the streamer has results left from its step, the loop runs again at once") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    const TickingClock clock;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small, .clock = &clock});
+    move_camera(loop, above_hills);
+    const std::chrono::steady_clock::time_point start{};
+    using std::chrono::milliseconds;
+    // The first pass feeds the columns' surface jobs: nothing to take in yet.
+    CHECK(loop.step(start) == start + milliseconds(50));
+    jobs.run_until_idle();
+    // Their results come five a step: the world thread is not to sleep.
+    CHECK(loop.step(start) == start);
+    CHECK(loop.streamer().results_waiting() > 0);
+    loop.settle();
+    CHECK(loop.step(start + milliseconds(1)) == start + milliseconds(50));
+}
+
 TEST_CASE("after a stop no tick runs, and settling returns with jobs still in flight") {
     const vx::PlaceholderGenerator generator(0x5EED, blocks);
     const std::vector<vx::BlockVisual> table = visuals();
