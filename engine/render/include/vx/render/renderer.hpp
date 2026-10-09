@@ -4,7 +4,9 @@
 #include <vx/mesh/mesh_chunk.hpp>
 #include <vx/render/buffer.hpp>
 #include <vx/render/camera.hpp>
+#include <vx/render/chunk_renderer.hpp>
 #include <vx/render/context.hpp>
+#include <vx/render/draw_lists.hpp>
 #include <vx/render/gpu_timer.hpp>
 #include <vx/render/image.hpp>
 #include <vx/render/pipeline.hpp>
@@ -47,6 +49,15 @@ struct RendererDesc {
     // build_block_textures lays them out, such as a BlockPack's textures.
     // Uploaded at startup; empty binds an array of one layer, the checker.
     std::span<const std::byte> block_textures;
+    // The chunk arena's room, in quads (RFC 0007): 32 MiB, until the app
+    // sizes it from its view distance.
+    std::uint32_t chunk_arena_quads = std::uint32_t{1} << 22U;
+    // Tests set it to take the staged upload path on any device, as a
+    // discrete GPU without host-visible device memory would.
+    bool stage_chunk_uploads = false;
+    // The most commands one indirect call draws, below the device's limit:
+    // tests set it to split each pass's calls. 0 is the device's.
+    std::uint32_t draw_call_limit = 0;
 };
 
 // A color in linear RGB, with alpha. The target's sRGB format encodes it.
@@ -67,6 +78,11 @@ struct FrameInputs {
     // The overlay's draw lists, from ImGui::GetDrawData(), drawn over the
     // frame; null draws none. Not const: drawing updates its textures' state.
     ImDrawData* overlay = nullptr;
+    // What the frame changes in the chunk arena (RFC 0007), asked once the
+    // frame's slot is free and, in a window, its image acquired. A skipped
+    // frame does not ask, so nothing uploads or unloads while a window is
+    // minimized. Null changes nothing.
+    ChunkChanges* chunk_changes = nullptr;
 };
 
 // How block textures are filtered (RFC 0004).
@@ -102,9 +118,10 @@ struct FrameTimes {
 };
 
 // Draws frames into a window's swapchain, or headless into an offscreen image
-// (RFC 0001). For now each frame clears its target to the sky and draws cubes
-// camera-relative, with reversed-Z depth and two frames in flight: the CPU
-// records frame N + 1 while the GPU draws frame N.
+// (RFC 0001). Each frame clears its target to the sky and draws cubes and the
+// chunks in the arena (RFC 0007) camera-relative, with reversed-Z depth and
+// two frames in flight: the CPU records frame N + 1 while the GPU draws frame
+// N.
 class Renderer {
 public:
     [[nodiscard]] static Result<Renderer> create(const RendererDesc& desc);
@@ -130,8 +147,11 @@ public:
     // How many cubes one frame can draw.
     static constexpr std::size_t max_cubes = 256;
 
-    // Clears the target to the sky, draws the cubes as the camera sees them,
-    // and presents the target when it is a window's.
+    // Clears the target to the sky, makes the frame's chunk changes, draws
+    // the cubes and the arena's chunks as the camera sees them, and presents
+    // the target when it is a window's. An error from the chunk changes or
+    // the draw lists leaves staged copies that never ran: the renderer is
+    // not drawn with again.
     [[nodiscard]] Result<Frame> render(const FrameInputs& inputs);
 
     // Headless only: the last frame's pixels, 8-bit RGBA, row after row.
@@ -150,12 +170,25 @@ public:
         return block_textures_.layers();
     }
 
-    // RFC 0003's milestone, one chunk: drawn every frame after the cubes, its
-    // opaque quads, then its cutout ones. Copies `mesh`'s quads to the GPU in
-    // place of the chunk before, once the frames in flight, which may still
-    // read it, are done. An empty mesh leaves nothing to draw. RFC 0007
-    // brings many chunks, in one buffer.
+    // RFC 0003's milestone, one chunk, now in the arena with the rest:
+    // `mesh` takes the place of the chunk set before, wherever that was,
+    // once the frames in flight are done. An empty mesh leaves nothing to
+    // draw. Outside any frame and its budget, for tools and tests; the world
+    // streams in through FrameInputs::chunk_changes, and never where a
+    // streamed chunk is: the generations set_chunk gives are its own.
     [[nodiscard]] Result<void> set_chunk(ChunkPos position, const ChunkMesh& mesh);
+    // The overlay's switches for culling and merging (RFC 0007), from the
+    // next frame.
+    void set_draw_switches(const DrawSwitches& switches) noexcept {
+        chunks_.set_switches(switches);
+    }
+    // How long each frame's chunk uploads may take (RFC 0007): 1 ms, raised
+    // while a loading screen shows. A frame's first upload always goes.
+    void set_chunk_budget(std::chrono::nanoseconds budget) noexcept {
+        chunks_.uploads().set_budget(budget);
+    }
+    // The arena, its uploads and the last frame's culling, for the overlay.
+    [[nodiscard]] const ChunkRenderer& chunks() const noexcept { return chunks_; }
     // How the chunk's textures are filtered, from the next frame.
     void set_block_filter(BlockFilter filter) noexcept { block_filter_ = filter; }
     [[nodiscard]] BlockFilter block_filter() const noexcept { return block_filter_; }
@@ -190,26 +223,20 @@ private:
         std::uint32_t checker_slot = 0;
     };
 
-    // What draws chunks (RFC 0003): a pipeline for each pass, from one
-    // shader, and the index buffer every chunk shares, 0, 1, 2, 2, 3, 0 for
-    // each quad, as many as a chunk can have.
+    // What draws chunks (RFC 0003, RFC 0007): a pipeline for each pass,
+    // from one shader, and the index buffer every command shares, 0, 1, 2,
+    // 2, 3, 0 for each quad, as many as a chunk can have.
     struct ChunkDrawing {
         GraphicsPipeline opaque;
         GraphicsPipeline cutout;
         std::optional<GraphicsPipeline> wireframe; // where the device offers it
         Buffer indices;
     };
-    // The chunk set_chunk gave: its quads, opaque then cutout.
-    struct UploadedChunk {
-        ChunkPos position;
-        Buffer quads;
-        std::uint32_t opaque = 0;
-        std::uint32_t cutout = 0;
-    };
 
     Renderer(Context context, std::optional<Swapchain> swapchain, std::optional<Image> offscreen,
              Image depth, TextureTable textures, Image block_textures, Cube cube,
-             ChunkDrawing chunk_drawing, Extent framebuffer, PresentMode present_mode);
+             ChunkDrawing chunk_drawing, ChunkRenderer chunks, Extent framebuffer,
+             PresentMode present_mode);
     [[nodiscard]] Result<void> create_frame_objects();
     [[nodiscard]] Result<void> upload_at_startup(std::span<const std::byte> block_textures);
     [[nodiscard]] Result<void> add_rendered_semaphores();
@@ -230,7 +257,10 @@ private:
     Image block_textures_;
     Cube cube_;
     ChunkDrawing chunk_drawing_;
-    std::optional<UploadedChunk> chunk_;
+    ChunkRenderer chunks_;
+    // Where set_chunk's chunk is, and the generation its next mesh takes.
+    std::optional<ChunkPos> set_chunk_at_;
+    std::uint32_t set_chunk_generation_ = 0;
     BlockFilter block_filter_ = BlockFilter::sharpened;
     float occlusion_strength_ = 1.0F;
     bool wireframe_ = false;

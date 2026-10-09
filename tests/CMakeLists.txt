@@ -155,7 +155,9 @@ vx_add_shaders(vx_render_vulkan_tests render/shaders/block_texture_probe.slang)
 # The block texture test files, for the array's readback test.
 target_compile_definitions(vx_render_vulkan_tests PRIVATE VX_BLOCK_TEXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/render/block_textures")
 vx_target_warnings(vx_render_vulkan_tests)
-doctest_discover_tests(vx_render_vulkan_tests PROPERTIES ${VX_VULKAN_DOCTEST_PROPERTIES})
+# A GPU that never finishes a frame hangs the frame slot's wait: fail after
+# five minutes instead.
+doctest_discover_tests(vx_render_vulkan_tests PROPERTIES ${VX_VULKAN_DOCTEST_PROPERTIES} TIMEOUT 300)
 
 # The app's startup: the block pack loaded with the player's Minecraft (RFC
 # 0009), from packs and jars the tests write; no window, no GPU.
