@@ -102,6 +102,7 @@ doctest_discover_tests(vx_mesh_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 add_executable(vx_render_tests
     main.cpp
     render/arena_space_test.cpp
+    render/arena_replay_test.cpp
     render/arena_upkeep_test.cpp
     render/block_pack_test.cpp
     render/block_textures_test.cpp
