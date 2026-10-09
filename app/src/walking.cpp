@@ -39,9 +39,49 @@ Vec3d between_points(Vec3d from, Vec3d to, double t) noexcept {
 
 } // namespace
 
+Vec3d WalkingFrame::eye_at(double between) const noexcept {
+    return between_points(previous, position, between) +
+           Vec3d{.x = 0.0, .y = previous_eye + ((eye - previous_eye) * between), .z = 0.0};
+}
+
+double WalkingFrame::fov_factor_at(double between) const noexcept {
+    return previous_fov + ((fov - previous_fov) * between);
+}
+
+Bob WalkingFrame::bob_at(double between, bool bobbing) const noexcept {
+    if (!bobbing) {
+        return {};
+    }
+    // The game reads the walk distance a fraction of a tick past the last
+    // one, negated, and blends the amount between the last two ticks.
+    const double walked_then = -(walked + ((walked - previous_walked) * between));
+    const double amount = previous_bob + ((bob - previous_bob) * between);
+    const double phase = std::numbers::pi * walked_then;
+    constexpr double radians_per_degree = std::numbers::pi / 180.0;
+    return {.shift_x = std::sin(phase) * amount * bob_sway,
+            .shift_y = -std::abs(std::cos(phase) * amount),
+            .turn_z = static_cast<float>(std::sin(phase) * amount * bob_roll_degrees *
+                                         radians_per_degree),
+            .turn_x = static_cast<float>(std::abs(std::cos(phase - bob_tip_lead) * amount) *
+                                         bob_tip_degrees * radians_per_degree)};
+}
+
+double WalkingFrame::speed() const noexcept {
+    const Vec3d moved = position - previous;
+    constexpr double ticks_a_second = 20.0;
+    return std::hypot(moved.x, moved.z) * ticks_a_second;
+}
+
+double WalkingFrame::vertical_speed() const noexcept {
+    constexpr double ticks_a_second = 20.0;
+    return (position.y - previous.y) * ticks_a_second;
+}
+
 Walking::Walking(Vec3d spawn, double lowest) noexcept
-    : previous_(spawn), spawn_(spawn), respawn_below_(lowest - void_depth) {
+    : spawn_(spawn), respawn_below_(lowest - void_depth) {
     player_.position = spawn;
+    frame_.previous = spawn;
+    frame_.position = spawn;
     scratch_.reserve(256);
 }
 
@@ -60,70 +100,39 @@ void Walking::tick(const TickInput& input, const BlockBoxes& world) {
     // The bob's amount, as the game takes it at the start of a tick: toward
     // the horizontal speed the player carries into it, at most 0.1, on the
     // ground; toward 0 off it.
-    previous_bob_ = bob_;
+    frame_.previous_bob = frame_.bob;
     const double carried = std::hypot(player_.velocity.x, player_.velocity.z);
     const double bob_target = player_.on_ground ? std::min(carried, bob_most) : 0.0;
-    bob_ += (bob_target - bob_) * bob_easing;
-    previous_ = player_.position;
+    frame_.bob += (bob_target - frame_.bob) * bob_easing;
+    frame_.previous = player_.position;
     vx::tick(player_, input, world, numbers_, scratch_);
     if (player_.position.y < respawn_below_) {
         place(spawn_);
     }
-    previous_eye_ = eye_;
-    eye_ += (eye_height(player_.pose) - eye_) * 0.5;
+    frame_.position = player_.position;
+    frame_.previous_eye = frame_.eye;
+    frame_.eye += (eye_height(player_.pose) - frame_.eye) * 0.5;
     // Every move, on the ground or not, walks the bob's steps on.
-    const Vec3d moved = player_.position - previous_;
-    previous_walked_ = walked_;
-    walked_ += walk_per_block * std::hypot(moved.x, moved.z);
-    previous_fov_ = fov_;
+    const Vec3d moved = player_.position - frame_.previous;
+    frame_.previous_walked = frame_.walked;
+    frame_.walked += walk_per_block * std::hypot(moved.x, moved.z);
+    frame_.previous_fov = frame_.fov;
     const double target =
         (player_.flying ? flying_fov : 1.0) * (player_.sprinting ? sprinting_fov : 1.0);
-    fov_ += (target - fov_) * 0.5;
-    ++ticks_;
+    frame_.fov += (target - frame_.fov) * 0.5;
+    ++frame_.ticks;
+    report();
 }
 
 double Walking::between() const noexcept {
     return std::chrono::duration<double>(since_tick_) / std::chrono::duration<double>(tick_length);
 }
 
-Vec3d Walking::eye() const noexcept {
-    const double t = between();
-    return between_points(previous_, player_.position, t) +
-           Vec3d{.x = 0.0, .y = previous_eye_ + ((eye_ - previous_eye_) * t), .z = 0.0};
-}
-
-Bob Walking::bob() const noexcept {
-    if (!bobbing) {
-        return {};
-    }
-    // The game reads the walk distance a fraction of a tick past the last
-    // one, negated, and blends the amount between the last two ticks.
-    const double t = between();
-    const double walked = -(walked_ + ((walked_ - previous_walked_) * t));
-    const double amount = previous_bob_ + ((bob_ - previous_bob_) * t);
-    const double phase = std::numbers::pi * walked;
-    constexpr double radians_per_degree = std::numbers::pi / 180.0;
-    return {.shift_x = std::sin(phase) * amount * bob_sway,
-            .shift_y = -std::abs(std::cos(phase) * amount),
-            .turn_z = static_cast<float>(std::sin(phase) * amount * bob_roll_degrees *
-                                         radians_per_degree),
-            .turn_x = static_cast<float>(std::abs(std::cos(phase - bob_tip_lead) * amount) *
-                                         bob_tip_degrees * radians_per_degree)};
-}
-
-double Walking::fov_factor() const noexcept {
-    return previous_fov_ + ((fov_ - previous_fov_) * between());
-}
-
-double Walking::speed() const noexcept {
-    const Vec3d moved = player_.position - previous_;
-    constexpr double ticks_a_second = 20.0;
-    return std::hypot(moved.x, moved.z) * ticks_a_second;
-}
-
-double Walking::vertical_speed() const noexcept {
-    constexpr double ticks_a_second = 20.0;
-    return (player_.position.y - previous_.y) * ticks_a_second;
+void Walking::report() noexcept {
+    frame_.on_ground = player_.on_ground;
+    frame_.sprinting = player_.sprinting;
+    frame_.crouching = player_.pose == Pose::crouching;
+    frame_.flying = player_.flying;
 }
 
 void Walking::place(Vec3d feet) noexcept {
@@ -131,14 +140,16 @@ void Walking::place(Vec3d feet) noexcept {
     // carried over from before.
     player_ = Player{};
     player_.position = feet;
-    previous_ = feet;
-    eye_ = eye_height(Pose::standing);
-    previous_eye_ = eye_;
-    fov_ = 1.0;
-    previous_fov_ = 1.0;
-    bob_ = 0.0;
-    previous_bob_ = 0.0;
-    previous_walked_ = walked_;
+    frame_.previous = feet;
+    frame_.position = feet;
+    frame_.eye = eye_height(Pose::standing);
+    frame_.previous_eye = frame_.eye;
+    frame_.fov = 1.0;
+    frame_.previous_fov = 1.0;
+    frame_.bob = 0.0;
+    frame_.previous_bob = 0.0;
+    frame_.previous_walked = frame_.walked;
+    report();
 }
 
 } // namespace vx::app
