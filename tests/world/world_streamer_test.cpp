@@ -1,6 +1,7 @@
 #include <vx/core/job_system.hpp>
 #include <vx/core/wake_event.hpp>
 #include <vx/world/block_state.hpp>
+#include <vx/world/chunk_records.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/generator.hpp>
 #include <vx/world/placeholder_generator.hpp>
@@ -22,6 +23,8 @@ namespace {
 
 using vx::BlockState;
 using vx::ChunkPos;
+using vx::ChunkRecord;
+using vx::ChunkState;
 using vx::WorldStreamer;
 
 constexpr BlockState stone = static_cast<BlockState>(1);
@@ -48,12 +51,71 @@ bool step(WorldStreamer& streamer, vx::JobSystem& jobs) {
     return true;
 }
 
-// Steps until no job is left.
+// Steps until no job is left, checking the rules after every step.
+void settle(WorldStreamer& streamer, vx::JobSystem& jobs);
+
+// Counted by hand, not with counts_as_planned and counts_as_ready, which
+// the counts under test use.
+bool planned_by_hand(ChunkState state) {
+    return state == ChunkState::planned || state == ChunkState::build_queued ||
+           state == ChunkState::building || state == ChunkState::ready ||
+           state == ChunkState::complete;
+}
+
+bool ready_by_hand(ChunkState state) {
+    return state == ChunkState::ready || state == ChunkState::complete;
+}
+
+// Neighbors past the world's edge, which count as planned and ready.
+int outside_by_hand(ChunkPos pos) {
+    const auto beyond = [](std::int64_t at) {
+        return at < vx::lowest_chunk || at > vx::highest_chunk;
+    };
+    int outside = 0;
+    for (std::int64_t dy = -1; dy <= 1; ++dy) {
+        for (std::int64_t dz = -1; dz <= 1; ++dz) {
+            for (std::int64_t dx = -1; dx <= 1; ++dx) {
+                if (beyond(pos.x + dx) || beyond(pos.y + dy) || beyond(pos.z + dz)) {
+                    ++outside;
+                }
+            }
+        }
+    }
+    return outside;
+}
+
+// RFC 0006's rules for every record: its counts are its neighbors' states,
+// and its state follows from its counts and its place in the region.
+void check_rules(const WorldStreamer& streamer) {
+    const vx::ChunkRecords& records = streamer.records();
+    for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+        if (!records.live(index)) {
+            continue;
+        }
+        const ChunkRecord& record = records[index];
+        INFO("chunk ", record.pos.x, ", ", record.pos.y, ", ", record.pos.z, " in state ",
+             static_cast<int>(record.state));
+        int planned = outside_by_hand(record.pos);
+        int ready = planned;
+        records.for_neighbors(record.pos, [&](std::uint32_t neighbor) {
+            planned += planned_by_hand(records[neighbor].state) ? 1 : 0;
+            ready += ready_by_hand(records[neighbor].state) ? 1 : 0;
+        });
+        REQUIRE(record.planned_neighbors == planned);
+        REQUIRE(record.ready_neighbors == ready);
+        if (record.drawn) {
+            REQUIRE(record.loaded);
+        }
+    }
+}
+
 void settle(WorldStreamer& streamer, vx::JobSystem& jobs) {
     for (int pass = 0; pass < 10'000; ++pass) {
         if (!step(streamer, jobs)) {
+            check_rules(streamer);
             return;
         }
+        check_rules(streamer);
     }
     FAIL("streaming never settled");
 }
@@ -143,4 +205,44 @@ TEST_CASE("a column that leaves the ring goes: its queued job is canceled, and a
     settle(streamer, jobs);
     CHECK(streamer.stats().columns == ring(east, small).size());
     CHECK(streamer.stats().surfaces_known == streamer.stats().columns);
+}
+
+TEST_CASE("a drawn chunk stays drawn until it leaves the region grown for hysteresis") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    // A drawn chunk at the disc's west edge, 3 columns from the camera.
+    std::optional<ChunkPos> edge;
+    for (std::int32_t y = -16; y <= 16 && !edge; ++y) {
+        const ChunkRecord* record =
+            streamer.find({.x = above_hills.x - small.view_distance, .y = y, .z = above_hills.z});
+        if (record != nullptr && record->drawn) {
+            edge = record->pos;
+        }
+    }
+    REQUIRE(edge.has_value());
+    // East by the hysteresis, up to 5 columns away: still drawn.
+    for (std::int32_t east = 1; east <= small.hysteresis; ++east) {
+        streamer.set_camera({.x = above_hills.x + east, .y = above_hills.y, .z = above_hills.z});
+        settle(streamer, jobs);
+        const ChunkRecord* record = streamer.find(*edge);
+        REQUIRE(record != nullptr);
+        CHECK(record->drawn);
+    }
+    // One column more: no longer drawn, but loaded by its drawn neighbor.
+    streamer.set_camera(
+        {.x = above_hills.x + small.hysteresis + 1, .y = above_hills.y, .z = above_hills.z});
+    settle(streamer, jobs);
+    const ChunkRecord* left = streamer.find(*edge);
+    REQUIRE(left != nullptr);
+    CHECK_FALSE(left->drawn);
+    CHECK(left->loaded);
+    // Back over the hills: drawn again.
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    REQUIRE(streamer.find(*edge) != nullptr);
+    CHECK(streamer.find(*edge)->drawn);
 }

@@ -3,11 +3,14 @@
 #include <vx/core/inbox.hpp>
 #include <vx/core/job_system.hpp>
 #include <vx/core/wake_event.hpp>
+#include <vx/world/chunk_records.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/generator.hpp>
 #include <vx/world/region.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -43,6 +46,26 @@ struct SurfaceJob {
         results->push(std::move(result));
     }
 };
+
+// Calls `visit` with each chunk within one of `pos`, itself included, that
+// the world holds.
+template <class F> void around(ChunkPos pos, F&& visit) {
+    for (std::int32_t dy = -1; dy <= 1; ++dy) {
+        for (std::int32_t dz = -1; dz <= 1; ++dz) {
+            for (std::int32_t dx = -1; dx <= 1; ++dx) {
+                const std::int64_t x = std::int64_t{pos.x} + dx;
+                const std::int64_t y = std::int64_t{pos.y} + dy;
+                const std::int64_t z = std::int64_t{pos.z} + dz;
+                if (x >= lowest_chunk && x <= highest_chunk && y >= lowest_chunk &&
+                    y <= highest_chunk && z >= lowest_chunk && z <= highest_chunk) {
+                    visit(ChunkPos{.x = static_cast<std::int32_t>(x),
+                                   .y = static_cast<std::int32_t>(y),
+                                   .z = static_cast<std::int32_t>(z)});
+                }
+            }
+        }
+    }
+}
 
 } // namespace
 
@@ -80,6 +103,15 @@ void WorldStreamer::set_camera(ChunkPos camera) {
         return;
     }
     region_.emplace(camera, settings_);
+    kept_.emplace(region_->grown(settings_.hysteresis));
+    // Every column with a known band marks its drawn chunks afresh, then
+    // the columns follow the region; new ones mark theirs once their
+    // surfaces arrive.
+    for (std::uint32_t index = 0; index < columns_.size(); ++index) {
+        if (column_map_.find(column_key(columns_[index].pos)) == index) {
+            refresh(columns_[index].pos);
+        }
+    }
     update_columns();
 }
 
@@ -140,6 +172,8 @@ void WorldStreamer::add_column(ColumnPos pos) {
 
 void WorldStreamer::remove_column(std::uint32_t index) {
     Column& column = columns_[index];
+    // Its drawn chunks were cleared by its last refresh: nothing else would.
+    assert(column.drawn_kept.empty() && "a column left with drawn chunks");
     if (column.job && jobs_->cancel(column.job)) {
         --in_flight_;
     }
@@ -151,6 +185,138 @@ void WorldStreamer::remove_column(std::uint32_t index) {
 const WorldStreamer::Column* WorldStreamer::column(ColumnPos pos) const noexcept {
     const std::optional<std::uint32_t> index = column_map_.find(column_key(pos));
     return index ? &columns_[*index] : nullptr;
+}
+
+std::optional<ChunkRange> WorldStreamer::band(ColumnPos pos) const noexcept {
+    const Column* own = column(pos);
+    if (own == nullptr || !own->known) {
+        return std::nullopt;
+    }
+    std::array<ChunkRange, 4> sides{};
+    const std::array<ColumnPos, 4> next = {
+        ColumnPos{.x = pos.x + 1, .z = pos.z}, ColumnPos{.x = pos.x - 1, .z = pos.z},
+        ColumnPos{.x = pos.x, .z = pos.z + 1}, ColumnPos{.x = pos.x, .z = pos.z - 1}};
+    for (std::size_t at = 0; at < sides.size(); ++at) {
+        // Past the world's edge nothing rises: the side stays empty.
+        const bool outside = next[at].x < lowest_chunk || next[at].x > highest_chunk ||
+                             next[at].z < lowest_chunk || next[at].z > highest_chunk;
+        if (outside) {
+            continue;
+        }
+        const Column* side = column(next[at]);
+        if (side == nullptr || !side->known) {
+            return std::nullopt;
+        }
+        sides[at] = side->surface;
+    }
+    return terrain_band(own->surface, sides);
+}
+
+void WorldStreamer::refresh(ColumnPos pos) {
+    const std::optional<std::uint32_t> at = column_map_.find(column_key(pos));
+    if (!at || !region_ || !kept_) {
+        return;
+    }
+    ColumnRuns now;
+    ColumnRuns kept;
+    if (kept_->column_drawn(pos)) {
+        const std::optional<ChunkRange> own_band = band(pos);
+        if (!own_band) {
+            return; // until its surfaces and its sides' arrive
+        }
+        now = region_->drawn(pos, *own_band);
+        kept = kept_->drawn(pos, *own_band);
+    }
+    const ColumnRuns before = columns_[*at].drawn_kept;
+    // Drawn inside the region, and still drawn while inside the grown one.
+    const auto visit = [&](std::int32_t y) {
+        const ChunkPos chunk{.x = pos.x, .y = y, .z = pos.z};
+        const ChunkRecord* record = find(chunk);
+        set_drawn(chunk,
+                  now.contains(y) || (record != nullptr && record->drawn && kept.contains(y)));
+    };
+    for (const ChunkRange& run : before.runs()) {
+        for (std::int32_t y = run.min_y; y <= run.max_y; ++y) {
+            visit(y);
+        }
+    }
+    for (const ChunkRange& run : kept.runs()) {
+        for (std::int32_t y = run.min_y; y <= run.max_y; ++y) {
+            if (!before.contains(y)) {
+                visit(y);
+            }
+        }
+    }
+    columns_[*at].drawn_kept = kept;
+}
+
+std::uint32_t WorldStreamer::ensure(ChunkPos pos) {
+    const std::optional<std::uint32_t> index = chunks_.find(pos);
+    return index ? *index : add_chunk(pos);
+}
+
+std::uint32_t WorldStreamer::add_chunk(ChunkPos pos) {
+    return chunks_.add(pos, next_load_id_++);
+}
+
+void WorldStreamer::set_drawn(ChunkPos pos, bool drawn) {
+    const std::optional<std::uint32_t> found = chunks_.find(pos);
+    if ((found && chunks_[*found].drawn) == drawn) {
+        return;
+    }
+    if (drawn) {
+        const std::uint32_t index = ensure(pos);
+        chunks_[index].drawn = true;
+        around(pos, [this](ChunkPos near) { add_drawn_near(near, 1); });
+        return;
+    }
+    chunks_[*found].drawn = false;
+    around(pos, [this](ChunkPos near) { add_drawn_near(near, -1); });
+}
+
+void WorldStreamer::add_drawn_near(ChunkPos pos, int delta) {
+    // A chunk losing a drawn neighbor has a record: that neighbor loaded it.
+    const std::optional<std::uint32_t> found =
+        delta > 0 ? std::optional<std::uint32_t>(ensure(pos)) : chunks_.find(pos);
+    if (!found) {
+        return;
+    }
+    const std::uint32_t index = *found;
+    ChunkRecord& record = chunks_[index];
+    const bool was = record.drawn_near > 0;
+    record.drawn_near = static_cast<std::uint8_t>(record.drawn_near + delta);
+    assert(record.drawn_near <= 27);
+    if ((record.drawn_near > 0) != was) {
+        set_loaded(index, !was);
+    }
+}
+
+void WorldStreamer::set_loaded(std::uint32_t index, bool loaded) {
+    const ChunkPos pos = chunks_[index].pos;
+    chunks_[index].loaded = loaded;
+    around(pos, [this, loaded](ChunkPos near) { add_loaded_near(near, loaded ? 1 : -1); });
+}
+
+void WorldStreamer::add_loaded_near(ChunkPos pos, int delta) {
+    // A chunk losing a loaded neighbor has a record: that neighbor planned it.
+    const std::optional<std::uint32_t> found =
+        delta > 0 ? std::optional<std::uint32_t>(ensure(pos)) : chunks_.find(pos);
+    if (!found) {
+        return;
+    }
+    const std::uint32_t index = *found;
+    ChunkRecord& record = chunks_[index];
+    const bool was = record.loaded_near > 0;
+    record.loaded_near = static_cast<std::uint8_t>(record.loaded_near + delta);
+    assert(record.loaded_near <= 27);
+    if (was && record.loaded_near == 0) {
+        free_chunk(index);
+    }
+}
+
+void WorldStreamer::free_chunk(std::uint32_t index) {
+    // Every record is queued so far: no neighbor's count moves.
+    chunks_.remove(index, [](std::uint32_t /*neighbor*/) {});
 }
 
 void WorldStreamer::feed() {
@@ -185,6 +351,15 @@ void WorldStreamer::integrate() {
             break;
         }
     });
+    // A new surface completes its own column's band, or a side's.
+    for (const ColumnPos pos : dirty_) {
+        refresh(pos);
+        refresh({.x = pos.x + 1, .z = pos.z});
+        refresh({.x = pos.x - 1, .z = pos.z});
+        refresh({.x = pos.x, .z = pos.z + 1});
+        refresh({.x = pos.x, .z = pos.z - 1});
+    }
+    dirty_.clear();
 }
 
 void WorldStreamer::integrate_surface(StreamResult& result) {
@@ -196,6 +371,12 @@ void WorldStreamer::integrate_surface(StreamResult& result) {
     column.surface = result.surface;
     column.known = true;
     column.job = {};
+    dirty_.push_back(column.pos);
+}
+
+const ChunkRecord* WorldStreamer::find(ChunkPos pos) const noexcept {
+    const std::optional<std::uint32_t> index = chunks_.find(pos);
+    return index ? &chunks_[*index] : nullptr;
 }
 
 std::optional<ChunkRange> WorldStreamer::surface(ColumnPos pos) const noexcept {
@@ -208,6 +389,11 @@ std::optional<ChunkRange> WorldStreamer::surface(ColumnPos pos) const noexcept {
 
 StreamingStats WorldStreamer::stats() const noexcept {
     StreamingStats stats;
+    for (std::uint32_t index = 0; index < chunks_.end_index(); ++index) {
+        if (chunks_.live(index)) {
+            ++stats.chunks[static_cast<std::size_t>(chunks_[index].state)];
+        }
+    }
     for (std::uint32_t index = 0; index < columns_.size(); ++index) {
         if (column_map_.find(column_key(columns_[index].pos)) == index) {
             ++stats.columns;
