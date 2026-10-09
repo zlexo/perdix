@@ -5,8 +5,10 @@
 #include <vx/core/wake_event.hpp>
 #include <vx/world/chunk_map.hpp>
 #include <vx/world/chunk_records.hpp>
+#include <vx/world/chunk_storage.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/generator.hpp>
+#include <vx/world/job_record.hpp>
 #include <vx/world/region.hpp>
 #include <vx/world/versions.hpp>
 
@@ -20,14 +22,17 @@ namespace vx {
 
 // A job's result, on its way from a worker to the world thread (RFC 0005).
 struct StreamResult {
-    enum class Kind : std::uint8_t { surface, plan };
+    enum class Kind : std::uint8_t { surface, plan, build };
     Kind kind = Kind::surface;
     // A chunk, or for a surface the column at x and z.
     ChunkPos pos;
     // The load id of the chunk or column the job was for.
     std::uint32_t load_id = 0;
+    // A build's pins, given back when the result is integrated.
+    JobRecord* record = nullptr;
     ChunkRange surface;
     ChunkPlan plan;
+    ChunkStorage blocks;
 };
 
 // Counts for tests and the overlay.
@@ -37,6 +42,7 @@ struct StreamingStats {
     std::size_t surfaces_known = 0;
     std::size_t jobs_in_flight = 0;
     // Versions alive: current ones and frozen ones jobs still read.
+    std::size_t block_versions = 0;
     std::size_t plan_versions = 0;
 };
 
@@ -49,8 +55,8 @@ struct StreamingStats {
 // record and a plan, as RFC 0006's region grows, counted record by record so
 // it holds whatever order columns arrive in. A chunk out of the generator's
 // reach, or above its column's surface, is uniform: it is ready at once, with
-// no job. Every other chunk is planned; a chunk is complete once it and its
-// 26 neighbors are ready.
+// no job. Every other chunk is planned, then built once it is loaded and it
+// and its 26 neighbors have plans, then complete once they are all ready.
 class WorldStreamer {
 public:
     // Results come back through an inbox that signals `results_ready`.
@@ -66,7 +72,7 @@ public:
     // The camera's chunk. When it changes, chunks join the region and those
     // outside the region grown for hysteresis leave it.
     void set_camera(ChunkPos camera);
-    // Submits every job that can start: surfaces, then plans.
+    // Submits every job that can start: surfaces, then plans, then builds.
     void feed();
     // Takes in every result the jobs have sent back.
     void integrate();
@@ -133,15 +139,20 @@ private:
     // that changed.
     void set_state(std::uint32_t index, ChunkState state);
     void advance_neighbors();
-    // Moves a chunk on when a count lets it: to complete, or back. Never
-    // changes a neighbor's count.
+    // Moves a chunk on when a count or a flag lets it: to build_queued,
+    // complete, or back. Never changes a neighbor's count.
     void advance(std::uint32_t index);
 
     void feed_surfaces();
     void feed_plans();
+    void feed_builds();
+    // Pins the 27 plans around a chunk for its build; a uniform neighbor
+    // has none.
+    void pin_plans(JobRecord& pins, ChunkPos pos) noexcept;
 
     void integrate_surface(StreamResult& result);
     void integrate_plan(StreamResult& result);
+    void integrate_build(StreamResult& result);
 
     const Generator* generator_;
     JobSystem* jobs_;
@@ -154,12 +165,15 @@ private:
     std::vector<Column> columns_;
     std::vector<std::uint32_t> free_columns_;
 
+    Versions<ChunkStorage> blocks_;
     Versions<ChunkPlan> plans_;
+    JobRecords job_records_;
     std::vector<GenScratch> scratch_; // one for each worker
     Inbox<StreamResult> results_;
 
     std::vector<Waiting> waiting_surfaces_;
     std::vector<Waiting> waiting_plans_;
+    std::vector<Waiting> waiting_builds_;
     std::vector<ColumnPos> dirty_;          // columns whose surface arrived
     std::vector<std::uint32_t> to_advance_; // neighbors whose counts changed
     std::uint32_t next_load_id_ = 1;
