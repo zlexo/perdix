@@ -1,21 +1,25 @@
-#include "demo_chunk.hpp"
 #include "fly_controls.hpp"
 #include "options.hpp"
 #include "overlay.hpp"
 #include "pack.hpp"
 #include "startup_pack.hpp"
+#include "streamed_meshes.hpp"
 #include "view.hpp"
 #include "walking.hpp"
 #include "window.hpp"
+#include "world_loop.hpp"
+#include "world_thread.hpp"
 
 #include <vx/core/diagnostic.hpp>
+#include <vx/core/job_system.hpp>
+#include <vx/core/mesh_result_pool.hpp>
+#include <vx/core/result.hpp>
 #include <vx/core/thread.hpp>
 #include <vx/core/vec3d.hpp>
 #include <vx/core/version.hpp>
-#include <vx/mesh/mesh_chunk.hpp>
-#include <vx/mesh/padded_chunk.hpp>
 #include <vx/render/block_pack.hpp>
 #include <vx/render/camera.hpp>
+#include <vx/render/chunk_renderer.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/device_report.hpp>
 #include <vx/render/instance.hpp>
@@ -23,18 +27,19 @@
 #include <vx/render/swapchain.hpp>
 #include <vx/render/swapchain_choice.hpp>
 #include <vx/world/block_registry.hpp>
-#include <vx/world/block_visual.hpp>
-#include <vx/world/chunk_boxes.hpp>
-#include <vx/world/chunk_storage.hpp>
-#include <vx/world/collision.hpp>
+#include <vx/world/block_state.hpp>
+#include <vx/world/coordinates.hpp>
 #include <vx/world/movement.hpp>
+#include <vx/world/placeholder_generator.hpp>
 
 #include <SDL3/SDL_stdinc.h>
+#include <glm/vec3.hpp>
 #include <tracy/Tracy.hpp>
 
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -77,103 +82,82 @@ vx::app::Environment read_environment() {
     return environment;
 }
 
-// RFC 0003's milestone: one chunk of the core pack, with air all around it,
-// kept padded so that the overlay's merge toggle can mesh it again, and kept
-// as blocks for the player to walk on (RFC 0010).
-struct DemoChunk {
-    vx::ChunkStorage blocks;                  // all air until draw_demo_chunk fills it
-    std::span<const vx::BlockVisual> visuals; // the registry's, which outlives the chunk
-    std::unique_ptr<vx::PaddedChunk> padded = std::make_unique<vx::PaddedChunk>();
-    vx::MeshScratch scratch;
-    vx::app::ChunkMeshing meshing; // as the overlay shows it and switches it
-    std::optional<bool> merged;    // how the renderer's mesh was made, once it has one
-};
-
-// Meshes the demo chunk as its meshing asks, merged or not, and gives it to
-// the renderer, unless the renderer has it meshed that way already.
-vx::Result<void> mesh_demo_chunk(DemoChunk& chunk, vx::render::Renderer& renderer) {
-    if (chunk.merged == chunk.meshing.merge) {
-        return {};
+// The placeholder's ground in the core pack's states (RFC 0006 over RFC
+// 0004): grass over dirt over stone.
+vx::Result<vx::PlaceholderBlocks> placeholder_blocks(const vx::BlockRegistry& registry) {
+    const std::optional<vx::BlockState> grass = registry.find("core:grass");
+    const std::optional<vx::BlockState> dirt = registry.find("core:dirt");
+    const std::optional<vx::BlockState> stone = registry.find("core:stone");
+    if (!grass || !dirt || !stone) {
+        return vx::Error{"the block pack has no core:grass, core:dirt or core:stone, which the "
+                         "placeholder world is made of"};
     }
-    const vx::ChunkMesh mesh =
-        vx::mesh_chunk(*chunk.padded, chunk.visuals, chunk.scratch, {.merge = chunk.meshing.merge});
-    if (const vx::Result<void> set = renderer.set_chunk({.x = 0, .y = 0, .z = 0}, mesh);
-        !set.has_value()) {
-        return set.error();
-    }
-    chunk.merged = chunk.meshing.merge;
-    chunk.meshing.quads = mesh.all().size();
-    chunk.meshing.cutout = mesh.pass(vx::Pass::cutout).size();
-    return {};
+    return vx::PlaceholderBlocks{.grass = *grass, .dirt = *dirt, .stone = *stone};
 }
 
-// Builds the demo chunk, pads it and draws it. The startup report says its
-// quads.
-vx::Result<void> draw_demo_chunk(const vx::BlockRegistry& registry, vx::render::Renderer& renderer,
-                                 DemoChunk& demo) {
-    vx::Result<vx::ChunkStorage> chunk = vx::app::demo_chunk(registry);
-    if (!chunk.has_value()) {
-        return chunk.error();
-    }
-    demo.visuals = registry.visuals();
-    vx::assemble_padded(vx::ChunkNeighborhood(chunk.value()), *demo.padded);
-    demo.blocks = std::move(chunk).value();
-    if (const vx::Result<void> meshed = mesh_demo_chunk(demo, renderer); !meshed.has_value()) {
-        return meshed.error();
-    }
-    std::cout << "Chunk: " << demo.meshing.quads << " quads, " << demo.meshing.cutout
-              << " of them cutout\n";
-    return {};
+// RFC 0007's arena capacity for a view distance: the meshes RFC 0006 draws
+// there, about 9,400 at 32 chunks and growing with the square, each as
+// large as rough terrain's (14.4 KiB, 1,843 quads), plus a quarter.
+std::uint32_t arena_quads(std::int32_t view_distance) {
+    const double scale = static_cast<double>(view_distance) / 32.0;
+    const double quads = 9'400.0 * scale * scale * 1'843.0 * 1.25;
+    return static_cast<std::uint32_t>(std::clamp(
+        quads, 1'048'576.0, static_cast<double>(vx::render::ChunkRenderer::max_arena_quads)));
 }
 
-// One frame: the overlay built, the chunk meshed again where the overlay
-// switched merging, and the frame rendered. The overlay switches `bobbing`.
-vx::Result<vx::render::Frame> draw_frame(vx::render::Renderer& renderer, vx::app::Overlay& overlay,
-                                         const vx::app::Window& window,
-                                         const vx::render::Camera& camera, DemoChunk& demo,
-                                         bool& bobbing) {
-    // A daytime sky blue, #78A7FF in sRGB.
-    constexpr vx::render::Color sky = {.r = 0.188F, .g = 0.386F, .b = 1.0F, .a = 1.0F};
-    renderer.resize(window.framebuffer_size());
-    ImDrawData* const shown =
-        overlay.build(renderer, camera, window.mouse_captured(), demo.meshing, bobbing);
-    if (const vx::Result<void> meshed = mesh_demo_chunk(demo, renderer); !meshed.has_value()) {
-        return meshed.error();
-    }
-    return renderer.render({.sky = sky, .camera = camera, .cubes = {}, .overlay = shown});
+// RFC 0005's workers: the cores less two, one for the main thread and one
+// for the world thread, and at least one.
+std::uint32_t worker_count() {
+    const std::uint32_t cores = std::thread::hardware_concurrency();
+    return cores > 3 ? cores - 2 : 1;
 }
 
-// The player (RFC 0010): walking on the demo chunk, or flying RFC 0001's
+void send(vx::app::WorldLoop& loop, const vx::app::ToWorld& message) {
+    loop.to_world().push(vx::app::ToWorld(message));
+}
+
+// The player (RFC 0010): walking on the world thread's ticks, which send
+// their last two ticks for the camera to draw between, or flying RFC 0001's
 // noclip camera, which F4 switches between.
 struct Mover {
-    vx::app::Walking walking;
-    float field_of_view = 0.0F; // the camera's own, which sprinting widens
+    vx::app::WalkingFrame frame;
+    std::chrono::steady_clock::time_point tick_at; // when the frame's tick fell due
+    float field_of_view = 0.0F;                    // the camera's own, which sprinting widens
     bool noclip = false;
+    bool landing = false; // the world thread was asked to land the player
+    bool bobbing = true;  // the game's View Bobbing option, the overlay's switch
 };
 
-// Whether a standing player fits with its feet at `feet`, inside no block.
-bool stands_free(const vx::BlockBoxes& blocks, vx::Vec3d feet) {
-    const vx::Box body = vx::body_box(feet, vx::Pose::standing);
-    std::vector<vx::Box> inside;
-    blocks.collect(body, inside);
-    return !vx::overlaps_any(body, inside);
+// How far `now` is from the frame's tick to the next: 0 to 1.
+double between_ticks(const Mover& mover, std::chrono::steady_clock::time_point now) {
+    return std::clamp(std::chrono::duration<double>(now - mover.tick_at) /
+                          std::chrono::duration<double>(vx::app::WorldLoop::tick_length),
+                      0.0, 1.0);
 }
 
-// One frame of the player. F4 switches modes, landing the player where the
-// camera was, unless that is inside a block, where it could not move: there
-// F4 keeps flying. Walking, the mouse turns the camera every frame and the
-// keys move the player once a tick, the camera following it between ticks.
+// One frame of the player. F4 switches modes: flying leaves the player
+// standing where it was; walking again asks the world thread to land it
+// where the camera is, which it does unless that is inside a block or a
+// chunk still loading, and then F4 keeps flying. Walking, the mouse turns
+// the camera every frame, the keys go to the world thread's next ticks, and
+// the camera follows the player between them.
 void move_player(Mover& mover, vx::app::Window& window, vx::render::Camera& camera,
-                 const vx::BlockBoxes& blocks, std::chrono::nanoseconds elapsed, float seconds) {
+                 vx::app::WorldLoop& loop, float seconds,
+                 std::chrono::steady_clock::time_point now) {
     if (window.take_noclip_toggle()) {
-        const vx::Vec3d feet{.x = camera.position.x,
-                             .y = camera.position.y - vx::eye_height(vx::Pose::standing),
-                             .z = camera.position.z};
         if (!mover.noclip) {
             mover.noclip = true;
-        } else if (stands_free(blocks, feet)) {
-            mover.noclip = false;
-            mover.walking.place(feet);
+            vx::app::ToWorld still;
+            still.kind = vx::app::ToWorld::Kind::input;
+            send(loop, still);
+        } else if (!mover.landing) {
+            vx::app::ToWorld land;
+            land.kind = vx::app::ToWorld::Kind::land;
+            land.feet = {.x = camera.position.x,
+                         .y = camera.position.y - vx::eye_height(vx::Pose::standing),
+                         .z = camera.position.z};
+            send(loop, land);
+            mover.landing = true;
         }
     }
     const vx::render::FlyInput fly_input = vx::app::read_fly_controls(window);
@@ -188,11 +172,100 @@ void move_player(Mover& mover, vx::app::Window& window, vx::render::Camera& came
                      .pitch_turn = fly_input.pitch_turn,
                      .fast = false},
                     seconds);
-    mover.walking.advance(elapsed, {.held = vx::app::read_walking_keys(window), .yaw = camera.yaw},
-                          blocks);
-    const vx::Vec3d eye = mover.walking.eye();
+    vx::app::ToWorld keys;
+    keys.kind = vx::app::ToWorld::Kind::input;
+    keys.input = {.held = vx::app::read_walking_keys(window), .yaw = camera.yaw};
+    send(loop, keys);
+    const double between = between_ticks(mover, now);
+    const vx::Vec3d eye = mover.frame.eye_at(between);
     camera.position = {eye.x, eye.y, eye.z};
-    camera.fov_y = mover.field_of_view * static_cast<float>(mover.walking.fov_factor());
+    camera.fov_y = mover.field_of_view * static_cast<float>(mover.frame.fov_factor_at(between));
+}
+
+// The world thread's messages: the player's frames and landings for the
+// mover, the meshes and unloads for the uploads.
+void take_from_world(vx::app::WorldLoop& loop, vx::app::StreamedMeshes& meshes, Mover& mover,
+                     std::vector<vx::app::ToMain>& messages) {
+    loop.take(messages);
+    meshes.receive(messages);
+    for (const vx::app::ToMain& message : messages) {
+        if (message.kind == vx::app::ToMain::Kind::player) {
+            mover.frame = message.player;
+            mover.tick_at = message.tick_at;
+        } else if (message.kind == vx::app::ToMain::Kind::landed) {
+            mover.landing = false;
+            mover.noclip = !message.landed;
+        }
+    }
+    messages.clear();
+}
+
+// Where the camera is and looks, for what streams in first (RFC 0006).
+void send_viewer(vx::app::WorldLoop& loop, const vx::render::Camera& camera, float aspect) {
+    vx::app::ToWorld message;
+    message.kind = vx::app::ToWorld::Kind::camera;
+    message.camera = vx::app::camera_viewer(camera, aspect);
+    send(loop, message);
+}
+
+// The camera drawn: the player's, swaying with the view's bob while it
+// walks. The bob never touches the camera the mouse turns.
+vx::render::Camera shown_camera(const Mover& mover, const vx::render::Camera& camera,
+                                std::chrono::steady_clock::time_point now) {
+    if (mover.noclip) {
+        return camera;
+    }
+    return vx::app::bobbed(camera, mover.frame.bob_at(between_ticks(mover, now), mover.bobbing));
+}
+
+// A framebuffer's width over its height, 1 while it has none.
+float aspect_of(vx::render::Extent size) {
+    return size.height == 0 ? 1.0F
+                            : static_cast<float>(size.width) / static_cast<float>(size.height);
+}
+
+// What the world thread was last told: how far the uploads are, for its
+// backpressure, and whether to merge, which the overlay switches and which
+// meshes everything again.
+struct WorldReports {
+    std::uint64_t uploaded = 0;
+    bool merge = vx::app::ChunkMeshing{}.merge;
+
+    void send_changes(vx::app::WorldLoop& loop, const vx::app::StreamedMeshes& meshes,
+                      const vx::app::ChunkMeshing& meshing) {
+        if (meshes.done() != uploaded) {
+            uploaded = meshes.done();
+            vx::app::ToWorld done;
+            done.kind = vx::app::ToWorld::Kind::uploaded;
+            done.uploaded = uploaded;
+            send(loop, done);
+        }
+        if (meshing.merge != merge) {
+            merge = meshing.merge;
+            vx::app::ToWorld options;
+            options.kind = vx::app::ToWorld::Kind::meshing;
+            options.meshing = {.merge = merge};
+            send(loop, options);
+        }
+    }
+};
+
+// One frame: the overlay built and the frame rendered, the world thread's
+// meshes uploaded within the frame's budget. The overlay switches merging
+// and `bobbing`.
+vx::Result<vx::render::Frame> draw_frame(vx::render::Renderer& renderer, vx::app::Overlay& overlay,
+                                         const vx::app::Window& window,
+                                         const vx::render::Camera& camera,
+                                         vx::app::StreamedMeshes& meshes,
+                                         vx::app::ChunkMeshing& meshing, bool& bobbing) {
+    // A daytime sky blue, #78A7FF in sRGB.
+    constexpr vx::render::Color sky = {.r = 0.188F, .g = 0.386F, .b = 1.0F, .a = 1.0F};
+    renderer.resize(window.framebuffer_size());
+    overlay.set_chunk_backlog(meshes.waiting());
+    ImDrawData* const shown =
+        overlay.build(renderer, camera, window.mouse_captured(), meshing, bobbing);
+    return renderer.render(
+        {.sky = sky, .camera = camera, .cubes = {}, .overlay = shown, .chunk_changes = &meshes});
 }
 
 // The block pack, found and loaded with the player's Minecraft where it can
@@ -255,7 +328,7 @@ int main(int argc, char* argv[]) {
     // The block pack (RFC 0004), before anything opens, drawn with the
     // player's Minecraft where it can be (RFC 0009).
     const std::optional<vx::app::StartupPack> startup = load_pack(options.value());
-    // A pack comes back only with its registry, which the demo chunk is built
+    // A pack comes back only with its registry, which the world is built
     // from.
     if (!startup || !startup->pack.registry) {
         return 1;
@@ -277,16 +350,36 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // The world (RFC 0006): the placeholder's hills, streamed in around the
+    // camera at RFC 0006's view distance by the world thread and its
+    // workers (RFC 0005).
+    const vx::BlockRegistry& registry = *pack.registry;
+    const vx::Result<vx::PlaceholderBlocks> ground = placeholder_blocks(registry);
+    if (!ground.has_value()) {
+        std::cerr << "error: " << ground.error().message << '\n';
+        return 1;
+    }
+    constexpr std::uint64_t world_seed = 0x5EED;
+    const vx::PlaceholderGenerator generator(world_seed, ground.value());
+    vx::app::WorldLoopSettings settings{.region = {}};
+    // The player starts beside the spire at the world's origin, on the grass.
+    const vx::Vec3d spawn{.x = 24.5, .y = static_cast<double>(generator.height(24, 24)), .z = 24.5};
+    settings.player = vx::app::WorldLoopSettings::PlayerStart{.spawn = spawn, .lowest = -64.0};
+    settings.physics = registry.physics();
+
     // Before the renderer, so it is destroyed after it: the renderer draws
     // with the overlay's ImGui context until then.
     vx::app::Overlay overlay(window.value().handle(), validation, options.value().overlay);
-    vx::Result<vx::render::Renderer> renderer =
-        vx::render::Renderer::create({.surface = window.value().surface_source(),
-                                      .framebuffer = window.value().framebuffer_size(),
-                                      .validation = validation,
-                                      .present_mode = vx::render::PresentMode::fifo,
-                                      .overlay = overlay.context(),
-                                      .block_textures = pack.textures});
+    vx::Result<vx::render::Renderer> renderer = vx::render::Renderer::create(
+        {.surface = window.value().surface_source(),
+         .framebuffer = window.value().framebuffer_size(),
+         .validation = validation,
+         .present_mode = vx::render::PresentMode::fifo,
+         .overlay = overlay.context(),
+         .block_textures = pack.textures,
+         .chunk_arena_quads = arena_quads(settings.region.view_distance),
+         .stage_chunk_uploads = false,
+         .draw_call_limit = 0});
     if (!renderer.has_value()) {
         std::cerr << "error: " << renderer.error().message << '\n';
         return 1;
@@ -300,23 +393,33 @@ int main(int argc, char* argv[]) {
         std::cout << vx::render::format_swapchain_report(swapchain->choice());
     }
 
-    DemoChunk demo;
-    if (const vx::Result<void> drawn = draw_demo_chunk(*pack.registry, renderer.value(), demo);
-        !drawn.has_value()) {
-        std::cerr << "error: " << drawn.error().message << '\n';
-        return 1;
-    }
+    // The world thread runs from here; the main thread hands its meshes to
+    // the renderer and the camera to it. Destroyed in reverse: the meshes
+    // still waiting go back to the pool before the thread stops and joins,
+    // then the loop waits for its jobs.
+    vx::JobSystem jobs({.workers = worker_count()});
+    vx::MeshResultPool pool;
+    vx::app::WorldLoop loop(generator, registry.visuals(), jobs, pool, settings);
+    const vx::app::WorldThread world(loop);
+    vx::app::StreamedMeshes meshes;
+    std::cout << "World: placeholder hills, seed 0x5EED, view distance "
+              << settings.region.view_distance << " chunks, " << jobs.worker_count()
+              << " workers\n";
 
-    // The player stands on the grass in one corner of the chunk, looking
-    // across it at the oak (RFC 0010); F4 switches to RFC 0001's noclip
-    // camera and back.
-    const vx::ChunkBoxes blocks(demo.blocks, {}, pack.registry->physics());
+    // The player stands on the grass beside the spire, looking at it (RFC
+    // 0010); F4 switches to RFC 0001's noclip camera and back.
     vx::render::Camera camera;
-    camera.yaw = 0.785F;   // toward -x and -z, an eighth of a turn left of north
-    camera.pitch = -0.15F; // a little down, at the oak
-    Mover mover{.walking = vx::app::Walking(vx::app::demo_spawn, 0.0),
+    camera.position = {spawn.x, spawn.y + vx::eye_height(vx::Pose::standing), spawn.z};
+    camera.yaw = 0.785F;  // toward -x and -z, an eighth of a turn left of north
+    camera.pitch = 0.25F; // a little up, at the spire
+    Mover mover{.frame = {},
+                .tick_at = {},
                 .field_of_view = camera.fov_y,
-                .noclip = false};
+                .noclip = false,
+                .landing = false,
+                .bobbing = true};
+    mover.frame.previous = spawn;
+    mover.frame.position = spawn;
     std::cout << "Click the window to walk: W A S D, Space to jump, Ctrl with W or W twice to "
                  "sprint, Shift to sneak, Space twice to fly, the mouse to look. F4 switches to a "
                  "camera that flies through everything (W A S D, Space and Shift for up and "
@@ -326,6 +429,9 @@ int main(int argc, char* argv[]) {
     using Clock = std::chrono::steady_clock;
     Clock::time_point last = Clock::now();
     bool last_drawn = false;
+    vx::app::ChunkMeshing meshing;
+    WorldReports reports;
+    std::vector<vx::app::ToMain> messages;
     const std::uint64_t frames = options.value().frames;
     for (std::uint64_t frame = 0; frames == 0 || frame < frames; ++frame) {
         if (!window.value().handle_events(overlay)) {
@@ -338,31 +444,30 @@ int main(int argc, char* argv[]) {
             overlay.record(now - last, renderer.value().frame_times());
         }
         // The time since the last frame, at most a tenth of a second, so a
-        // stall, such as dragging the window, does not fling the camera. The
-        // walking clock catches up on its own, at most a second.
+        // stall, such as dragging the window, does not fling the camera.
         const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - last);
         const float seconds = std::min(std::chrono::duration<float>(elapsed).count(), 0.1F);
         last = now;
-        move_player(mover, window.value(), camera, blocks, elapsed, seconds);
+        take_from_world(loop, meshes, mover, messages);
+        move_player(mover, window.value(), camera, loop, seconds, now);
+        send_viewer(loop, camera, aspect_of(window.value().framebuffer_size()));
         overlay.set_movement({.noclip = mover.noclip,
-                              .speed = mover.walking.speed(),
-                              .vertical_speed = mover.walking.vertical_speed(),
-                              .on_ground = mover.walking.player().on_ground,
-                              .sprinting = mover.walking.player().sprinting,
-                              .crouching = mover.walking.player().pose == vx::Pose::crouching,
-                              .flying = mover.walking.player().flying,
-                              .ticks = mover.walking.ticks()});
+                              .speed = mover.frame.speed(),
+                              .vertical_speed = mover.frame.vertical_speed(),
+                              .on_ground = mover.frame.on_ground,
+                              .sprinting = mover.frame.sprinting,
+                              .crouching = mover.frame.crouching,
+                              .flying = mover.frame.flying,
+                              .ticks = mover.frame.ticks});
 
-        // The camera drawn: the player's, swaying with the view's bob while it
-        // walks. The bob never touches the camera the mouse turns.
-        const vx::render::Camera shown =
-            mover.noclip ? camera : vx::app::bobbed(camera, mover.walking.bob());
+        const vx::render::Camera shown = shown_camera(mover, camera, now);
         const vx::Result<vx::render::Frame> rendered = draw_frame(
-            renderer.value(), overlay, window.value(), shown, demo, mover.walking.bobbing);
+            renderer.value(), overlay, window.value(), shown, meshes, meshing, mover.bobbing);
         if (!rendered.has_value()) {
             std::cerr << "error: " << rendered.error().message << '\n';
             return 1;
         }
+        reports.send_changes(loop, meshes, meshing);
         last_drawn = rendered.value() == vx::render::Frame::drawn;
         if (!last_drawn) {
             // Presenting paces the loop; with nothing to present, a 60 Hz wait does.

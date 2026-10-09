@@ -78,7 +78,8 @@ add_executable(vx_app
     src/pack.cpp
     src/window.cpp)
 target_link_libraries(vx_app PRIVATE vx::core vx::world vx::mesh vx::render vx::minecraft
-    vx_app_overlay vx_app_play vx_app_startup vx_app_view vx_imgui_sdl3 SDL3::SDL3-static)
+    vx_app_overlay vx_app_play vx_app_startup vx_app_stream vx_app_view vx_app_world vx_imgui_sdl3
+    SDL3::SDL3-static)
 set_target_properties(vx_app PROPERTIES OUTPUT_NAME perdix)
 vx_target_warnings(vx_app)
 vx_target_engine_options(vx_app)
