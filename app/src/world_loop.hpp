@@ -134,6 +134,8 @@ public:
     [[nodiscard]] std::uint64_t unuploaded() const noexcept { return sent_ - uploaded_; }
     // Mesh jobs queued or running.
     [[nodiscard]] std::size_t meshes_in_flight() const noexcept { return meshes_in_flight_; }
+    // Meshes known to be empty without meshing, sent without a job.
+    [[nodiscard]] std::uint64_t meshes_skipped() const noexcept { return meshes_skipped_; }
     [[nodiscard]] std::uint64_t ticks() const noexcept { return ticks_; }
     [[nodiscard]] std::uint64_t skipped_ticks() const noexcept { return skipped_; }
     // RFC 0006's catching up: a chunk of the near cylinder, all of it drawn,
@@ -204,6 +206,11 @@ private:
     void send_ready_batches();
     void feed();
     bool start_mesh(std::uint32_t index, std::uint32_t key);
+    // Uniform air, or an opaque state among six uniform opaque neighbors:
+    // no face of it can show.
+    [[nodiscard]] bool known_empty(std::uint32_t index) const noexcept;
+    // Sends a known empty mesh, as a job's result would go.
+    void skip_mesh(std::uint32_t index);
     // A tick in Tracy: a frame of its own set, and a zone.
     void tick();
     void run_tick();
@@ -236,6 +243,7 @@ private:
     std::uint64_t sent_ = 0;     // streaming meshes sent
     std::uint64_t uploaded_ = 0; // of them, uploaded, as the main thread last said
     std::size_t meshes_in_flight_ = 0;
+    std::uint64_t meshes_skipped_ = 0;
     bool behind_ = false; // the streamer has results left from its last step
     bool stopping_ = false;
 };

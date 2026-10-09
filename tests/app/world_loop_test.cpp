@@ -454,8 +454,10 @@ TEST_CASE("streaming meshes wait while too many sent are not uploaded, and edits
     const std::vector<vx::BlockVisual> table = visuals();
     vx::JobSystem jobs({});
     vx::MeshResultPool pool;
+    // Four jobs a pass, so that however fast the chunks come in, the jobs
+    // started before the limit holds them are a few, and meshes wait.
     WorldLoop loop(generator, table, jobs, pool,
-                   {.region = small, .queue_limit = 256, .unuploaded_limit = 10});
+                   {.region = small, .queue_limit = 4, .unuploaded_limit = 10});
     move_camera(loop, above_hills);
     loop.settle();
     std::vector<ToMain> messages;
@@ -799,4 +801,80 @@ TEST_CASE("streaming meshes go out lowest score first, ranked again when the vie
         // Both sides of the view were waiting: the ranking had work to do.
         CHECK(scores.front() < scores.back());
     }
+}
+
+TEST_CASE("uniform air and enclosed stone go out as empty meshes, without a job") {
+    // Above the hills, chunks of air; underground, stone among stone.
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    for (const ChunkPos camera : {above_hills, ChunkPos{.x = 3, .y = -3, .z = 3}}) {
+        INFO("camera at y ", camera.y);
+        vx::JobSystem jobs({});
+        vx::MeshResultPool pool;
+        WorldLoop loop(generator, table, jobs, pool, {.region = small});
+        move_camera(loop, camera);
+        loop.settle();
+        std::vector<ToMain> messages;
+        loop.take(messages);
+        MainThread main;
+        main.receive(messages);
+        // The chunks shown whose meshes are known to be empty: those the
+        // loop must have sent without meshing.
+        const vx::ChunkRecords& records = loop.streamer().records();
+        const auto uniform_stone = [&](ChunkPos pos) {
+            const vx::ChunkRecord* record = loop.streamer().find(pos);
+            return record != nullptr && record->blocks == nullptr && record->uniform == stone;
+        };
+        std::size_t known_empty = 0;
+        for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+            if (!records.live(index) || !records[index].drawn ||
+                records[index].state != ChunkState::complete || records[index].blocks != nullptr) {
+                continue;
+            }
+            const ChunkPos pos = records[index].pos;
+            const bool enclosed =
+                uniform_stone(pos) &&
+                std::ranges::all_of(
+                    std::array<ChunkPos, 6>{
+                        ChunkPos{pos.x + 1, pos.y, pos.z}, ChunkPos{pos.x - 1, pos.y, pos.z},
+                        ChunkPos{pos.x, pos.y + 1, pos.z}, ChunkPos{pos.x, pos.y - 1, pos.z},
+                        ChunkPos{pos.x, pos.y, pos.z + 1}, ChunkPos{pos.x, pos.y, pos.z - 1}},
+                    uniform_stone);
+            if (records[index].uniform == BlockState::air || enclosed) {
+                ++known_empty;
+            }
+        }
+        CHECK(known_empty > 0);
+        CHECK(loop.meshes_skipped() == known_empty);
+        // Every chunk shown has its mesh, one each, the skipped ones empty.
+        CHECK(main.meshes == shown(loop).size());
+        std::set<Chunk> held;
+        for (const auto& [chunk, mesh] : main.held) {
+            held.insert(chunk);
+        }
+        CHECK(held == shown(loop));
+    }
+}
+
+TEST_CASE("held back by the main thread, the meshes known empty at the front still go, and no job "
+          "starts") {
+    // High over the hills, which stay under block 112, the nearest chunks
+    // are air: with no mesh allowed out unuploaded, those still go, without
+    // a job, up to the first that needs one.
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool,
+                   {.region = small, .queue_limit = 256, .unuploaded_limit = 0});
+    move_camera(loop, {.x = 3, .y = 5, .z = 3});
+    loop.settle();
+    std::vector<ToMain> messages;
+    loop.take(messages);
+    MainThread main;
+    main.receive(messages);
+    CHECK(loop.meshes_skipped() > 0);
+    CHECK(main.meshes == loop.meshes_skipped());
+    CHECK(loop.meshes_in_flight() == 0);
+    CHECK(main.held.size() < shown(loop).size());
 }
