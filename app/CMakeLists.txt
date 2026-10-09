@@ -49,6 +49,14 @@ target_link_libraries(vx_app_play PUBLIC vx::world)
 vx_target_warnings(vx_app_play)
 vx_target_engine_options(vx_app_play)
 
+# RFC 0005's world loop: the streamer, the mesh half of each chunk's
+# lifecycle and the messages to and from the main thread, without a window.
+add_library(vx_app_world STATIC src/world_loop.cpp)
+target_include_directories(vx_app_world PUBLIC src)
+target_link_libraries(vx_app_world PUBLIC vx::core vx::world vx::mesh)
+vx_target_warnings(vx_app_world)
+vx_target_engine_options(vx_app_world)
+
 # The view the player sees: the camera with RFC 0010's view bobbing.
 add_library(vx_app_view STATIC src/view.cpp)
 target_include_directories(vx_app_view PUBLIC src)
