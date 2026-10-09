@@ -1,5 +1,7 @@
 #include <vx/render/camera.hpp>
 
+#include <vx/core/frustum.hpp>
+#include <vx/core/vec3d.hpp>
 #include <vx/render/projection.hpp>
 
 #include <glm/ext/matrix_transform.hpp>
@@ -59,6 +61,23 @@ glm::mat4 view_rotation(float yaw, float pitch, float roll) {
 glm::mat4 view_projection(const Camera& camera, float aspect) {
     return perspective_reversed_infinite(camera.fov_y, aspect, z_near) *
            view_rotation(camera.yaw, camera.pitch, camera.roll);
+}
+
+Frustum view_frustum(const Camera& camera, float aspect) {
+    // The view's rotation takes world directions into view space, so its
+    // rows are the camera's right, up and back in the world.
+    const glm::mat4 view = view_rotation(camera.yaw, camera.pitch, camera.roll);
+    const auto row = [&view](glm::length_t at) {
+        return Vec3d{.x = static_cast<double>(view[0][at]),
+                     .y = static_cast<double>(view[1][at]),
+                     .z = static_cast<double>(view[2][at])};
+    };
+    return {row(2) * -1.0,
+            row(0),
+            row(1),
+            std::tan(static_cast<double>(camera.fov_y) / 2.0),
+            static_cast<double>(aspect),
+            static_cast<double>(z_near)};
 }
 
 } // namespace vx::render
