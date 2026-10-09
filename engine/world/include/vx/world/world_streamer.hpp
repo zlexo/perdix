@@ -8,6 +8,7 @@
 #include <vx/world/coordinates.hpp>
 #include <vx/world/generator.hpp>
 #include <vx/world/region.hpp>
+#include <vx/world/versions.hpp>
 
 #include <array>
 #include <cstddef>
@@ -19,13 +20,14 @@ namespace vx {
 
 // A job's result, on its way from a worker to the world thread (RFC 0005).
 struct StreamResult {
-    enum class Kind : std::uint8_t { surface };
+    enum class Kind : std::uint8_t { surface, plan };
     Kind kind = Kind::surface;
-    // For a surface, the column at x and z.
+    // A chunk, or for a surface the column at x and z.
     ChunkPos pos;
-    // The load id of the column the job was for.
+    // The load id of the chunk or column the job was for.
     std::uint32_t load_id = 0;
     ChunkRange surface;
+    ChunkPlan plan;
 };
 
 // Counts for tests and the overlay.
@@ -34,16 +36,21 @@ struct StreamingStats {
     std::size_t columns = 0;
     std::size_t surfaces_known = 0;
     std::size_t jobs_in_flight = 0;
+    // Versions alive: current ones and frozen ones jobs still read.
+    std::size_t plan_versions = 0;
 };
 
 // The data half of RFC 0006's streaming, on RFC 0005's world thread: which
-// chunks exist around the camera. Every column near the region gets its
-// surface range first. Once a column's terrain band is known, its chunks in
-// the drawn region are marked drawn, and kept drawn while inside the region
-// grown for hysteresis; every chunk within one of a drawn chunk is loaded,
-// and every chunk within one of a loaded one has a record, as RFC 0006's
-// region grows, counted record by record so it holds whatever order columns
-// arrive in. Plans and blocks come next.
+// chunks exist around the camera, and the jobs that make them. Every column
+// near the region gets its surface range first. Once a column's terrain band
+// is known, its chunks in the drawn region are marked drawn, and kept drawn
+// while inside the region grown for hysteresis; every chunk within one of a
+// drawn chunk is loaded, and every chunk within one of a loaded one has a
+// record and a plan, as RFC 0006's region grows, counted record by record so
+// it holds whatever order columns arrive in. A chunk out of the generator's
+// reach, or above its column's surface, is uniform: it is ready at once, with
+// no job. Every other chunk is planned; a chunk is complete once it and its
+// 26 neighbors are ready.
 class WorldStreamer {
 public:
     // Results come back through an inbox that signals `results_ready`.
@@ -59,7 +66,7 @@ public:
     // The camera's chunk. When it changes, chunks join the region and those
     // outside the region grown for hysteresis leave it.
     void set_camera(ChunkPos camera);
-    // Submits every job that can start.
+    // Submits every job that can start: surfaces, then plans.
     void feed();
     // Takes in every result the jobs have sent back.
     void integrate();
@@ -111,17 +118,30 @@ private:
     // The chunk's record, made if it has none.
     std::uint32_t ensure(ChunkPos pos);
     std::uint32_t add_chunk(ChunkPos pos);
+    // Ready at once when uniform: out of the generator's reach, or above
+    // its column's surface. False when not, or when the surface is unknown.
+    bool make_uniform(std::uint32_t index);
     void set_drawn(ChunkPos pos, bool drawn);
     // A chunk within one of `pos`, or `pos` itself, became drawn or loaded
     // (delta 1), or stopped (delta -1).
     void add_drawn_near(ChunkPos pos, int delta);
     void add_loaded_near(ChunkPos pos, int delta);
     void set_loaded(std::uint32_t index, bool loaded);
+    void leave(std::uint32_t index);
     void free_chunk(std::uint32_t index);
+    // Moves the chunk to `state`, then moves on each neighbor whose count
+    // that changed.
+    void set_state(std::uint32_t index, ChunkState state);
+    void advance_neighbors();
+    // Moves a chunk on when a count lets it: to complete, or back. Never
+    // changes a neighbor's count.
+    void advance(std::uint32_t index);
 
     void feed_surfaces();
+    void feed_plans();
 
     void integrate_surface(StreamResult& result);
+    void integrate_plan(StreamResult& result);
 
     const Generator* generator_;
     JobSystem* jobs_;
@@ -134,11 +154,14 @@ private:
     std::vector<Column> columns_;
     std::vector<std::uint32_t> free_columns_;
 
+    Versions<ChunkPlan> plans_;
     std::vector<GenScratch> scratch_; // one for each worker
     Inbox<StreamResult> results_;
 
     std::vector<Waiting> waiting_surfaces_;
-    std::vector<ColumnPos> dirty_; // columns whose surface arrived
+    std::vector<Waiting> waiting_plans_;
+    std::vector<ColumnPos> dirty_;          // columns whose surface arrived
+    std::vector<std::uint32_t> to_advance_; // neighbors whose counts changed
     std::uint32_t next_load_id_ = 1;
     std::size_t in_flight_ = 0;
 };
