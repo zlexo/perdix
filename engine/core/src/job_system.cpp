@@ -468,6 +468,10 @@ std::uint32_t JobSystem::worker_count() const noexcept {
     return static_cast<std::uint32_t>(state_->workers.size());
 }
 
+std::uint32_t JobSystem::slot_count() const noexcept {
+    return static_cast<std::uint32_t>(state_->slots.size());
+}
+
 std::uint32_t JobSystem::queued(JobLevel level) const noexcept {
     const std::scoped_lock guard(state_->lock);
     return static_cast<std::uint32_t>(state_->heaps[level_index(level)].size());

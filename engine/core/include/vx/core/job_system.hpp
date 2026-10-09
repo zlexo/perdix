@@ -114,6 +114,8 @@ public:
     void set_catching_up(bool catching_up) noexcept;
 
     [[nodiscard]] std::uint32_t worker_count() const noexcept;
+    // Jobs queued or running at once: JobSystemDesc's slots.
+    [[nodiscard]] std::uint32_t slot_count() const noexcept;
 
     // How many jobs wait at `level`.
     [[nodiscard]] std::uint32_t queued(JobLevel level) const noexcept;
