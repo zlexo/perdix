@@ -86,8 +86,17 @@ add_executable(vx_app
     src/pack.cpp
     src/window.cpp)
 target_link_libraries(vx_app PRIVATE vx::core vx::world vx::mesh vx::render vx::minecraft
-    vx_app_overlay vx_app_play vx_app_startup vx_app_stream vx_app_view vx_app_world vx_imgui_sdl3
-    SDL3::SDL3-static)
+    vx_app_flythrough vx_app_overlay vx_app_play vx_app_startup vx_app_stream vx_app_view
+    vx_app_world vx_imgui_sdl3 SDL3::SDL3-static)
 set_target_properties(vx_app PROPERTIES OUTPUT_NAME perdix)
+# The commit the source tree is at, for the flythrough's report: the script
+# runs at each build and rewrites the header only when the commit changed.
+add_custom_target(vx_app_commit
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE=${PROJECT_SOURCE_DIR}"
+        "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/generated/commit.hpp"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/commit.cmake"
+    BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/generated/commit.hpp")
+add_dependencies(vx_app vx_app_commit)
+target_include_directories(vx_app PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 vx_target_warnings(vx_app)
 vx_target_engine_options(vx_app)

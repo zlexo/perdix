@@ -1,4 +1,8 @@
+#include "commit.hpp"
 #include "fly_controls.hpp"
+#include "flythrough.hpp"
+#include "flythrough_run.hpp"
+#include "footprint.hpp"
 #include "options.hpp"
 #include "overlay.hpp"
 #include "pack.hpp"
@@ -268,6 +272,224 @@ vx::Result<vx::render::Frame> draw_frame(vx::render::Renderer& renderer, vx::app
         {.sky = sky, .camera = camera, .cubes = {}, .overlay = shown, .chunk_changes = &meshes});
 }
 
+// With validation on, a run that broke Vulkan's rules fails, so a smoke run
+// with --frames, or a flythrough, catches it.
+int validation_result(const vx::render::Context& context) {
+    const std::uint32_t errors = context.instance().validation_counts().errors;
+    if (errors > 0) {
+        std::cerr << "error: Vulkan validation counted " << errors
+                  << (errors == 1 ? " error\n" : " errors\n");
+        return 3;
+    }
+    return 0;
+}
+
+// The flythrough's plan, when one was asked for.
+std::optional<vx::app::FlythroughPlan> flythrough_plan(vx::app::Flythrough which) {
+    switch (which) {
+    case vx::app::Flythrough::none:
+        break;
+    case vx::app::Flythrough::full:
+        return vx::app::FlythroughPlan::full();
+    case vx::app::Flythrough::quick:
+        return vx::app::FlythroughPlan::quick();
+    }
+    return std::nullopt;
+}
+
+// The window drawing the plan's size, at whatever density.
+void size_for_flythrough(vx::app::Window& window, const vx::app::FlythroughPlan& plan) {
+    if (!window.set_framebuffer_size({.width = plan.width, .height = plan.height})) {
+        std::cerr << "warning: the flythrough wants " << plan.width << "x" << plan.height
+                  << ", and the window draws " << window.framebuffer_size().width << "x"
+                  << window.framebuffer_size().height << '\n';
+    }
+}
+
+// The world thread's sample, with the main thread's own numbers: the holes
+// of the meshes sent that wait here, against the viewer the request was
+// sent with, the arena's quads, the process's memory, and whether the
+// uploads caught up.
+vx::app::FlythroughSample flythrough_sample(const vx::app::WorldSample& world,
+                                            const vx::render::Renderer& renderer,
+                                            const vx::app::StreamedMeshes& meshes,
+                                            const vx::Viewer& asked) {
+    const bool complete = world.complete && meshes.waiting() == 0;
+    if (world.kind == vx::app::SampleKind::completion) {
+        return {.id = world.id,
+                .full = false,
+                .at = world.at,
+                .generated = world.generated,
+                .uniform = world.uniform,
+                .meshed = world.meshed,
+                .complete = complete};
+    }
+    const vx::render::ArenaStats arena = renderer.chunks().arena().space().stats();
+    const vx::app::Holes waiting =
+        meshes.holes(renderer.chunks().uploads(), asked, vx::app::near_holes_distance);
+    return {.id = world.id,
+            .full = true,
+            .at = world.at,
+            .generated = world.generated,
+            .uniform = world.uniform,
+            .meshed = world.meshed,
+            .longest_step = world.longest_step,
+            .longest_pass = world.longest_pass,
+            .holes = world.holes + waiting.all,
+            .near_holes = world.near_holes + waiting.near,
+            .chunk_bytes = world.chunk_bytes,
+            .mesh_bytes =
+                (std::uint64_t{arena.live} + arena.retired) * vx::render::ChunkArena::quad_bytes,
+            .footprint_bytes = vx::app::process_footprint(),
+            .complete = complete,
+            .broken = world.broken};
+}
+
+// What the world thread is asked for: a full sample checks RFC 0006's
+// invariants when the plan says so.
+vx::app::SampleKind sample_kind(const vx::app::FlythroughRun::SampleRequest& request,
+                                const vx::app::FlythroughPlan& plan) {
+    if (!request.full) {
+        return vx::app::SampleKind::completion;
+    }
+    return plan.check ? vx::app::SampleKind::checked : vx::app::SampleKind::full;
+}
+
+// The flythrough's camera and samples. A phase's first request goes before
+// the frame's camera, so its answer closes the phase before where it ended;
+// the others after it, so they see the frame's. Each answer is read once
+// the meshes sent before it reach the uploads and before those after it, so
+// the holes the main thread adds are the meshes the world counted as sent
+// that do not show yet, against the camera it answered from.
+struct FlythroughSamples {
+    std::vector<vx::app::ToMain> messages;
+    std::optional<vx::Viewer> sent; // the last camera sent
+    vx::Viewer asked;               // the camera the request out is answered from
+
+    void send_camera(vx::app::WorldLoop& loop, vx::app::FlythroughRun& run,
+                     const vx::app::StreamedMeshes& meshes, const vx::Viewer& viewer) {
+        const std::optional<vx::app::FlythroughRun::SampleRequest> request =
+            run.sample_request(meshes.waiting() > 0);
+        if (request && request->before_camera) {
+            ask(loop, run.plan(), *request, sent.value_or(viewer));
+        }
+        vx::app::ToWorld camera;
+        camera.kind = vx::app::ToWorld::Kind::camera;
+        camera.camera = viewer;
+        send(loop, camera);
+        sent = viewer;
+        if (request && !request->before_camera) {
+            ask(loop, run.plan(), *request, viewer);
+        }
+    }
+
+    void ask(vx::app::WorldLoop& loop, const vx::app::FlythroughPlan& plan,
+             const vx::app::FlythroughRun::SampleRequest& request, const vx::Viewer& viewer) {
+        vx::app::ToWorld message;
+        message.kind = vx::app::ToWorld::Kind::sample;
+        message.sample_id = request.id;
+        message.sample_kind = sample_kind(request, plan);
+        send(loop, message);
+        asked = viewer;
+    }
+
+    void take(vx::app::WorldLoop& loop, vx::app::StreamedMeshes& meshes,
+              vx::app::FlythroughRun& run, const vx::render::Renderer& renderer) {
+        loop.take(messages);
+        meshes.receive(messages, [&](const vx::app::WorldSample& world) {
+            run.add(flythrough_sample(world, renderer, meshes, asked));
+        });
+        messages.clear();
+    }
+};
+
+// What the flythrough's report opens with.
+vx::app::FlythroughHeader flythrough_header(const vx::render::Renderer& renderer,
+                                            const vx::render::Extent& size,
+                                            std::int32_t view_distance, std::uint32_t workers) {
+    const vx::render::DeviceInfo& device = renderer.context().device_info();
+    const vx::render::Swapchain* swapchain = renderer.swapchain();
+    const bool immediate =
+        swapchain != nullptr && swapchain->choice().present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR;
+#ifdef NDEBUG
+    constexpr std::string_view build = "release";
+#else
+    constexpr std::string_view build = "debug";
+#endif
+#ifdef TRACY_ENABLE
+    constexpr std::string_view profiling = ", profiling";
+#else
+    constexpr std::string_view profiling;
+#endif
+    return {.engine = std::string(vx::version_string()) + " (" + std::string(vx::app::commit) + ")",
+            .build = std::string(build) + std::string(profiling),
+            .device = device.name,
+            .driver = device.driver_name + " " + device.driver_info,
+            .settings = std::to_string(size.width) + "x" + std::to_string(size.height) +
+                        ", view distance " + std::to_string(view_distance) + ", " +
+                        std::to_string(workers) + " workers, " +
+                        (immediate ? "immediate" : "FIFO") + " present"};
+}
+
+// A checked flythrough's result: what it found wrong, each said, then the
+// validation's (RFC 0006's CI run).
+int checked(std::span<const vx::app::PhaseResult> results, const vx::render::Context& context) {
+    const std::vector<std::string> problems = vx::app::flythrough_problems(results);
+    for (const std::string& problem : problems) {
+        std::cerr << "error: " << problem << '\n';
+    }
+    return problems.empty() ? validation_result(context) : 4;
+}
+
+// RFC 0006's benchmark flythrough: the path flies the camera, the world
+// streams in around it, and the report goes to the standard output once the
+// last phase is over. Closing the window stops it with no report.
+int fly(const vx::app::FlythroughPlan& plan, vx::app::Window& window,
+        vx::render::Renderer& renderer, vx::app::Overlay& overlay, vx::app::WorldLoop& loop,
+        vx::app::StreamedMeshes& meshes, std::uint32_t workers) {
+    using Clock = std::chrono::steady_clock;
+    vx::app::FlythroughRun run(plan, Clock::now());
+    vx::render::Camera camera;
+    vx::app::ChunkMeshing meshing;
+    bool bobbing = false;
+    WorldReports reports;
+    FlythroughSamples samples;
+    std::optional<Clock::time_point> last;
+    while (window.handle_events(overlay)) {
+        const Clock::time_point now = Clock::now();
+        if (last) {
+            run.frame_time(now - *last);
+        }
+        last = now;
+        const std::optional<vx::app::FlythroughPose> pose = run.frame(now);
+        if (!pose) {
+            std::cout << '\n'
+                      << vx::app::flythrough_report(flythrough_header(renderer,
+                                                                      window.framebuffer_size(),
+                                                                      plan.view_distance, workers),
+                                                    run.results());
+            return plan.check ? checked(run.results(), renderer.context())
+                              : validation_result(renderer.context());
+        }
+        camera.position = {pose->eye.x, pose->eye.y, pose->eye.z};
+        camera.yaw = pose->yaw;
+        camera.pitch = pose->pitch;
+        samples.send_camera(loop, run, meshes,
+                            vx::app::camera_viewer(camera, aspect_of(window.framebuffer_size())));
+        samples.take(loop, meshes, run, renderer);
+        const vx::Result<vx::render::Frame> rendered =
+            draw_frame(renderer, overlay, window, camera, meshes, meshing, bobbing);
+        if (!rendered.has_value()) {
+            std::cerr << "error: " << rendered.error().message << '\n';
+            return 1;
+        }
+        reports.send_changes(loop, meshes, meshing);
+        FrameMark;
+    }
+    std::cerr << "error: the window closed before the flythrough's end\n";
+    return 1;
+}
+
 // The block pack, found and loaded with the player's Minecraft where it can
 // be: a bad block file, texture or texture map, or a Minecraft named on the
 // command line that cannot be used, stops startup with every problem listed
@@ -349,6 +571,10 @@ int main(int argc, char* argv[]) {
         std::cerr << "error: " << window.error().message << '\n';
         return 1;
     }
+    const std::optional<vx::app::FlythroughPlan> plan = flythrough_plan(options.value().flythrough);
+    if (plan) {
+        size_for_flythrough(window.value(), *plan);
+    }
 
     // The world (RFC 0006): the placeholder's hills, streamed in around the
     // camera at RFC 0006's view distance by the world thread and its
@@ -362,9 +588,14 @@ int main(int argc, char* argv[]) {
     constexpr std::uint64_t world_seed = 0x5EED;
     const vx::PlaceholderGenerator generator(world_seed, ground.value());
     vx::app::WorldLoopSettings settings{.region = {}};
-    // The player starts beside the spire at the world's origin, on the grass.
+    // The player starts beside the spire at the world's origin, on the grass;
+    // a flythrough flies the camera alone.
     const vx::Vec3d spawn{.x = 24.5, .y = static_cast<double>(generator.height(24, 24)), .z = 24.5};
-    settings.player = vx::app::WorldLoopSettings::PlayerStart{.spawn = spawn, .lowest = -64.0};
+    if (plan) {
+        settings.region.view_distance = plan->view_distance;
+    } else {
+        settings.player = vx::app::WorldLoopSettings::PlayerStart{.spawn = spawn, .lowest = -64.0};
+    }
     settings.physics = registry.physics();
 
     // Before the renderer, so it is destroyed after it: the renderer draws
@@ -374,7 +605,8 @@ int main(int argc, char* argv[]) {
         {.surface = window.value().surface_source(),
          .framebuffer = window.value().framebuffer_size(),
          .validation = validation,
-         .present_mode = vx::render::PresentMode::fifo,
+         // A flythrough measures frames without waiting on the display.
+         .present_mode = plan ? vx::render::PresentMode::immediate : vx::render::PresentMode::fifo,
          .overlay = overlay.context(),
          .block_textures = pack.textures,
          .chunk_arena_quads = arena_quads(settings.region.view_distance),
@@ -405,6 +637,10 @@ int main(int argc, char* argv[]) {
     std::cout << "World: placeholder hills, seed 0x5EED, view distance "
               << settings.region.view_distance << " chunks, " << jobs.worker_count()
               << " workers\n";
+    if (plan) {
+        return fly(*plan, window.value(), renderer.value(), overlay, loop, meshes,
+                   jobs.worker_count());
+    }
 
     // The player stands on the grass beside the spire, looking at it (RFC
     // 0010); F4 switches to RFC 0001's noclip camera and back.
@@ -476,13 +712,5 @@ int main(int argc, char* argv[]) {
         FrameMark;
     }
 
-    // With validation on, a run that broke Vulkan's rules fails, so a smoke run
-    // with --frames catches it. Messages from shutting down still print.
-    const std::uint32_t errors = context.instance().validation_counts().errors;
-    if (errors > 0) {
-        std::cerr << "error: Vulkan validation counted " << errors
-                  << (errors == 1 ? " error\n" : " errors\n");
-        return 3;
-    }
-    return 0;
+    return validation_result(context);
 }

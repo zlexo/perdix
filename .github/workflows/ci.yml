@@ -91,16 +91,26 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
-      - name: Install Ninja, SDL's dependencies, lavapipe and the validation layers
+      - name: Install Ninja, SDL's dependencies, lavapipe, the validation layers and Xvfb
         run: >-
           sudo apt-get update -q && sudo apt-get install -y -q ninja-build $SDL_LINUX_PACKAGES
-          mesa-vulkan-drivers vulkan-validationlayers
+          mesa-vulkan-drivers vulkan-validationlayers xvfb
       - name: Configure
         run: cmake --preset linux-lavapipe
       - name: Build
         run: cmake --build --preset linux-lavapipe
       - name: Test
         run: ctest --preset linux-lavapipe
+      # RFC 0006's flythrough, its few seconds, on a virtual display: its
+      # samples check the streaming invariants, and the run fails on a broken
+      # one, a Vulkan validation error, a region that never completes (a wait
+      # that runs into its 300 s cap, which only a hang reaches), or chunk
+      # data that does not come back after the teleport. It never asserts a
+      # frame time or a speed.
+      - name: Flythrough
+        run: >-
+          xvfb-run -a -s "-screen 0 1280x720x24"
+          build/linux-lavapipe/app/perdix --flythrough=quick --no-minecraft
 
   # macOS minutes bill at ten times the Linux rate on private repositories,
   # so this job only runs once the repository is public, where they are free.
