@@ -322,4 +322,65 @@ All settled on 2026-10-08: every recommendation below was accepted.
 
 ## As built
 
-Filled in after implementation: what differed from this design, and why.
+Pull request plan item 1, boxes and clipping, landed as two pull requests: `Vec3d` with boxes and the per-axis clip; the collision pass and `move_box`.
+
+- **Overlap counts only past 1e-7 blocks on the other two axes:** a box less than that into a floor slides over block seams, and a box resting against a face is not inside it; one a hair into a wall is stopped, not pushed back.
+- **Each axis reports its own collision** (`x_collision`, `vertical_collision`, `z_collision` on `Move`), so the tick zeroes only the part of the velocity a block stopped.
+- **`collect` gathers the boxes that overlap or touch a region**, so a box resting on a block still gathers it; a move that is not finite does nothing.
+- **The coyote tick falls out of Y first:** the tick that walks off an edge still ends on the ground.
+
+Item 2, step-up and the edge guard, landed as two pull requests.
+
+- **Step-up counts the floor at 0 as a candidate unless the plain move reached it,** so a jump into a doorway two blocks high walks in rather than bumping the lintel.
+- **The edge guard probes only the space under the feet,** down to the drop and a little more, so a block at chest height past an edge is not ground.
+- **`MoveRules`** carries the step height, whether the tick began on the ground, and the guard's drop; rules that are not finite do nothing, and negative ones are none.
+
+Item 3, the tick, landed as four pull requests: the body, the numbers and slipperiness; the tick; tests for the rules the vectors leave unchecked, from the review's mutants; jumping.
+
+- **A yaw that is not finite makes the tick do nothing,** as a move that is not finite does: a NaN facing would turn the velocity NaN for good.
+- **The 0.6 in the ground acceleration is the formula's own** (its 0.216 is 0.6 cubed), kept apart from the default slipperiness.
+- **The jump set 0.42, as above;** with item 5 it came to keep a faster rise, as 26.2's does (from the jar): the vertical speed becomes 0.42 or stays what it was, whichever is more. Nothing pushes a player up yet.
+
+Item 7, walking in the app, landed before items 4 to 6, as three pull requests: `ChunkBoxes` over one chunk; the walking clock; the client.
+
+- **The clock is a fixed step with interpolation:** at most a second of catch-up, the elapsed time clamped before it is added, the camera between the last two ticks at eye height, the field of view eased and blended the same way.
+- **Until item 4, the app started sprints itself** (Ctrl with W, without S).
+- **F4 back to walking refuses to land the player inside a block,** where it could not move.
+- **The overlay's line** shows walking or flying, the speed and the vertical speed in blocks a second, sprinting, crouching, in the air, and the ticks run.
+
+From item 4 on, a source joined the wiki, mcpk.wiki and the research notes: Minecraft 26.2's jar, read for numbers and behavior only, never for code to port. Each number taken from it is marked below.
+
+Item 4, sprinting and crouching, landed as four pull requests: sprinting; tests for the sprint's rules; crouching and the tick's bench; the app.
+
+- **The 8-degree graze is measured against the horizontal motion after the collision** (the research notes, 5.2), and a box stopped dead counts as a real hit. So in the 1-block step vector a jump on tick 10, which meets the face moving straight at it and clears it on the next tick, keeps its sprint; only tick 11 loses it. The vector above has both losing it because the research simulator ended a sprint on any hit.
+- **The double tap follows the jar,** not the account above: it works in the air too; a fresh press is the push forward rising from none, so letting go of S with W held counts; the window runs on after a double tap; Shift held the tick before or S held closes it. A sprint starts on any push forward with the player not crouched: 26.2 has no 0.8 threshold, and `MovementNumbers` drops `sprint_input_threshold`.
+- **The pose rule runs every tick,** one gather more, so a block placed into a standing player's head will crouch it (M5) without a special case.
+- **The tick's bench had no item and landed here:** about 96 ns a tick walking on a chunk's floor and 92 ns sprint-jumping, release build, reference machine, against the budget's 2 µs.
+
+Item 5, creative flight, landed as three pull requests: the jump that keeps a faster rise; the tick; the app.
+
+- **Flight follows 26.2's order, from the jar:** the second press of Space toggles wherever the player is, and taking off from the ground jumps as well; Space's and Shift's 0.15 go on before the threshold; the jump does not ask whether the player flies, since a flying player is on the ground only on the tick it takes off.
+- **A player may fly by default,** as in creative, so Space pressed again within 7 ticks flies; the cooldown test under a ceiling uses a player that may not.
+- **After a flying move the vertical speed is 0.6 of what it was before the move,** a collision or not, as the research notes give the rule; "multiplied by 0.6" above left that open. Zeroing it on a landing left the next tick off the ground, losing a Space press. A landing ends flight after the move, and that tick keeps flight's drags.
+- **The flying bench runs in a synthetic slot** between a floor and a ceiling of single blocks, the box against both, sprinting at 98% of top speed and gathering about 16 boxes a tick: a single chunk let the flyer leave it, and a field of blocks in its way cost it its sprint. About 107 ns a tick, release build, against the budget's 20 µs.
+
+Item 6, blocks, landed as four pull requests: the block-file keys and the registry's per-state physics; slipperiness underfoot and collision from the registry; tests for the supporting block's rules; the property tests.
+
+- **`BlockBoxes::slipperiness` returns a double** (the sketch above says float), as every other movement number is one.
+- **`ChunkBoxes` stays one chunk,** now over the registry's `BlockPhysics`; without them every block but air is a full cube on default ground. The map of chunks comes with M3.
+- **The supporting block is 26.2's, from the jar,** chosen after each move that ends on the ground rather than at the start of a tick: of the blocks whose boxes overlap the slab from 1e-6 below the box's bottom up to it, the one whose center is nearest the player's position, measured in three dimensions, ties to the greater y, then z, then x. With none there, the same search under where the box came from (the move's horizontal motion taken back), unless the last search on the ground found none as well; off the ground, none. So a player that walks off an edge keeps the edge's block for the tick it still stands.
+- **A tick begun on the ground slides on the block 0.500001 below the feet** (from the jar), in the supporting block's column, or under the player's position when no block has been chosen yet, as on a first tick: on a slab, the block under the slab; on anything taller than half a block, that block. 26.2's exception for walls and fence gates has no block to apply to yet.
+- **The ground acceleration never exceeds the plain one:** 26.2 applies the formula only above a slipperiness of 0.6 (from the jar), as the formula's `min(1, ...)` already did.
+- **The supporting block's search costs the walking tick about 40 ns:** about 141 ns a tick on a chunk's floor, from 99, release build, reference machine; sprint-jumping 102, from 93; flying, never on the ground, unchanged.
+- **The property tests run in closed-in random worlds** (walls and a ceiling): in an open chunk every walk left it and tested only falling. They also run in rooms of boxes from an eighth of a block to a block and a half tall, so step-up and the edge guard work between whole blocks. A coverage probe: flying 20% of ticks, crouching 13%, a wall hit 17%, on the ground 44%, thousands of ticks on ice.
+
+After item 6, one pull request fixed item 5 from the jar:
+
+- **The tick that takes off from the ground moves on the ground's terms:** its acceleration and drag are the ground's, as for any tick begun on the ground, and flight's apply from the next tick. A flying player begins a tick on the ground only when it takes off. Item 5 had given that tick flight's terms: taking off with W held moved 0.049, then 0.09359, where it now moves 0.098, then 0.102508.
+
+Item 8, view bobbing, landed with the game's own numbers, as three pull requests: the camera's roll; the bob; the mouse.
+
+- **RFC 0001's camera gained a roll,** 0 by default, which leaves every earlier image unchanged.
+- **View bobbing is 26.2's, from the jar** (no public source gives it): an amount that eases 0.4 of the way each tick toward the horizontal speed carried into the tick, at most 0.1, and toward 0 off the ground; a walk distance of 0.6 per block moved, read a fraction of a tick ahead; the scene shifted 0.5 times the amount sideways and the amount up and down, turned 3 degrees per unit around the view's z axis and 5 around its x axis, the tip's phase 0.2 behind. The drawn camera undoes the game's turn and shift exactly. The overlay has the game's View Bobbing switch, on by default.
+- **The mouse turns 0.15 degrees per count, from the jar:** 26.2's turn at its default sensitivity (the setting, 0.5, times 0.6 plus 0.2, cubed, times 8, times 0.15 degrees). RFC 0001's camera turned 0.143.
+- **The eye height and the field of view already matched the jar:** both ease halfway to their targets each tick, and the field of view's targets are 1.15 sprinting, 1.1 flying, and 1.265, both, sprint-flying.
