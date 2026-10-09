@@ -909,6 +909,50 @@ TEST_CASE("a mesh job's pins hold a complete chunk's neighborhood as it was") {
     CHECK(streamer.stats().block_versions == versions - 1);
 }
 
+TEST_CASE("Tracy's counts: results waiting, pins on plans and chunks, and copies on write") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    // Each job's result waits from when it ran until integrate takes it.
+    streamer.feed();
+    const std::uint32_t queued = jobs.queued(vx::JobLevel::normal);
+    REQUIRE(queued > 0);
+    CHECK(streamer.results_waiting() == 0);
+    jobs.run_until_idle();
+    CHECK(streamer.results_waiting() == queued);
+    streamer.integrate();
+    CHECK(streamer.results_waiting() == 0);
+    // A queued build pins its neighbors' plans.
+    for (int pass = 0; pass < 100 && count(streamer, ChunkState::building) == 0; ++pass) {
+        streamer.feed();
+        if (count(streamer, ChunkState::building) == 0) {
+            jobs.run_until_idle();
+            streamer.integrate();
+        }
+    }
+    REQUIRE(count(streamer, ChunkState::building) > 0);
+    CHECK(streamer.pins() > 0);
+    settle(streamer, jobs);
+    CHECK(streamer.pins() == 0);
+    // A mesh job pins the blocks of each chunk around it that has any.
+    vx::JobRecord* pins = streamer.pin_neighborhood(above_hills, 1);
+    REQUIRE(pins != nullptr);
+    const auto pinned = static_cast<std::uint64_t>(std::ranges::count_if(
+        pins->chunks, [](const vx::Version<vx::ChunkStorage>* chunk) { return chunk != nullptr; }));
+    REQUIRE(pinned > 0);
+    CHECK(streamer.pins() == pinned);
+    // An edit to a pinned chunk is a copy; once released, edits write in place.
+    CHECK(streamer.copies() == 0);
+    REQUIRE(streamer.set_block({.x = 100, .y = 70, .z = 100}, stone));
+    CHECK(streamer.copies() == 1);
+    streamer.release(*pins);
+    CHECK(streamer.pins() == 0);
+    REQUIRE(streamer.set_block({.x = 101, .y = 70, .z = 100}, stone));
+    CHECK(streamer.copies() == 1);
+}
+
 TEST_CASE("canceling the queued jobs leaves none queued, and may run twice") {
     // Debug builds also assert, as the streamer goes, that every pin of the
     // canceled builds came back.
