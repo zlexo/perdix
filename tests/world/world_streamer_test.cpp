@@ -17,13 +17,17 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <mutex>
 #include <optional>
 #include <span>
+#include <thread>
 #include <vector>
 
 // RFC 0006's streaming, the data half, in RFC 0005's deterministic mode.
@@ -1299,7 +1303,7 @@ public:
     [[nodiscard]] vx::ChunkPlan plan(ChunkPos pos, vx::GenScratch& /*scratch*/) const override {
         return {.pos = {.x = pos.x,
                         .y = pos.y,
-                        .z = pos.z + (static_cast<std::int32_t>(version_) * stamp)}};
+                        .z = pos.z + (static_cast<std::int32_t>(version_.load()) * stamp)}};
     }
     [[nodiscard]] vx::ChunkStorage build(std::span<const vx::ChunkPlan* const, 27> plans,
                                          vx::GenScratch& /*scratch*/) const override {
@@ -1312,15 +1316,15 @@ public:
         }
         return vx::ChunkStorage::uniform(built_at(static_cast<std::uint32_t>(own)));
     }
-    [[nodiscard]] std::uint32_t version() const noexcept override { return version_; }
+    [[nodiscard]] std::uint32_t version() const noexcept override { return version_.load(); }
 
     static constexpr BlockState mixed_plans = static_cast<BlockState>(99);
     static constexpr BlockState built_at(std::uint32_t version) {
         return static_cast<BlockState>(100 + version);
     }
 
-    std::uint32_t version_ = 0; // up to 7
-    mutable std::size_t mixed = 0;
+    std::atomic<std::uint32_t> version_{0}; // up to 7
+    mutable std::atomic<std::size_t> mixed{0};
 
 private:
     static constexpr std::int32_t stamp = 1 << 27; // past any chunk's z
@@ -1388,6 +1392,116 @@ TEST_CASE("a chunk that leaves while its rebuild runs and comes back after anoth
     streamer.set_camera(deep);
     settle(streamer, jobs);
     CHECK(streamer.stats().regenerating == 0);
-    CHECK(generator.mixed == 0);
+    CHECK(generator.mixed.load() == 0);
     CHECK(not_built_at(streamer, 2) == 0);
+}
+
+namespace {
+
+// PlanStamps on workers, whose first build waits until the test lets it go:
+// a build that runs on through a version change.
+class HeldBuild final : public vx::Generator {
+public:
+    explicit HeldBuild(const PlanStamps& stamps) : stamps_(&stamps) {}
+
+    [[nodiscard]] vx::ChunkRange surface_range(vx::ColumnPos column,
+                                               vx::GenScratch& scratch) const override {
+        return stamps_->surface_range(column, scratch);
+    }
+    [[nodiscard]] std::optional<BlockState> out_of_reach(ChunkPos pos) const noexcept override {
+        return stamps_->out_of_reach(pos);
+    }
+    [[nodiscard]] vx::ChunkPlan plan(ChunkPos pos, vx::GenScratch& scratch) const override {
+        return stamps_->plan(pos, scratch);
+    }
+    [[nodiscard]] vx::ChunkStorage build(std::span<const vx::ChunkPlan* const, 27> plans,
+                                         vx::GenScratch& scratch) const override {
+        {
+            std::unique_lock guard(lock_);
+            if (!held_) {
+                held_ = ChunkPos{.x = plans[13]->pos.x, .y = plans[13]->pos.y, .z = 0};
+                released_.wait(guard, [this] { return open_; });
+            }
+        }
+        return stamps_->build(plans, scratch);
+    }
+    [[nodiscard]] std::uint32_t version() const noexcept override { return stamps_->version(); }
+
+    // The held build's chunk, once one is held: x and y (z carries the
+    // version).
+    [[nodiscard]] std::optional<ChunkPos> held() const {
+        const std::scoped_lock guard(lock_);
+        return held_;
+    }
+    void release() {
+        const std::scoped_lock guard(lock_);
+        open_ = true;
+        released_.notify_all();
+    }
+
+private:
+    const PlanStamps* stamps_;
+    mutable std::mutex lock_;
+    mutable std::condition_variable released_;
+    mutable std::optional<ChunkPos> held_;
+    bool open_ = false;
+};
+
+// Passes until the held build is the only job left, or two seconds passed.
+bool until_only_the_held_build(WorldStreamer& streamer) {
+    for (int pass = 0; pass < 2'000; ++pass) {
+        streamer.feed();
+        integrate_all(streamer);
+        if (streamer.stats().jobs_in_flight == 1 && streamer.results_waiting() == 0) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+}
+
+} // namespace
+
+TEST_CASE("while a build of the old version runs, its neighbors do not read its plan") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    PlanStamps stamps(placeholder);
+    HeldBuild generator(stamps);
+    vx::JobSystem jobs({.workers = 2});
+    vx::WakeEvent wake;
+    {
+        WorldStreamer streamer(generator, jobs, wake, small);
+        streamer.set_camera(above_hills);
+        REQUIRE(until_only_the_held_build(streamer));
+        const std::optional<ChunkPos> held = generator.held();
+        REQUIRE(held.has_value());
+        const vx::ChunkRecords& records = streamer.records();
+        std::optional<ChunkPos> building;
+        for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+            if (records.live(index) && records[index].state == ChunkState::building) {
+                building = records[index].pos;
+            }
+        }
+        REQUIRE(building.has_value());
+        CHECK(building->x == held->x);
+        CHECK(building->y == held->y);
+        // A new version while it runs: the rest regenerates around it.
+        stamps.version_ = 1;
+        const bool only_held = until_only_the_held_build(streamer);
+        const std::size_t mixed_meanwhile = stamps.mixed.load();
+        generator.release();
+        for (int pass = 0; pass < 10'000; ++pass) {
+            streamer.feed();
+            if (streamer.stats().jobs_in_flight == 0) {
+                break;
+            }
+            jobs.wait_until_idle();
+            integrate_all(streamer);
+        }
+        CHECK(only_held);
+        CHECK(mixed_meanwhile == 0);
+        CHECK(stamps.mixed.load() == 0);
+        CHECK(streamer.stats().regenerating == 0);
+        CHECK(not_built_at(streamer, 1) == 0);
+    }
+    jobs.wait_until_idle();
 }

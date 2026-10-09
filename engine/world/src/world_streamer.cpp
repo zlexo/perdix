@@ -632,7 +632,12 @@ void WorldStreamer::restart(std::uint32_t index) {
     case ChunkState::planning:
     case ChunkState::building:
         if (record.job) {
-            break; // running: it starts over when its result comes
+            // Running: it starts over when its result comes. Till then a
+            // build's plan is the old version's: no neighbor may read it.
+            if (record.state == ChunkState::building) {
+                set_regeneration(index, Regeneration::replan);
+            }
+            break;
         }
         [[fallthrough]];
     case ChunkState::planned:
@@ -1114,6 +1119,7 @@ void WorldStreamer::integrate_build(StreamResult& result) {
                 plans_.retire(*record.plan);
                 record.plan = nullptr;
             }
+            set_regeneration(*index, Regeneration::none);
             set_state(*index, ChunkState::queued);
             plans_backlog_.push(
                 {.key = score(record.pos), .index = *index, .load_id = record.load_id});
