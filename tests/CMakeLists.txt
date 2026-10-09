@@ -138,6 +138,7 @@ add_executable(vx_render_vulkan_tests
     render/buffer_test.cpp
     render/chunk_arena_test.cpp
     render/chunk_renderer_test.cpp
+    render/chunk_scene_test.cpp
     render/chunk_test.cpp
     render/context_test.cpp
     render/gpu_timer_test.cpp
