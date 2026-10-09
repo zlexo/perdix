@@ -48,6 +48,9 @@ struct StreamResult {
     ChunkPos pos;
     // The load id of the chunk or column the job was for.
     std::uint32_t load_id = 0;
+    // The generator's version the job was submitted for: a result made for
+    // an older one is dropped.
+    std::uint32_t version = 0;
     // A build's pins, given back when the result is integrated.
     JobRecord* record = nullptr;
     ChunkRange surface;
@@ -61,6 +64,8 @@ struct StreamingStats {
     std::size_t columns = 0;
     std::size_t surfaces_known = 0;
     std::size_t jobs_in_flight = 0;
+    // Chunks still to regenerate after the generator's version changed.
+    std::size_t regenerating = 0;
     // Versions alive: current ones and frozen ones jobs still read.
     std::size_t block_versions = 0;
     std::size_t plan_versions = 0;
@@ -96,7 +101,13 @@ struct Viewer {
 // and its 26 neighbors have plans, then complete once they are all ready.
 // Events tell the mesh half when a chunk can be meshed. Columns, plans and
 // builds wait in backlogs, nearest and in view first, and go to the job
-// queue in that order with their score as the job's key.
+// queue in that order with their score as the job's key. When the
+// generator's version changes, every column asks for its surface again and
+// every unedited chunk regenerates, nearest first: chunks still on their
+// way start over, and ready ones keep their blocks, so the mesh half keeps
+// their meshes, until a plan of the new version and then, with their 26
+// neighbors', new blocks replace them. An edited chunk keeps its blocks and
+// the plan they came from.
 class WorldStreamer {
 public:
     // Results come back through an inbox that signals `results_ready`.
@@ -182,6 +193,9 @@ private:
         bool known = false;
         JobHandle job;
         std::uint32_t load_id = 0;
+        // Its surface is the generator's current version's; until a new one
+        // comes, an old one still serves the region's bands.
+        bool current = true;
         // Where its drawn chunks may be: its drawn runs in the grown region
         // at its last refresh.
         ColumnRuns drawn_kept;
@@ -212,8 +226,12 @@ private:
     // The chunk's record, made if it has none.
     std::uint32_t ensure(ChunkPos pos);
     std::uint32_t add_chunk(ChunkPos pos);
-    // Ready at once when uniform: out of the generator's reach, or above
-    // its column's surface. False when not, or when the surface is unknown.
+    // The state filling a chunk out of the generator's reach, or air above
+    // its column's surface; none when it needs a plan, or when its column's
+    // current surface is not known yet.
+    [[nodiscard]] std::optional<BlockState> uniform_state(ChunkPos pos) const noexcept;
+    // Ready at once when uniform. False when not, or when the surface is
+    // unknown.
     bool make_uniform(std::uint32_t index);
     void set_drawn(ChunkPos pos, bool drawn);
     // A chunk within one of `pos`, or `pos` itself, became drawn or loaded
@@ -231,12 +249,32 @@ private:
     // complete, or back. Never changes a neighbor's count.
     void advance(std::uint32_t index);
     void report(ChunkEvent::Kind kind, std::uint32_t index);
+    // Its blocks changed: it, and each neighbor whose border reads them.
+    void report_changed_around(std::uint32_t index);
+
+    // The generator's version changed: every column and chunk starts again.
+    void begin_regeneration();
+    void restart(std::uint32_t index);
+    void set_regeneration(std::uint32_t index, Regeneration regeneration) noexcept;
+    // The chunk's plan, or that it needs none, is the current version's:
+    // chunks around it waiting for that may move on.
+    void plan_current(std::uint32_t index);
+    // A ready chunk whose plan is current gets new blocks once its 26
+    // neighbors' plans are current too, if it is loaded; one not loaded
+    // goes back to planned, as a fresh load would leave it.
+    void check_rebuild(std::uint32_t index);
+    void demote(std::uint32_t index);
+    void regenerate_uniform(std::uint32_t index, BlockState uniform);
+    // It and its 26 neighbors have plans of the current version.
+    [[nodiscard]] bool neighborhood_current(ChunkPos pos) const noexcept;
 
     void feed_surfaces(std::size_t& room);
     // Plans and builds, the lower score of the two first.
     void feed_chunks(std::size_t& room);
     [[nodiscard]] Start start_plan(const Backlog::Entry& entry);
     [[nodiscard]] Start start_build(const Backlog::Entry& entry);
+    [[nodiscard]] Start start_replan(const Backlog::Entry& entry);
+    [[nodiscard]] Start start_rebuild(const Backlog::Entry& entry);
     // Plans parked until their column's surface came, back in line.
     void unpark();
     // Pins the 27 plans around a chunk for its build; a uniform neighbor
@@ -276,7 +314,12 @@ private:
     Backlog surfaces_backlog_;
     Backlog plans_backlog_;
     Backlog builds_backlog_;
+    Backlog replans_backlog_;
+    Backlog rebuilds_backlog_;
     std::vector<Backlog::Entry> parked_;
+    std::vector<Backlog::Entry> parked_replans_;
+    std::uint32_t version_ = 0;     // the generator's, as last seen
+    std::size_t regenerating_ = 0;  // records whose regeneration is not none
     bool surfaces_arrived_ = false; // since the parked plans were last tried
     std::vector<ChunkEvent> events_;
     std::vector<ColumnPos> dirty_;          // columns whose surface arrived

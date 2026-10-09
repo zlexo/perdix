@@ -38,6 +38,14 @@ enum class ChunkState : std::uint8_t {
     return state == ChunkState::ready || state == ChunkState::complete;
 }
 
+// A chunk's part in regenerating after the generator's version changed (RFC
+// 0006), while it keeps its old blocks, and the mesh half its old mesh.
+enum class Regeneration : std::uint8_t {
+    none,    // its plan and blocks are the current version's
+    replan,  // waits for a plan of the current version
+    rebuild, // has one: waits for its 26 neighbors', then for new blocks
+};
+
 // One loaded chunk's bookkeeping (RFC 0006), on the world thread.
 struct ChunkRecord {
     ChunkPos pos;
@@ -57,6 +65,7 @@ struct ChunkRecord {
     bool drawn = false;
     bool loaded = false;
     bool edited = false;
+    Regeneration regeneration = Regeneration::none;
     // The whole chunk, while it has no blocks.
     BlockState uniform = BlockState::air;
     // Bumped by every edit, from one world-wide counter.
