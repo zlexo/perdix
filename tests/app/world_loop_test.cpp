@@ -2,19 +2,28 @@
 
 #include <vx/core/job_system.hpp>
 #include <vx/core/mesh_result_pool.hpp>
+#include <vx/mesh/mesh_chunk.hpp>
+#include <vx/mesh/padded_chunk.hpp>
+#include <vx/mesh/quad.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
 #include <vx/world/chunk_records.hpp>
+#include <vx/world/chunk_storage.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/placeholder_generator.hpp>
 #include <vx/world/region.hpp>
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -78,6 +87,169 @@ std::set<Chunk> shown(const WorldLoop& loop) {
     return out;
 }
 
+// A hash of a mesh: its counts by pass and face, then its quads' bytes.
+std::uint64_t mesh_hash(std::span<const std::uint32_t, 12> counts, const std::byte* quads) {
+    std::uint64_t value = 0xcbf2'9ce4'8422'2325ULL;
+    std::size_t total = 0;
+    for (const std::uint32_t count : counts) {
+        value = (value ^ count) * 0x100'0000'01B3ULL;
+        total += count;
+    }
+    for (std::size_t at = 0; at < total * sizeof(vx::Quad); ++at) {
+        value = (value ^ std::to_integer<std::uint64_t>(quads[at])) * 0x100'0000'01B3ULL;
+    }
+    return value;
+}
+
+// What the main thread holds after the messages: each chunk's newest mesh,
+// by its quads' bytes and counts.
+class MainThread {
+public:
+    void receive(std::vector<ToMain>& messages) {
+        for (ToMain& message : messages) {
+            switch (message.kind) {
+            case ToMain::Kind::mesh:
+                take(message.mesh);
+                ++meshes;
+                break;
+            case ToMain::Kind::unload:
+                held.erase(chunk_of(message.pos));
+                ++unloads;
+                break;
+            }
+        }
+    }
+
+    // A hash of everything held, in chunk order.
+    [[nodiscard]] std::uint64_t hash() const {
+        std::uint64_t value = 0xcbf2'9ce4'8422'2325ULL;
+        for (const auto& [chunk, mesh] : held) {
+            const auto& [x, y, z] = chunk;
+            for (const std::uint64_t part :
+                 {std::uint64_t(std::uint32_t(x)), std::uint64_t(std::uint32_t(y)),
+                  std::uint64_t(std::uint32_t(z)), mesh.bytes}) {
+                value = (value ^ part) * 0x100'0000'01B3ULL;
+            }
+        }
+        return value;
+    }
+
+    struct Held {
+        std::uint32_t generation = 0;
+        std::uint64_t bytes = 0; // a hash of the counts and quads
+    };
+    std::map<Chunk, Held> held;
+    std::size_t meshes = 0;
+    std::size_t unloads = 0;
+
+private:
+    void take(const vx::app::MeshUpdate& update) {
+        Held& slot = held[chunk_of(update.pos)];
+        // An older mesh than the one held is dropped, as RFC 0007 drops it.
+        if (update.generation < slot.generation) {
+            return;
+        }
+        slot.generation = update.generation;
+        // An empty mesh has no buffer.
+        const bool empty =
+            std::ranges::all_of(update.counts, [](std::uint32_t count) { return count == 0; });
+        CHECK(update.quads.empty() == empty);
+        slot.bytes = mesh_hash(update.counts, update.quads.data());
+    }
+};
+
+// RFC 0003's mesher run here over the blocks the loop holds now: the mesh the
+// main thread should hold for a chunk once the loop has settled.
+class Mesher {
+public:
+    std::uint64_t hash(const WorldLoop& loop, ChunkPos pos,
+                       std::span<const vx::BlockVisual> visuals) {
+        std::array<vx::ChunkStorage, 27> uniform;
+        const auto chunk_at = [&](int dx, int dy, int dz) -> const vx::ChunkStorage* {
+            const vx::ChunkRecord* record =
+                loop.streamer().find({.x = pos.x + dx, .y = pos.y + dy, .z = pos.z + dz});
+            REQUIRE(record != nullptr);
+            if (record->blocks != nullptr) {
+                return &record->blocks->value();
+            }
+            vx::ChunkStorage& made =
+                uniform[static_cast<std::size_t>((dx + 1) + (3 * (dz + 1)) + (9 * (dy + 1)))];
+            made = vx::ChunkStorage::uniform(record->uniform);
+            return &made;
+        };
+        vx::ChunkNeighborhood neighborhood(*chunk_at(0, 0, 0));
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dz = -1; dz <= 1; ++dz) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (dx != 0 || dy != 0 || dz != 0) {
+                        neighborhood.set(dx, dy, dz, chunk_at(dx, dy, dz));
+                    }
+                }
+            }
+        }
+        vx::assemble_padded(neighborhood, *padded_);
+        const vx::ChunkMesh mesh = vx::mesh_chunk(*padded_, visuals, scratch_);
+        std::array<std::uint32_t, 12> counts{};
+        for (const vx::Pass pass : {vx::Pass::opaque, vx::Pass::cutout}) {
+            for (std::size_t face = 0; face < 6; ++face) {
+                counts[(static_cast<std::size_t>(pass) * 6) + face] = static_cast<std::uint32_t>(
+                    mesh.range(pass, static_cast<vx::Face>(face)).size());
+            }
+        }
+        return mesh_hash(counts, std::as_bytes(mesh.all()).data());
+    }
+
+private:
+    std::unique_ptr<vx::PaddedChunk> padded_ = std::make_unique<vx::PaddedChunk>();
+    vx::MeshScratch scratch_;
+};
+
+// Chunks with blocks: once no job runs, the only versions alive, unless a
+// pin was never given back.
+std::size_t chunks_with_blocks(const WorldLoop& loop) {
+    std::size_t count = 0;
+    const vx::ChunkRecords& records = loop.streamer().records();
+    for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+        if (records.live(index) && records[index].blocks != nullptr) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+// A hash of every chunk the loop holds: position, state and blocks.
+std::uint64_t chunk_hash(const WorldLoop& loop) {
+    std::map<Chunk, std::uint64_t> each;
+    const vx::ChunkRecords& records = loop.streamer().records();
+    std::vector<BlockState> dense(vx::chunk_volume);
+    for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+        if (!records.live(index)) {
+            continue;
+        }
+        const vx::ChunkRecord& record = records[index];
+        std::uint64_t value = static_cast<std::uint64_t>(record.state);
+        if (record.blocks != nullptr) {
+            record.blocks->value().to_dense(std::span<BlockState, vx::chunk_volume>(dense));
+            for (const BlockState block : dense) {
+                value = (value ^ static_cast<std::uint64_t>(block)) * 0x100'0000'01B3ULL;
+            }
+        } else {
+            value = (value ^ static_cast<std::uint64_t>(record.uniform)) * 0x100'0000'01B3ULL;
+        }
+        each[chunk_of(record.pos)] = value;
+    }
+    std::uint64_t value = 0xcbf2'9ce4'8422'2325ULL;
+    for (const auto& [chunk, part] : each) {
+        const auto& [x, y, z] = chunk;
+        value =
+            (value ^ std::uint64_t(std::uint32_t(x) + (std::uint64_t(std::uint32_t(z)) << 32U))) *
+            0x100'0000'01B3ULL;
+        value = (value ^ std::uint64_t(std::uint32_t(y))) * 0x100'0000'01B3ULL;
+        value = (value ^ part) * 0x100'0000'01B3ULL;
+    }
+    return value;
+}
+
 } // namespace
 
 TEST_CASE("the region streams in, and each drawn chunk's mesh reaches the main thread once") {
@@ -98,4 +270,103 @@ TEST_CASE("the region streams in, and each drawn chunk's mesh reaches the main t
     CHECK(meshed == shown(loop));
     CHECK(meshed.size() > 27);
     CHECK(loop.meshes_in_flight() == 0);
+}
+
+TEST_CASE("loading, unloading and reloading end the same with 0, 1 and 6 workers") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    std::vector<std::uint64_t> chunks;
+    std::vector<std::uint64_t> meshes;
+    for (const std::uint32_t workers : {0U, 1U, 6U}) {
+        vx::JobSystem jobs({.workers = workers});
+        vx::MeshResultPool pool;
+        WorldLoop loop(generator, table, jobs, pool, {.region = small});
+        MainThread main;
+        std::vector<ToMain> messages;
+        const auto settle = [&] {
+            loop.settle();
+            loop.take(messages);
+            main.receive(messages);
+        };
+        move_camera(loop, above_hills);
+        settle();
+        move_camera(loop, {.x = above_hills.x + 12, .y = above_hills.y, .z = above_hills.z});
+        settle();
+        move_camera(loop, above_hills);
+        settle();
+        INFO("workers ", workers);
+        CHECK(main.held.size() > 27);
+        chunks.push_back(chunk_hash(loop));
+        meshes.push_back(main.hash());
+        // Every pin was given back: no version outlives its chunk's blocks.
+        CHECK(loop.streamer().stats().block_versions == chunks_with_blocks(loop));
+        if (workers == 0) {
+            // What the main thread holds is a mesh of each chunk shown and of
+            // nothing else, as the mesher makes it from the blocks now. The
+            // other runs match this one.
+            std::set<Chunk> held;
+            Mesher mesher;
+            for (const auto& [chunk, mesh] : main.held) {
+                held.insert(chunk);
+                const auto& [x, y, z] = chunk;
+                CHECK(mesh.bytes == mesher.hash(loop, {.x = x, .y = y, .z = z}, table));
+            }
+            CHECK(held == shown(loop));
+        }
+    }
+    CHECK(chunks[1] == chunks[0]);
+    CHECK(chunks[2] == chunks[0]);
+    CHECK(meshes[1] == meshes[0]);
+    CHECK(meshes[2] == meshes[0]);
+}
+
+namespace {
+
+// The placeholder, counting the jobs that call it. With no workers every job
+// runs on the test's thread, so a plain count does.
+class CountingGenerator final : public vx::Generator {
+public:
+    explicit CountingGenerator(const vx::Generator& inner) noexcept : inner_(&inner) {}
+
+    [[nodiscard]] vx::ChunkRange surface_range(vx::ColumnPos column,
+                                               vx::GenScratch& scratch) const override {
+        ++calls;
+        return inner_->surface_range(column, scratch);
+    }
+    [[nodiscard]] std::optional<BlockState> out_of_reach(ChunkPos pos) const noexcept override {
+        return inner_->out_of_reach(pos);
+    }
+    [[nodiscard]] vx::ChunkPlan plan(ChunkPos pos, vx::GenScratch& scratch) const override {
+        ++calls;
+        return inner_->plan(pos, scratch);
+    }
+    [[nodiscard]] vx::ChunkStorage build(std::span<const vx::ChunkPlan* const, 27> plans,
+                                         vx::GenScratch& scratch) const override {
+        ++calls;
+        return inner_->build(plans, scratch);
+    }
+
+    mutable int calls = 0;
+
+private:
+    const vx::Generator* inner_;
+};
+
+} // namespace
+
+TEST_CASE("the loop goes without running the jobs still queued") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    const CountingGenerator generator(placeholder);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    int calls = 0;
+    {
+        WorldLoop loop(generator, table, jobs, pool, {.region = small});
+        move_camera(loop, above_hills);
+        loop.pass(); // the columns' surfaces are queued
+        REQUIRE(jobs.queued(vx::JobLevel::normal) > 0);
+        calls = generator.calls;
+    }
+    CHECK(generator.calls == calls);
 }
