@@ -34,6 +34,7 @@ add_library(vx_world STATIC
     src/chunk_map.cpp
     src/chunk_storage.cpp
     src/collision.cpp
+    src/job_record.cpp
     src/movement.cpp
     src/names.cpp
     src/packed_array.cpp
