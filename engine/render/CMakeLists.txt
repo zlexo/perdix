@@ -80,6 +80,7 @@ add_library(vx_render STATIC
     src/block_textures.cpp
     src/buffer.cpp
     src/chunk_arena.cpp
+    src/chunk_renderer.cpp
     src/chunk_uploads.cpp
     src/draw_lists.cpp
     src/camera.cpp
