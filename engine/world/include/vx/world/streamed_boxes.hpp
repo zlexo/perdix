@@ -23,6 +23,11 @@ public:
     // Default ground in a chunk not ready.
     [[nodiscard]] double slipperiness(BlockPos block) const override;
 
+    // Whether every chunk `region` reaches into is ready. A chunk's solid
+    // cube keeps a body out but cannot hold one up inside it, so a player in
+    // a chunk not ready waits for it (RFC 0010).
+    [[nodiscard]] bool ready(const Box& region) const;
+
 private:
     const WorldStreamer* streamer_;
     std::span<const BlockPhysics> physics_;

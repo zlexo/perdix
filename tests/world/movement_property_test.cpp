@@ -232,6 +232,73 @@ private:
     std::vector<double> slipperiness_;
 };
 
+// The world a tick reads, keeping what it asks about.
+class Recording final : public vx::BlockBoxes {
+public:
+    explicit Recording(const vx::BlockBoxes& world) noexcept : world_(&world) {}
+
+    void collect(const vx::Box& region, std::vector<vx::Box>& out) const override {
+        regions.push_back(region);
+        world_->collect(region, out);
+    }
+    [[nodiscard]] double slipperiness(vx::BlockPos block) const override {
+        blocks.push_back(block);
+        return world_->slipperiness(block);
+    }
+
+    mutable std::vector<vx::Box> regions;
+    mutable std::vector<vx::BlockPos> blocks;
+
+private:
+    const vx::BlockBoxes* world_;
+};
+
+// Whether `region` lies `margin` inside `reach` on every side.
+bool within(const vx::Box& region, const vx::Box& reach, double margin) {
+    return region.min.x >= reach.min.x + margin && region.min.y >= reach.min.y + margin &&
+           region.min.z >= reach.min.z + margin && region.max.x <= reach.max.x - margin &&
+           region.max.y <= reach.max.y - margin && region.max.z <= reach.max.z - margin;
+}
+
+// Whether `block` is one `reach` reaches into.
+bool reached(vx::BlockPos block, const vx::Box& reach) {
+    const auto on = [](std::int32_t at, double low, double high) {
+        return at >= std::floor(low) && at <= std::ceil(high) - 1.0;
+    };
+    return on(block.x, reach.min.x, reach.max.x) && on(block.y, reach.min.y, reach.max.y) &&
+           on(block.z, reach.min.z, reach.max.z);
+}
+
+// Ticks of random keys from `seed`, checking that every region a tick
+// gathers boxes from lies a quarter of a block inside the reach taken
+// before it, so that every box it can touch is in a chunk the reach
+// reaches into, and that every block it reads the slipperiness of is one.
+void check_reach(const vx::BlockBoxes& world, std::uint64_t seed, int ticks, vx::Vec3d start) {
+    Random random(seed);
+    const vx::MovementNumbers numbers;
+    std::vector<vx::Box> scratch;
+    const Recording recording(world);
+    vx::Player player;
+    player.position = start;
+    player.may_fly = random.chance(0.5);
+    float yaw = 0.0F;
+    for (int i = 0; i < ticks; ++i) {
+        const vx::Box reach = vx::tick_reach(player);
+        const vx::Vec3d from = player.position;
+        const vx::Vec3d speed = player.velocity;
+        recording.regions.clear();
+        recording.blocks.clear();
+        vx::tick(player, random_input(random, yaw), recording, numbers, scratch);
+        INFO("tick ", i + 1, " from y ", from.y, " at vertical speed ", speed.y);
+        for (const vx::Box& region : recording.regions) {
+            REQUIRE(within(region, reach, 0.25));
+        }
+        for (const vx::BlockPos& block : recording.blocks) {
+            REQUIRE(reached(block, reach));
+        }
+    }
+}
+
 } // namespace
 
 TEST_CASE("in random worlds with random keys, the box is never inside a block, and every number "
@@ -270,5 +337,22 @@ TEST_CASE("in random rooms of boxes of many heights, the box is never inside one
         Random random(world_seed);
         const BoxRoom room(random);
         static_cast<void>(walk(room, world_seed * 1000, 400, {.x = 12.5, .y = 0.0, .z = 12.5}));
+    }
+}
+
+TEST_CASE("every block a tick asks about lies within the player's reach, walking, falling or "
+          "flying") {
+    const vx::BlockRegistry registry = test_pack();
+    for (std::uint64_t world_seed = 1; world_seed <= 20; ++world_seed) {
+        INFO("world ", world_seed);
+        Random random(world_seed);
+        const vx::ChunkStorage chunk = random_world(registry, random);
+        const vx::ChunkBoxes world(chunk, {}, registry.physics());
+        check_reach(world, world_seed * 1000, 400, {.x = 16.5, .y = 1.0, .z = 16.5});
+        const BoxRoom room(random);
+        check_reach(room, (world_seed * 1000) + 1, 400, {.x = 12.5, .y = 0.0, .z = 12.5});
+        // From high above: the fall reaches its top speed, 3.92 blocks a
+        // tick, long before the room.
+        check_reach(room, (world_seed * 1000) + 2, 400, {.x = 12.5, .y = 600.0, .z = 12.5});
     }
 }

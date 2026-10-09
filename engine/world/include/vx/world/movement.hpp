@@ -87,6 +87,13 @@ struct Player {
 // crouching.
 [[nodiscard]] double eye_height(Pose pose) noexcept;
 
+// Where the player's next tick can ask the world about blocks: its body
+// grown on each axis by its speed along it and two blocks. A tick that takes
+// off into flight (0.42 for the jump, 0.15 for Space) and steps up 0.6
+// reaches 1.17 blocks past its speed; two leave room. Chunks not loaded
+// there hold the player (RFC 0010's open question 7).
+[[nodiscard]] Box tick_reach(const Player& player) noexcept;
+
 // The horizontal acceleration on the ground, on a block of `slipperiness`
 // (more than 0, at most 1): the walking acceleration, more sprinting, times
 // (0.6 / slipperiness) cubed, never more than 1, so slippery blocks are slow
