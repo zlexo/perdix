@@ -99,6 +99,7 @@ doctest_discover_tests(vx_mesh_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 
 add_executable(vx_render_tests
     main.cpp
+    render/arena_space_test.cpp
     render/block_pack_test.cpp
     render/block_textures_test.cpp
     render/camera_relative_test.cpp
@@ -132,6 +133,7 @@ add_executable(vx_render_vulkan_tests
     main.cpp
     render/block_texture_array_test.cpp
     render/buffer_test.cpp
+    render/chunk_arena_test.cpp
     render/chunk_test.cpp
     render/context_test.cpp
     render/gpu_timer_test.cpp
