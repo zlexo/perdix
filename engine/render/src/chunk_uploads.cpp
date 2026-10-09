@@ -100,6 +100,11 @@ Result<Uploaded> ChunkUploads::upload_batch(std::span<const ChunkMeshUpdate> bat
     for (std::size_t at = 0; at < batch.size(); ++at) {
         const std::optional<ArenaRange>& range = ranges[at];
         if (stale(batch[at])) {
+            // A newer update of its chunk came earlier in the batch: the
+            // range taken for this one goes back unwritten.
+            if (range) {
+                space_->retire(*range, slot_);
+            }
             ++stats_.dropped;
         } else if (!range) {
             empty(batch[at]);

@@ -258,6 +258,49 @@ TEST_CASE("an edit's batch goes in whole whatever the budget, or not at all with
     CHECK(uploads.records().size() == 5);
 }
 
+TEST_CASE("a batch's update older than another of its chunk in the batch keeps no range") {
+    ArenaSpace space = make_space(1'024, 3);
+    FakeArena arena(1'024);
+    ChunkUploads uploads(space);
+    const TestMesh newer(some, 2); // 44 quads
+    const TestMesh older(few, 1);  // 1 quad
+    const TestMesh empty(none, 0);
+    uploads.begin_frame(0, Time{});
+    // RFC 0005's world thread puts a chunk in a batch once; should one come
+    // twice, the newest update wins and the older takes no room.
+    const std::array<ChunkMeshUpdate, 4> batch = {newer.update(here, 5), older.update(here, 4),
+                                                  empty.update({.x = 9}, 7),
+                                                  older.update({.x = 9}, 6)};
+    REQUIRE(uploads.upload_batch(batch, arena).value() == Uploaded::written);
+    REQUIRE(uploads.find(here) != nullptr);
+    CHECK(uploads.find(here)->generation == 5);
+    CHECK(uploads.find({.x = 9}) == nullptr);
+    CHECK(uploads.stats().dropped == 2);
+    // Once every slot has come round, the arena holds that one mesh alone.
+    uploads.begin_frame(1, Time{});
+    uploads.begin_frame(2, Time{});
+    uploads.begin_frame(0, Time{});
+    CHECK(space.stats().live == 44);
+    CHECK(space.stats().ranges == 1);
+    CHECK(space.stats().retired == 0);
+}
+
+TEST_CASE("a batch's stale update needs no room") {
+    ArenaSpace space = make_space(50, 3);
+    FakeArena arena(50);
+    ChunkUploads uploads(space);
+    const TestMesh big(some, 1);  // 44 quads
+    const TestMesh small(few, 2); // 1 quad
+    uploads.begin_frame(0, Time{});
+    REQUIRE(uploads.upload(big.update(here, 5), arena, Time{}).value() == Uploaded::written);
+    // 6 quads free: the stale mesh's 44 would not fit, and it needs none.
+    const std::array<ChunkMeshUpdate, 2> batch = {big.update(here, 4), small.update({.x = 9}, 6)};
+    CHECK(uploads.upload_batch(batch, arena).value() == Uploaded::written);
+    CHECK(uploads.find(here)->generation == 5);
+    CHECK(uploads.find({.x = 9}) != nullptr);
+    CHECK(uploads.stats().dropped == 1);
+}
+
 TEST_CASE("a writer's error writes no record, and its range goes back with its slot") {
     ArenaSpace space = make_space(1'024, 3);
     FakeArena arena(1'024);
