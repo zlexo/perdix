@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -93,6 +94,12 @@ private:
     const vx::Generator* inner_;
 };
 
+// Takes in every result the jobs sent, however many steps that takes.
+void integrate_all(vx::WorldStreamer& streamer) {
+    while (streamer.integrate()) {
+    }
+}
+
 // One pass of the world loop: feed, run what was fed, integrate it. False
 // once nothing was left to run.
 bool step(WorldStreamer& streamer, vx::JobSystem& jobs) {
@@ -101,7 +108,7 @@ bool step(WorldStreamer& streamer, vx::JobSystem& jobs) {
         return false;
     }
     jobs.run_until_idle();
-    streamer.integrate();
+    integrate_all(streamer);
     return true;
 }
 
@@ -241,7 +248,7 @@ std::optional<ChunkPos> until_ran(WorldStreamer& streamer, vx::JobSystem& jobs, 
         if (westmost) {
             return westmost;
         }
-        streamer.integrate();
+        integrate_all(streamer);
     }
     return std::nullopt;
 }
@@ -306,7 +313,7 @@ TEST_CASE("a column that leaves the ring goes: its queued job is canceled, and a
     jobs.run_until_idle();
     streamer.set_camera(above_hills);
     streamer.set_camera(east);
-    streamer.integrate();
+    integrate_all(streamer);
     CHECK(streamer.stats().jobs_in_flight == 0);
     CHECK(streamer.stats().surfaces_known == 0);
     settle(streamer, jobs);
@@ -543,7 +550,7 @@ TEST_CASE("a chunk that leaves while its plan job runs is freed when the job rep
     REQUIRE(streamer.find(*planning) != nullptr);
     CHECK(streamer.find(*planning)->state == ChunkState::unloading);
     check_rules(streamer);
-    streamer.integrate();
+    integrate_all(streamer);
     CHECK(streamer.find(*planning) == nullptr);
     CHECK(count(streamer, ChunkState::unloading) == 0);
     CHECK(streamer.stats().plan_versions == 0);
@@ -562,7 +569,7 @@ TEST_CASE("a chunk that leaves before its plan job starts is freed at once, its 
         streamer.feed();
         if (count(streamer, ChunkState::planning) == 0) {
             jobs.run_until_idle();
-            streamer.integrate();
+            integrate_all(streamer);
         }
     }
     REQUIRE(count(streamer, ChunkState::planning) > 0);
@@ -591,7 +598,7 @@ TEST_CASE("a chunk that comes back before its plan job reports keeps the job's p
     REQUIRE(streamer.find(*planning) != nullptr);
     CHECK(streamer.find(*planning)->state == ChunkState::planning);
     check_rules(streamer);
-    streamer.integrate();
+    integrate_all(streamer);
     REQUIRE(streamer.find(*planning) != nullptr);
     CHECK(vx::counts_as_planned(streamer.find(*planning)->state));
     CHECK(streamer.find(*planning)->plan != nullptr);
@@ -611,7 +618,7 @@ TEST_CASE("a chunk that leaves while its build runs is freed when the job report
     REQUIRE(streamer.find(*built) != nullptr);
     CHECK(streamer.find(*built)->state == ChunkState::unloading);
     check_rules(streamer);
-    streamer.integrate();
+    integrate_all(streamer);
     CHECK(streamer.find(*built) == nullptr);
     CHECK(count(streamer, ChunkState::unloading) == 0);
     settle(streamer, jobs);
@@ -639,7 +646,7 @@ TEST_CASE("a chunk that leaves before its build starts is freed at once, its job
         }
         if (!queued) {
             jobs.run_until_idle();
-            streamer.integrate();
+            integrate_all(streamer);
         }
     }
     REQUIRE(queued.has_value());
@@ -670,7 +677,7 @@ TEST_CASE("a streamer destroyed with jobs queued or results unread cancels and u
                 streamer.feed();
                 if (count(streamer, ChunkState::building) == 0) {
                     jobs.run_until_idle();
-                    streamer.integrate();
+                    integrate_all(streamer);
                 }
             }
             REQUIRE(count(streamer, ChunkState::building) > 0);
@@ -699,7 +706,7 @@ TEST_CASE("a chunk that comes back before its job reports keeps the job's result
     REQUIRE(streamer.find(*built) != nullptr);
     CHECK(streamer.find(*built)->state == ChunkState::building);
     check_rules(streamer);
-    streamer.integrate();
+    integrate_all(streamer);
     REQUIRE(streamer.find(*built) != nullptr);
     CHECK(vx::counts_as_ready(streamer.find(*built)->state));
     settle(streamer, jobs);
@@ -835,7 +842,7 @@ TEST_CASE("with worker threads the region streams in as in the deterministic mod
         }
         // Every job reports back, in no set order, before the next pass.
         workers.wait_until_idle();
-        streamer.integrate();
+        integrate_all(streamer);
         check_rules(streamer);
     }
     CHECK(streamer.stats().jobs_in_flight == 0);
@@ -856,7 +863,7 @@ TEST_CASE("fed with room for a few jobs, the streamer queues no more, and still 
     CHECK(jobs.queued(vx::JobLevel::normal) == 5);
     for (int pass = 0; pass < 10'000 && streamer.stats().jobs_in_flight > 0; ++pass) {
         jobs.run_until_idle();
-        streamer.integrate();
+        integrate_all(streamer);
         streamer.feed(5);
         check_rules(streamer);
         REQUIRE(streamer.stats().jobs_in_flight <= 5);
@@ -968,7 +975,7 @@ TEST_CASE("canceling the queued jobs leaves none queued, and may run twice") {
         streamer.feed();
         if (count(streamer, ChunkState::building) == 0) {
             jobs.run_until_idle();
-            streamer.integrate();
+            integrate_all(streamer);
         }
     }
     REQUIRE(count(streamer, ChunkState::building) > 0);
@@ -1046,4 +1053,74 @@ TEST_CASE("a new chunk or a turn of more than 15 degrees ranks the waiting jobs 
     // A step to the next chunk, looking the same way.
     viewer.chunk.x += 1;
     CHECK(streamer.set_viewer(viewer));
+}
+
+namespace {
+
+// No terrain at all: every chunk out of reach and air, every column without
+// a surface, so a wide region costs its columns' surface jobs and little else.
+class NoTerrain final : public vx::Generator {
+public:
+    [[nodiscard]] vx::ChunkRange surface_range(vx::ColumnPos /*column*/,
+                                               vx::GenScratch& /*scratch*/) const override {
+        return {};
+    }
+    [[nodiscard]] std::optional<BlockState> out_of_reach(ChunkPos /*pos*/) const noexcept override {
+        return BlockState::air;
+    }
+    [[nodiscard]] vx::ChunkPlan plan(ChunkPos pos, vx::GenScratch& /*scratch*/) const override {
+        return {.pos = pos};
+    }
+    [[nodiscard]] vx::ChunkStorage build(std::span<const vx::ChunkPlan* const, 27> /*plans*/,
+                                         vx::GenScratch& /*scratch*/) const override {
+        return vx::ChunkStorage::uniform(BlockState::air);
+    }
+};
+
+// Each reading moves it on by a microsecond: a result costs one.
+class TickingClock final : public vx::JobClock {
+public:
+    [[nodiscard]] std::chrono::steady_clock::time_point now() const noexcept override {
+        at += std::chrono::microseconds(1);
+        return at;
+    }
+
+    mutable std::chrono::steady_clock::time_point at{};
+};
+
+} // namespace
+
+TEST_CASE("a burst of results is taken in by steps of half a millisecond and one result at most") {
+    const NoTerrain generator;
+    vx::JobSystem jobs({.slots = 16'384});
+    vx::WakeEvent wake;
+    const vx::RegionSettings wide{
+        .view_distance = 60, .near_distance = 1, .near_height = 1, .hysteresis = 2};
+    WorldStreamer streamer(generator, jobs, wake, wide);
+    const TickingClock clock;
+    streamer.set_clock(clock);
+    streamer.set_camera(above_hills);
+    streamer.feed();
+    jobs.run_until_idle();
+    const std::size_t burst = streamer.stats().jobs_in_flight;
+    REQUIRE(burst >= 10'000);
+    REQUIRE(streamer.results_waiting() == burst);
+    std::size_t steps = 0;
+    for (bool left = true; left; ++steps) {
+        const std::size_t before = streamer.results_waiting();
+        const std::chrono::steady_clock::time_point started = clock.at;
+        left = streamer.integrate();
+        const std::size_t taken = before - streamer.results_waiting();
+        INFO("step ", steps);
+        // 0.5 ms of results, the last of which went past it: 500 here.
+        CHECK(taken <= 501);
+        CHECK(clock.at - started <= std::chrono::microseconds(502));
+        if (left) {
+            CHECK(taken == 500);
+        }
+    }
+    CHECK(streamer.results_waiting() == 0);
+    CHECK(streamer.stats().jobs_in_flight == 0);
+    CHECK(streamer.stats().surfaces_known == streamer.stats().columns);
+    CHECK(steps == (burst + 499) / 500);
 }

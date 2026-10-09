@@ -6,6 +6,7 @@
 #include <vx/core/wake_event.hpp>
 #include <vx/mesh/mesh_chunk.hpp>
 #include <vx/mesh/padded_chunk.hpp>
+#include <vx/world/backlog.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
 #include <vx/world/coordinates.hpp>
@@ -54,13 +55,13 @@ struct ToMain {
 // What the main thread tells the world thread.
 struct ToWorld {
     enum class Kind : std::uint8_t {
-        camera,   // the camera's chunk
+        camera,   // where the camera is and looks
         edit,     // a block to set; M5's actions will bring the view ray
         uploaded, // how far the main thread is with the meshes sent alone
         stop,
     };
     Kind kind = Kind::camera;
-    ChunkPos camera;
+    Viewer camera;
     BlockPos block;
     BlockState state = BlockState::air;
     // Of the meshes sent alone (ToMain::Kind::mesh, never a batch's), how
@@ -78,6 +79,8 @@ struct WorldLoopSettings {
     // Streaming meshes sent but not yet uploaded, above which new streaming
     // mesh jobs wait (RFC 0005); an edit's remeshes never wait.
     std::uint32_t unuploaded_limit = 512;
+    // What the streamer's steps are measured on; null for the steady clock.
+    const JobClock* clock = nullptr;
 };
 
 // A worker's memory for meshing (RFC 0005): RFC 0003's padded chunk and the
@@ -113,8 +116,8 @@ public:
     bool pass();
     // A pass, then each tick that falls due by `now`, 20 a second: more than
     // a second behind, the rest are skipped. Returns when the next tick is
-    // due, the deadline the world thread sleeps until. After a stop, no tick
-    // runs.
+    // due, the deadline the world thread sleeps until, or `now` while the
+    // streamer has results left from its step. After a stop, no tick runs.
     std::chrono::steady_clock::time_point step(std::chrono::steady_clock::time_point now);
     // Waits for no job, then integrates their results, until nothing runs or
     // waits, or a stop arrives: for tests. The destructor does shutdown's
@@ -193,12 +196,14 @@ private:
     void follow_events();
     MeshRecord& mesh_record(std::uint32_t index);
     void queue_mesh(std::uint32_t index, bool urgent);
+    // The streaming meshes waiting, ranked as the streamer ranks its jobs.
+    void rescore_meshes();
     void drop_mesh(std::uint32_t index, ChunkPos pos);
     void integrate_mesh(MeshResult& result);
     void forward(std::uint32_t index, MeshUpdate&& update);
     void send_ready_batches();
     void feed();
-    bool start_mesh(std::uint32_t index);
+    bool start_mesh(std::uint32_t index, std::uint32_t key);
     // A tick in Tracy: a frame of its own set, and a zone.
     void tick();
     void run_tick();
@@ -215,7 +220,7 @@ private:
 
     std::vector<MeshRecord> meshes_; // by the streamer's record index
     std::vector<std::uint32_t> waiting_urgent_;
-    std::vector<std::uint32_t> waiting_meshes_;
+    Backlog waiting_meshes_;
     std::vector<Batch> batches_;
     std::uint32_t next_batch_ = 1;
     std::uint32_t next_generation_ = 1;
@@ -231,6 +236,7 @@ private:
     std::uint64_t sent_ = 0;     // streaming meshes sent
     std::uint64_t uploaded_ = 0; // of them, uploaded, as the main thread last said
     std::size_t meshes_in_flight_ = 0;
+    bool behind_ = false; // the streamer has results left from its last step
     bool stopping_ = false;
 };
 

@@ -17,6 +17,7 @@
 #include <vx/world/versions.hpp>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -119,8 +120,15 @@ public:
     // Submits the jobs that can start, at most `room` of them: surfaces
     // first, then plans and builds, each lowest score first.
     void feed(std::size_t room = std::numeric_limits<std::size_t>::max());
-    // Takes in every result the jobs have sent back.
-    void integrate();
+    // Takes in the results the jobs sent back, one step at a time (RFC
+    // 0006): it stops once a step's length has passed after a result, so a
+    // burst such as a teleport's never holds the world thread long. True
+    // while results are left for the next call.
+    bool integrate();
+    static constexpr std::chrono::microseconds step_length{500};
+    // The clock steps are measured on, instead of the steady clock: a
+    // test's. It must outlive the streamer.
+    void set_clock(const JobClock& clock) noexcept { clock_ = &clock; }
     // The events since the last call, moved into `out`.
     void take_events(std::vector<ChunkEvent>& out);
 
@@ -147,7 +155,9 @@ public:
     [[nodiscard]] std::uint64_t pins() const noexcept { return blocks_.pins() + plans_.pins(); }
     [[nodiscard]] std::uint64_t copies() const noexcept { return blocks_.copies(); }
     // Results the jobs sent that integrate has not taken yet.
-    [[nodiscard]] std::size_t results_waiting() const { return results_.size(); }
+    [[nodiscard]] std::size_t results_waiting() const {
+        return results_.size() + (pending_.size() - pending_at_);
+    }
 
     // A chunk's rank for its jobs (RFC 0006), lowest first: also the mesh
     // half's.
@@ -233,6 +243,9 @@ private:
     // has none.
     void pin_plans(JobRecord& pins, ChunkPos pos) noexcept;
 
+    [[nodiscard]] std::chrono::steady_clock::time_point time() const noexcept {
+        return clock_ != nullptr ? clock_->now() : std::chrono::steady_clock::now();
+    }
     void integrate_surface(StreamResult& result);
     void integrate_plan(StreamResult& result);
     void integrate_build(StreamResult& result);
@@ -253,6 +266,10 @@ private:
     JobRecords job_records_;
     std::vector<GenScratch> scratch_; // one for each worker
     Inbox<StreamResult> results_;
+    // Results drained from the inbox and not yet taken in, from pending_at_.
+    std::vector<StreamResult> pending_;
+    std::size_t pending_at_ = 0;
+    const JobClock* clock_ = nullptr; // null for the steady clock
 
     Viewer viewer_;
     Vec3d scored_forward_; // the view the backlogs were ranked for

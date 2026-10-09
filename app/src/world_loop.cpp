@@ -92,6 +92,9 @@ WorldLoop::WorldLoop(const Generator& generator, std::span<const BlockVisual> vi
       context_{.visuals = visuals, .pool = &pool, .results = &mesh_results_, .scratch = nullptr},
       to_main_(1'024, main_wake_) {
     context_.scratch = scratch_.data();
+    if (settings.clock != nullptr) {
+        streamer_.set_clock(*settings.clock);
+    }
 }
 
 WorldLoop::~WorldLoop() {
@@ -120,7 +123,7 @@ bool WorldLoop::pass() {
     if (stopping_) {
         return false;
     }
-    streamer_.integrate();
+    behind_ = streamer_.integrate();
     follow_events();
     mesh_results_.drain([this](MeshResult&& result) { integrate_mesh(result); });
     send_ready_batches();
@@ -162,7 +165,8 @@ std::chrono::steady_clock::time_point WorldLoop::step(std::chrono::steady_clock:
         tick();
         next_tick_ += tick_length;
     }
-    return next_tick_;
+    // Results left from a step: the next pass comes now, not at the tick.
+    return behind_ ? now : next_tick_;
 }
 
 void WorldLoop::tick() {
@@ -213,8 +217,10 @@ bool WorldLoop::missing_near_camera() {
 void WorldLoop::handle(ToWorld& message) {
     switch (message.kind) {
     case ToWorld::Kind::camera:
-        camera_ = message.camera;
-        streamer_.set_camera(message.camera);
+        camera_ = message.camera.chunk;
+        if (streamer_.set_viewer(message.camera)) {
+            rescore_meshes();
+        }
         follow_events();
         break;
     case ToWorld::Kind::edit:
@@ -316,7 +322,13 @@ void WorldLoop::queue_mesh(std::uint32_t index, bool urgent) {
     case MeshRecord::State::sent:
         record.state = MeshRecord::State::queued;
         record.urgent = urgent;
-        (urgent ? waiting_urgent_ : waiting_meshes_).push_back(index);
+        if (urgent) {
+            waiting_urgent_.push_back(index);
+        } else {
+            waiting_meshes_.push({.key = streamer_.score(streamer_.records()[index].pos),
+                                  .index = index,
+                                  .load_id = record.load_id});
+        }
         break;
     case MeshRecord::State::queued:
         if (urgent && !record.urgent) {
@@ -446,7 +458,7 @@ void WorldLoop::feed() {
         if (record.state != MeshRecord::State::queued || !record.urgent) {
             return true; // started, or dropped
         }
-        if (urgent_room == 0 || !start_mesh(index)) {
+        if (urgent_room == 0 || !start_mesh(index, 0)) {
             return false;
         }
         --urgent_room;
@@ -454,21 +466,34 @@ void WorldLoop::feed() {
     });
     std::size_t normal_room = room(JobLevel::normal, "Queued normal");
     const bool held = unuploaded() >= settings_.unuploaded_limit;
-    std::erase_if(waiting_meshes_, [&](std::uint32_t index) {
-        const MeshRecord& record = mesh_record(index);
-        if (record.state != MeshRecord::State::queued || record.urgent) {
-            return true;
+    while (!held && normal_room > 0 && !waiting_meshes_.empty()) {
+        const Backlog::Entry entry = waiting_meshes_.top();
+        const MeshRecord& record = mesh_record(entry.index);
+        if (record.state != MeshRecord::State::queued || record.urgent ||
+            record.load_id != entry.load_id) {
+            waiting_meshes_.pop(); // started, dropped, or an edit's now
+            continue;
         }
-        if (held || normal_room == 0 || !start_mesh(index)) {
-            return false;
+        if (!start_mesh(entry.index, entry.key)) {
+            break; // no job slot or record: it stays first in line
         }
+        waiting_meshes_.pop();
         --normal_room;
-        return true;
-    });
+    }
     streamer_.feed(normal_room);
 }
 
-bool WorldLoop::start_mesh(std::uint32_t index) {
+void WorldLoop::rescore_meshes() {
+    waiting_meshes_.rescore([this](const Backlog::Entry& entry) -> std::optional<std::uint32_t> {
+        const MeshRecord& record = mesh_record(entry.index);
+        if (record.state != MeshRecord::State::queued || record.load_id != entry.load_id) {
+            return std::nullopt;
+        }
+        return streamer_.score(streamer_.records()[entry.index].pos);
+    });
+}
+
+bool WorldLoop::start_mesh(std::uint32_t index, std::uint32_t key) {
     MeshRecord& record = mesh_record(index);
     const ChunkPos pos = streamer_.records()[index].pos;
     const std::uint32_t generation = next_generation_;
@@ -477,7 +502,7 @@ bool WorldLoop::start_mesh(std::uint32_t index) {
         return false;
     }
     const JobPriority priority{.level = record.urgent ? JobLevel::urgent : JobLevel::normal,
-                               .key = 0};
+                               .key = key};
     record.job = jobs_->submit(
         priority,
         MeshJob{.context = &context_, .pins = pins, .pos = pos, .generation = generation});

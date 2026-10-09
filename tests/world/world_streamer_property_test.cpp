@@ -11,6 +11,7 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -41,6 +42,24 @@ constexpr vx::PlaceholderBlocks blocks{
     .grass = static_cast<BlockState>(3), .dirt = static_cast<BlockState>(2), .stone = stone};
 
 using Chunk = std::tuple<std::int32_t, std::int32_t, std::int32_t>;
+
+// Each reading moves it on by 100 us: a step takes in five results.
+class TickingClock final : public vx::JobClock {
+public:
+    [[nodiscard]] std::chrono::steady_clock::time_point now() const noexcept override {
+        at += std::chrono::microseconds(100);
+        return at;
+    }
+
+private:
+    mutable std::chrono::steady_clock::time_point at;
+};
+
+// Takes in every result the jobs sent, however many steps that takes.
+void integrate_all(vx::WorldStreamer& streamer) {
+    while (streamer.integrate()) {
+    }
+}
 
 // Counted by hand, not with counts_as_planned and counts_as_ready, which
 // the counts under test use.
@@ -210,7 +229,7 @@ void settle(WorldStreamer& streamer, vx::JobSystem& jobs) {
             return;
         }
         jobs.run_until_idle();
-        streamer.integrate();
+        integrate_all(streamer);
         check_rules(streamer);
     }
     FAIL("streaming never settled");
@@ -240,6 +259,8 @@ TEST_CASE("under a random camera walk with edits, the rules hold at every step, 
     vx::JobSystem jobs({.slots = 64});
     vx::WakeEvent wake;
     WorldStreamer streamer(generator, jobs, wake, settings);
+    const TickingClock clock;
+    streamer.set_clock(clock);
     Bands bands(generator);
     std::mt19937 random(0x5EED);
     std::uniform_int_distribution<int> roll(0, 99);
@@ -250,6 +271,7 @@ TEST_CASE("under a random camera walk with edits, the rules hold at every step, 
     std::map<std::uint32_t, ChunkPos> known;
     std::size_t settled_checks = 0;
     std::size_t moves_with_jobs_queued = 0;
+    std::size_t steps_with_results_left = 0;
     for (int move = 0; move < 40; ++move) {
         // Mostly short moves, sometimes a jump, sometimes a climb.
         const int kind = roll(random);
@@ -281,7 +303,12 @@ TEST_CASE("under a random camera walk with edits, the rules hold at every step, 
                 check_rules(streamer);
             }
             jobs.run_until_idle();
-            streamer.integrate();
+            // Now and then one step of results, the rest left for later.
+            if (!all && roll(random) < 50) {
+                steps_with_results_left += streamer.integrate() ? 1U : 0U;
+            } else {
+                integrate_all(streamer);
+            }
             check_rules(streamer);
             follow_events(streamer, shown, known);
         }
@@ -369,6 +396,7 @@ TEST_CASE("under a random camera walk with edits, the rules hold at every step, 
     }
     CHECK(settled_checks > 8);
     CHECK(moves_with_jobs_queued > 3);
+    CHECK(steps_with_results_left > 3);
     CHECK_FALSE(edited.empty());
     settle(streamer, jobs);
 }

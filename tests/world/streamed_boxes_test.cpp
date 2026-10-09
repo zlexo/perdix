@@ -27,6 +27,12 @@ constexpr vx::PlaceholderBlocks blocks{.grass = static_cast<vx::BlockState>(3),
 constexpr vx::RegionSettings small{
     .view_distance = 3, .near_distance = 1, .near_height = 1, .hysteresis = 2};
 
+// Takes in every result the jobs sent, however many steps that takes.
+void integrate_all(vx::WorldStreamer& streamer) {
+    while (streamer.integrate()) {
+    }
+}
+
 void settle(vx::WorldStreamer& streamer, vx::JobSystem& jobs) {
     for (int pass = 0; pass < 10'000; ++pass) {
         streamer.feed();
@@ -34,7 +40,7 @@ void settle(vx::WorldStreamer& streamer, vx::JobSystem& jobs) {
             return;
         }
         jobs.run_until_idle();
-        streamer.integrate();
+        integrate_all(streamer);
     }
     FAIL("streaming never settled");
 }
