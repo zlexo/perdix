@@ -57,6 +57,7 @@ add_executable(vx_world_tests
     world/flight_test.cpp
     world/jump_test.cpp
     world/move_rules_test.cpp
+    world/movement_property_test.cpp
     world/movement_test.cpp
     world/names_test.cpp
     world/packed_array_test.cpp
