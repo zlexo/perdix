@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vx/core/frustum.hpp>
+
 #include <glm/ext/vector_double3.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/trigonometric.hpp>
@@ -49,5 +51,10 @@ void fly(Camera& camera, const FlyInput& input, float seconds);
 // The view's rotation, then the reversed-Z projection for a target of
 // `aspect`: what vertex shaders multiply camera-relative positions by.
 [[nodiscard]] glm::mat4 view_projection(const Camera& camera, float aspect);
+
+// What the camera sees on a target of `aspect`, relative to its position:
+// the frustum view_projection draws, for culling (RFC 0007) and for ranking
+// what streams in (RFC 0006).
+[[nodiscard]] Frustum view_frustum(const Camera& camera, float aspect);
 
 } // namespace vx::render
