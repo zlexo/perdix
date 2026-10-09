@@ -43,16 +43,22 @@ glm::vec3 forward(float yaw, float pitch) {
     return {-std::sin(yaw) * std::cos(pitch), std::sin(pitch), -std::cos(yaw) * std::cos(pitch)};
 }
 
-glm::mat4 view_rotation(float yaw, float pitch) {
-    // The camera turns by yaw around +y, then tilts by pitch around its own x
-    // axis; the view undoes both, the last first.
+glm::mat4 view_rotation(float yaw, float pitch, float roll) {
+    // The camera turns by yaw around +y, tilts by pitch around its own x
+    // axis, then leans by roll around its own z axis; the view undoes all
+    // three, the last first.
     const glm::mat4 undo_yaw = glm::rotate(glm::mat4(1.0F), -yaw, glm::vec3(0.0F, 1.0F, 0.0F));
-    return glm::rotate(glm::mat4(1.0F), -pitch, glm::vec3(1.0F, 0.0F, 0.0F)) * undo_yaw;
+    const glm::mat4 undo_pitch =
+        glm::rotate(glm::mat4(1.0F), -pitch, glm::vec3(1.0F, 0.0F, 0.0F)) * undo_yaw;
+    if (roll == 0.0F) {
+        return undo_pitch;
+    }
+    return glm::rotate(glm::mat4(1.0F), -roll, glm::vec3(0.0F, 0.0F, 1.0F)) * undo_pitch;
 }
 
 glm::mat4 view_projection(const Camera& camera, float aspect) {
     return perspective_reversed_infinite(camera.fov_y, aspect, z_near) *
-           view_rotation(camera.yaw, camera.pitch);
+           view_rotation(camera.yaw, camera.pitch, camera.roll);
 }
 
 } // namespace vx::render

@@ -8,12 +8,14 @@
 namespace vx::render {
 
 // Where the camera is and where it looks (RFC 0001): a position in blocks, in
-// doubles so it stays exact far from the world's origin, and a heading
-// without roll. With yaw and pitch at 0 it looks down -z, with +y up.
+// doubles so it stays exact far from the world's origin, and a heading. With
+// yaw, pitch and roll at 0 it looks down -z, with +y up. Roll is for effects
+// such as view bobbing (RFC 0010); the controls never set it.
 struct Camera {
     glm::dvec3 position{0.0};
     float yaw = 0.0F;                  // radians; positive turns left, seen from above
     float pitch = 0.0F;                // radians; positive looks up
+    float roll = 0.0F;                 // radians; positive leans left, counterclockwise
     float fov_y = glm::radians(70.0F); // vertical, RFC 0001's default
 };
 
@@ -41,7 +43,8 @@ void fly(Camera& camera, const FlyInput& input, float seconds);
 
 // World directions into view space, where the camera looks down -z: the
 // view's rotation alone, since the GPU never sees the camera's position.
-[[nodiscard]] glm::mat4 view_rotation(float yaw, float pitch);
+// A roll of 0 leaves the matrix exactly as yaw and pitch make it.
+[[nodiscard]] glm::mat4 view_rotation(float yaw, float pitch, float roll = 0.0F);
 
 // The view's rotation, then the reversed-Z projection for a target of
 // `aspect`: what vertex shaders multiply camera-relative positions by.
