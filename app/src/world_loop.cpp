@@ -129,14 +129,74 @@ void WorldLoop::take(std::vector<ToMain>& out) {
     to_main_.drain([&out](ToMain&& message) { out.push_back(std::move(message)); });
 }
 
+std::chrono::steady_clock::time_point WorldLoop::step(std::chrono::steady_clock::time_point now) {
+    if (!pass()) {
+        return now; // stopping: no tick runs after a stop
+    }
+    if (!ticking_) {
+        ticking_ = true;
+        next_tick_ = now + tick_length;
+    }
+    // More than a second behind: the ticks missed are skipped, not run back
+    // to back (RFC 0005).
+    if (now - next_tick_ > std::chrono::seconds(1)) {
+        skipped_ += static_cast<std::uint64_t>((now - next_tick_) / tick_length);
+        next_tick_ = now;
+    }
+    while (now >= next_tick_) {
+        tick();
+        next_tick_ += tick_length;
+    }
+    return next_tick_;
+}
+
+void WorldLoop::tick() {
+    ++ticks_;
+    const bool catching_up = missing_near_camera();
+    if (catching_up != catching_up_) {
+        catching_up_ = catching_up;
+        jobs_->set_catching_up(catching_up);
+    }
+}
+
+bool WorldLoop::missing_near_camera() {
+    if (!camera_) {
+        return false;
+    }
+    const ChunkPos camera = *camera_;
+    const RegionSettings& region = settings_.region;
+    const std::int32_t near = region.near_distance;
+    for (std::int32_t dz = -near; dz <= near; ++dz) {
+        for (std::int32_t dx = -near; dx <= near; ++dx) {
+            if ((dx * dx) + (dz * dz) > near * near) {
+                continue;
+            }
+            for (std::int32_t dy = -region.near_height; dy <= region.near_height; ++dy) {
+                const ChunkPos pos{.x = camera.x + dx, .y = camera.y + dy, .z = camera.z + dz};
+                const std::optional<std::uint32_t> index = streamer_.records().find(pos);
+                if (!index || mesh_record(*index).forwarded == 0) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 void WorldLoop::handle(ToWorld& message) {
     switch (message.kind) {
     case ToWorld::Kind::camera:
+        camera_ = message.camera;
         streamer_.set_camera(message.camera);
         follow_events();
         break;
     case ToWorld::Kind::edit:
         edit(message.block, message.state);
+        break;
+    case ToWorld::Kind::uploaded:
+        // Never past what was sent, as when batches are counted too: the
+        // difference would wrap and hold streaming back for good.
+        uploaded_ = std::min(std::max(uploaded_, message.uploaded), sent_);
         break;
     case ToWorld::Kind::stop:
         stopping_ = true;
@@ -316,6 +376,7 @@ void WorldLoop::forward(std::uint32_t index, MeshUpdate&& update) {
             }
         }
     }
+    ++sent_;
     to_main_.push({.kind = ToMain::Kind::mesh, .pos = {}, .mesh = std::move(update), .batch = {}});
 }
 
@@ -343,8 +404,8 @@ void WorldLoop::send_ready_batches() {
 }
 
 void WorldLoop::feed() {
-    // An edit's remeshes first, at the urgent level; then streaming meshes;
-    // then the streamer's jobs.
+    // An edit's remeshes first, at the urgent level; then streaming meshes,
+    // unless too many sent wait to be uploaded; then the streamer's jobs.
     const auto room = [this](JobLevel level) {
         const std::uint32_t queued = jobs_->queued(level);
         return queued >= settings_.queue_limit ? 0U : settings_.queue_limit - queued;
@@ -362,12 +423,13 @@ void WorldLoop::feed() {
         return true;
     });
     std::size_t normal_room = room(JobLevel::normal);
+    const bool held = unuploaded() >= settings_.unuploaded_limit;
     std::erase_if(waiting_meshes_, [&](std::uint32_t index) {
         const MeshRecord& record = mesh_record(index);
         if (record.state != MeshRecord::State::queued || record.urgent) {
             return true;
         }
-        if (normal_room == 0 || !start_mesh(index)) {
+        if (held || normal_room == 0 || !start_mesh(index)) {
             return false;
         }
         --normal_room;

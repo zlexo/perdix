@@ -112,6 +112,7 @@ public:
     // run at user-initiated QoS instead of utility (RFC 0005), changing class
     // between jobs.
     void set_catching_up(bool catching_up) noexcept;
+    [[nodiscard]] bool catching_up() const noexcept;
 
     [[nodiscard]] std::uint32_t worker_count() const noexcept;
     // Jobs queued or running at once: JobSystemDesc's slots.

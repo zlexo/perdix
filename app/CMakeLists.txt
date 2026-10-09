@@ -51,7 +51,7 @@ vx_target_engine_options(vx_app_play)
 
 # RFC 0005's world loop: the streamer, the mesh half of each chunk's
 # lifecycle and the messages to and from the main thread, without a window.
-add_library(vx_app_world STATIC src/world_loop.cpp)
+add_library(vx_app_world STATIC src/world_loop.cpp src/world_thread.cpp)
 target_include_directories(vx_app_world PUBLIC src)
 target_link_libraries(vx_app_world PUBLIC vx::core vx::world vx::mesh)
 vx_target_warnings(vx_app_world)
