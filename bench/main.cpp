@@ -41,6 +41,7 @@ int main(int argc, char* argv[]) {
     if (quick) {
         bench.epochs(1).epochIterations(1);
     }
+    vx::bench::job_system(bench);
     vx::bench::packed_array(bench);
     vx::bench::chunk_storage(bench);
     vx::bench::chunk_map(bench);
