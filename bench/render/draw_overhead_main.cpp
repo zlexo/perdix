@@ -2,7 +2,9 @@
 // 10,000 indexed indirect commands cost to record, submit and draw, with
 // quads and empty, against one instanced draw of 64-quad clusters covering
 // the same quads. Open question 1 keeps RFC 0007's merged runs unless
-// recording 10,000 of them takes over 2 ms of CPU on KosmicKrisp.
+// recording 10,000 of them takes over 2 ms of CPU on KosmicKrisp. MoltenVK
+// encodes its Metal commands when they are submitted, not while they are
+// recorded, so its CPU time is the submit call's.
 //
 // The loader picks the driver: to compare the two on a Mac, run it once with
 // each manifest the Vulkan SDK installs,
@@ -12,6 +14,7 @@
 // checks it still runs, on lavapipe, and times nothing.
 
 #include <vx/core/result.hpp>
+#include <vx/core/thread.hpp>
 #include <vx/render/buffer.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/device.hpp>
@@ -77,11 +80,13 @@ constexpr std::string_view variant_name(Variant variant) {
 }
 
 // One variant's times over the frames: recording the commands, the draw
-// call alone within them, submitting and waiting, and the GPU's.
+// call alone within them, the submit call, then waiting for the queue, and
+// the GPU's.
 struct Times {
     std::vector<double> record_us;
     std::vector<double> draw_call_us;
     std::vector<double> submit_us;
+    std::vector<double> wait_us;
     std::vector<double> gpu_us;
 };
 
@@ -397,14 +402,16 @@ int run(bool quick) {
             };
             const Clock::time_point submit_start = Clock::now();
             vkQueueSubmit2(device.queue(), 1, &submit, VK_NULL_HANDLE);
+            const Clock::time_point submitted = Clock::now();
             vkQueueWaitIdle(device.queue());
-            const Clock::duration submitted = Clock::now() - submit_start;
+            const Clock::time_point idle = Clock::now();
             if (frame < warm) {
                 continue;
             }
             times.record_us.push_back(microseconds(recorded));
             times.draw_call_us.push_back(microseconds(draw_call));
-            times.submit_us.push_back(microseconds(submitted));
+            times.submit_us.push_back(microseconds(submitted - submit_start));
+            times.wait_us.push_back(microseconds(idle - submitted));
             // KosmicKrisp can deliver timestamps after the queue is idle.
             std::optional<std::chrono::nanoseconds> gpu;
             for (int attempt = 0; attempt < 100 && !gpu; ++attempt) {
@@ -418,9 +425,9 @@ int run(bool quick) {
             }
         }
         std::cout << "  " << variant_name(variant) << ": record " << median(times.record_us)
-                  << " us (the draw call " << median(times.draw_call_us) << " us), submit to idle "
-                  << median(times.submit_us) << " us, GPU " << median(times.gpu_us)
-                  << " us, medians of " << frames << '\n';
+                  << " us (the draw call " << median(times.draw_call_us) << " us), submit "
+                  << median(times.submit_us) << " us, then idle after " << median(times.wait_us)
+                  << " us, GPU " << median(times.gpu_us) << " us, medians of " << frames << '\n';
     }
     vkDestroyCommandPool(device.handle(), pool, nullptr);
     return 0;
@@ -438,5 +445,8 @@ int main(int argc, char* argv[]) {
         }
         quick = true;
     }
+    // On a performance core, where the main thread runs (RFC 0005): an
+    // efficiency core times the CPU's side slower.
+    vx::set_thread_qos(vx::ThreadQos::user_interactive);
     return run(quick);
 }
