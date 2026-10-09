@@ -63,6 +63,7 @@ add_library(vx_core STATIC
     src/crc32.cpp
     src/diagnostic.cpp
     src/file.cpp
+    src/frustum.cpp
     src/job_system.cpp
     src/mesh_result_pool.cpp
     src/thread.cpp
