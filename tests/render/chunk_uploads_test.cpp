@@ -109,6 +109,51 @@ constexpr Sizes none{};
 // (+x, +y, +z, -x, -y, -z).
 constexpr std::array<std::uint32_t, 6> mesher_face = {0, 2, 4, 1, 3, 5};
 
+// The GPU's copies of a frame's moves, from one arena's quads into
+// another's, or within one: a frame's moves never read what another writes.
+void copy_moves(std::span<const vx::render::ArenaMove> moves, const std::vector<Quad>& from,
+                std::vector<Quad>& to) {
+    for (const vx::render::ArenaMove& move : moves) {
+        REQUIRE(std::size_t{move.from} + move.quads <= from.size());
+        REQUIRE(std::size_t{move.to} + move.quads <= to.size());
+        std::copy_n(from.begin() + move.from, move.quads, to.begin() + move.to);
+    }
+}
+
+// Vulkan's rule for one copy within a buffer, which the GPU makes of a
+// frame's compaction: no move's destination touches any move's source.
+bool sources_and_destinations_apart(std::span<const vx::render::ArenaMove> moves) {
+    for (const vx::render::ArenaMove& into : moves) {
+        for (const vx::render::ArenaMove& out : moves) {
+            if (into.to < out.from + out.quads && out.from < into.to + into.quads) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// Whether each record's range holds its mesh's quads, tagged with the chunk's
+// x: `meshes` by x.
+bool every_mesh_in_place(const ChunkUploads& uploads, const std::vector<Quad>& arena,
+                         const std::map<int, const TestMesh*>& meshes) {
+    for (const vx::render::ChunkMeshRecord& record : uploads.records()) {
+        const vx::ChunkMesh mesh = meshes.at(record.pos.x)->update(record.pos, 1).mesh;
+        std::uint32_t at = record.range.first_quad;
+        for (const vx::Pass pass : {vx::Pass::opaque, vx::Pass::cutout}) {
+            for (const vx::Face face : vx::render::arena_faces) {
+                for (const Quad quad : mesh.range(pass, face)) {
+                    if (arena.at(at) != quad) {
+                        return false;
+                    }
+                    ++at;
+                }
+            }
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 TEST_CASE("a mesh lands in its range, its groups in the arena's order") {
@@ -268,6 +313,14 @@ TEST_CASE("an edit's batch goes in whole whatever the budget, or not at all with
     uploads.begin_frame(0, start);
     CHECK(space.stats().retired == 0);
     CHECK(space.stats().free == 54);
+    // Two large meshes: the first finds the hole, the second nothing. The
+    // first's range goes back at once, never written: held for a frame slot,
+    // it would hide room the upkeep looks for.
+    const std::array<ChunkMeshUpdate, 2> two_big = {big.update({.x = 5}, 7),
+                                                    big.update({.x = 6}, 8)};
+    CHECK(uploads.upload_batch(two_big, arena).value() == Uploaded::full);
+    CHECK(space.stats().retired == 0);
+    CHECK(space.stats().free == 54);
     CHECK(uploads.upload_batch(too_big, arena).value() == Uploaded::written);
     CHECK(uploads.records().size() == 5);
 }
@@ -290,6 +343,9 @@ TEST_CASE("a batch's update older than another of its chunk in the batch keeps n
     CHECK(uploads.find(here)->generation == 5);
     CHECK(uploads.find({.x = 9}) == nullptr);
     CHECK(uploads.stats().dropped == 2);
+    // The older update's range went back at once, never written.
+    CHECK(space.stats().retired == 0);
+    CHECK(space.stats().live == 44);
     // Once every slot has come round, the arena holds that one mesh alone.
     uploads.begin_frame(1, Time{});
     uploads.begin_frame(2, Time{});
@@ -377,8 +433,237 @@ TEST_CASE("an emptied chunk's generation rises with each empty mesh and goes whe
     CHECK(uploads.upload(mesh.update(here, 1), arena, Time{}).value() == Uploaded::written);
 }
 
-TEST_CASE("under random uploads, batches, stale offers, removals and frames, each record's "
-          "range holds its newest mesh, and the arena holds those ranges alone") {
+TEST_CASE("a refused upload says how much room it wanted: its mesh's, or its whole batch's") {
+    ArenaSpace space = make_space(50, 3);
+    FakeArena arena(50);
+    ChunkUploads uploads(space);
+    uploads.begin_frame(0, Time{});
+    const TestMesh big(some, 1); // 44 quads
+    const TestMesh one(few, 2);
+    REQUIRE(uploads.upload(big.update(here, 1), arena, Time{}).value() == Uploaded::written);
+    CHECK(uploads.stats().wanted == 0);
+    REQUIRE(uploads.upload(big.update({.x = 9}, 1), arena, Time{}).value() == Uploaded::full);
+    CHECK(uploads.stats().wanted == 44);
+    // Two meshes of one quad fit alone; with a third mesh of 44 the batch
+    // wants all 46 at once.
+    const std::array<ChunkMeshUpdate, 3> batch = {
+        one.update({.x = 10}, 1), big.update({.x = 11}, 1), one.update({.x = 12}, 1)};
+    REQUIRE(uploads.upload_batch(batch, arena).value() == Uploaded::full);
+    CHECK(uploads.stats().wanted == 46);
+    // A later, smaller refusal keeps the frame's largest; the next frame
+    // starts over.
+    REQUIRE(uploads.upload(big.update({.x = 13}, 1), arena, Time{}).value() == Uploaded::full);
+    CHECK(uploads.stats().wanted == 46);
+    uploads.begin_frame(1, Time{});
+    CHECK(uploads.stats().wanted == 0);
+}
+
+TEST_CASE("compaction moves the highest meshes into the lowest ranges that fit them, and each "
+          "keeps its quads") {
+    ArenaSpace space = make_space(450, 3);
+    FakeArena arena(450);
+    ChunkUploads uploads(space);
+    // Ten meshes of 44 quads, then the lower ones of every other pair go:
+    // holes of 44 between the rest, and 10 free at the end.
+    const TestMesh mesh(some, 7);
+    std::map<int, const TestMesh*> meshes;
+    uploads.begin_frame(0, Time{});
+    for (int x = 0; x < 10; ++x) {
+        REQUIRE(uploads.upload(mesh.update({.x = x}, 1), arena, Time{}).value() ==
+                Uploaded::written);
+        meshes[x] = &mesh;
+    }
+    std::map<int, std::uint32_t> before;
+    for (const vx::render::ChunkMeshRecord& record : uploads.records()) {
+        before[record.pos.x] = record.range.first_quad;
+    }
+    for (int x = 0; x < 10; x += 2) {
+        uploads.remove({.x = x});
+        meshes.erase(x);
+    }
+    for (std::uint32_t slot : {1U, 2U, 0U}) {
+        uploads.begin_frame(slot, Time{});
+    }
+    REQUIRE(space.stats().fragmentation > 0.5);
+    std::vector<vx::render::ArenaMove> moves;
+    const vx::render::Compacted done = uploads.compact(3, 450, moves);
+    CHECK(done.meshes == 3);
+    CHECK(done.quads == 132);
+    CHECK_FALSE(done.stuck);
+    REQUIRE(moves.size() == 3);
+    // The three highest went down, highest first, each to the lowest hole.
+    std::vector<std::uint32_t> highest;
+    for (const auto& [x, first] : before) {
+        if (x % 2 == 1) {
+            highest.push_back(first);
+        }
+    }
+    std::ranges::sort(highest, std::ranges::greater{});
+    for (std::size_t at = 0; at < moves.size(); ++at) {
+        CHECK(moves[at].from == highest[at]);
+        CHECK(moves[at].to < moves[at].from);
+        CHECK(moves[at].quads == 44);
+    }
+    CHECK(moves[0].to == 0);
+    CHECK(moves[1].to == 88);
+    CHECK(moves[2].to == 176);
+    CHECK(sources_and_destinations_apart(moves));
+    copy_moves(moves, std::vector<Quad>(arena.quads), arena.quads);
+    CHECK(every_mesh_in_place(uploads, arena.quads, meshes));
+    // The old ranges wait for the frame.
+    CHECK(space.stats().retired == 132);
+    CHECK(space.stats().live == 5 * 44);
+}
+
+TEST_CASE("compaction is stuck once the highest mesh cannot go lower") {
+    ArenaSpace space = make_space(1'000, 3);
+    FakeArena arena(1'000);
+    ChunkUploads uploads(space);
+    const TestMesh big(some, 7); // 44 quads
+    const TestMesh small(few, 8);
+    uploads.begin_frame(0, Time{});
+    // Small, big, small, big, ...: removing the small ones leaves holes of
+    // one quad, where no big mesh fits.
+    for (int x = 0; x < 8; ++x) {
+        const TestMesh& mesh = x % 2 == 0 ? small : big;
+        REQUIRE(uploads.upload(mesh.update({.x = x}, 1), arena, Time{}).value() ==
+                Uploaded::written);
+    }
+    std::vector<vx::render::ArenaMove> moves;
+    // Packed from the start: nothing lower is free.
+    CHECK(uploads.compact(2, 1'000, moves).stuck);
+    CHECK(moves.empty());
+    for (int x = 0; x < 8; x += 2) {
+        uploads.remove({.x = x});
+    }
+    for (std::uint32_t slot : {1U, 2U, 0U}) {
+        uploads.begin_frame(slot, Time{});
+    }
+    const vx::render::ArenaStats fragmented = space.stats();
+    const vx::render::Compacted stuck = uploads.compact(8, 1'000, moves);
+    CHECK(stuck.stuck);
+    CHECK(stuck.meshes == 0);
+    CHECK(moves.empty());
+    // The range tried and not taken went straight back.
+    CHECK(space.stats().live == fragmented.live);
+    CHECK(space.stats().free == fragmented.free);
+
+    // Remove one big mesh low down: a hole of 45 opens, and the highest
+    // mesh moves into it; the next one finds no other and is stuck.
+    uploads.remove({.x = 1});
+    for (std::uint32_t slot : {1U, 2U, 0U}) {
+        uploads.begin_frame(slot, Time{});
+    }
+    const vx::render::Compacted one = uploads.compact(8, 1'000, moves);
+    CHECK(one.meshes == 1);
+    CHECK(one.stuck);
+}
+
+TEST_CASE("a frame moves its share of quads, and its first mesh whatever its size") {
+    // Five meshes of 44 quads; the lowest two go, leaving 88 free at the
+    // start.
+    const auto scattered = [](ArenaSpace& space, ChunkUploads& uploads, FakeArena& arena,
+                              const TestMesh& mesh) {
+        uploads.begin_frame(0, Time{});
+        for (int x = 0; x < 5; ++x) {
+            REQUIRE(uploads.upload(mesh.update({.x = x}, 1), arena, Time{}).value() ==
+                    Uploaded::written);
+        }
+        uploads.remove({.x = 0});
+        uploads.remove({.x = 1});
+        for (std::uint32_t slot : {1U, 2U, 0U}) {
+            uploads.begin_frame(slot, Time{});
+        }
+        REQUIRE(space.stats().largest_free >= 88);
+    };
+    const TestMesh mesh(some, 7);
+    {
+        ArenaSpace space = make_space(400, 3);
+        FakeArena arena(400);
+        ChunkUploads uploads(space);
+        scattered(space, uploads, arena, mesh);
+        // Room for one 44-quad move in 50: the second would pass the share.
+        std::vector<vx::render::ArenaMove> moves;
+        const vx::render::Compacted done = uploads.compact(8, 50, moves);
+        CHECK(done.meshes == 1);
+        CHECK_FALSE(done.stuck);
+    }
+    {
+        ArenaSpace space = make_space(400, 3);
+        FakeArena arena(400);
+        ChunkUploads uploads(space);
+        scattered(space, uploads, arena, mesh);
+        // A share under one mesh still moves the first: compaction never
+        // spins without moving.
+        std::vector<vx::render::ArenaMove> moves;
+        const vx::render::Compacted done = uploads.compact(8, 43, moves);
+        CHECK(done.meshes == 1);
+        CHECK(done.quads == 44);
+        CHECK_FALSE(done.stuck);
+    }
+}
+
+TEST_CASE("a repack packs every mesh into a fresh space in their order, and each keeps its "
+          "quads") {
+    ArenaSpace space = make_space(300, 3);
+    FakeArena arena(300);
+    ChunkUploads uploads(space);
+    const TestMesh big(some, 7);
+    const TestMesh small(few, 8);
+    std::map<int, const TestMesh*> meshes;
+    uploads.begin_frame(0, Time{});
+    for (int x = 0; x < 6; ++x) {
+        const TestMesh& mesh = x % 3 == 0 ? small : big;
+        REQUIRE(uploads.upload(mesh.update({.x = x}, 1), arena, Time{}).value() ==
+                Uploaded::written);
+        meshes[x] = &mesh;
+    }
+    uploads.remove({.x = 1});
+    meshes.erase(1);
+    std::map<std::uint32_t, int> order; // chunk x by first quad, before
+    for (const vx::render::ChunkMeshRecord& record : uploads.records()) {
+        order[record.range.first_quad] = record.pos.x;
+    }
+
+    // Too small for what is live: nothing changes.
+    ArenaSpace cramped = make_space(100, 3);
+    std::vector<vx::render::ArenaMove> moves;
+    CHECK_FALSE(uploads.repack(cramped, moves));
+    CHECK(moves.empty());
+    CHECK(cramped.stats().live == 0);
+    CHECK(every_mesh_in_place(uploads, arena.quads, meshes));
+
+    ArenaSpace fresh = make_space(450, 3);
+    REQUIRE(uploads.repack(fresh, moves));
+    REQUIRE(moves.size() == 5);
+    std::vector<Quad> grown(450);
+    copy_moves(moves, arena.quads, grown);
+    // The new buffer takes the old one's place, and the fresh space the old
+    // space's: its retired ranges go with it.
+    arena.quads = grown;
+    space = std::move(fresh);
+    CHECK(every_mesh_in_place(uploads, arena.quads, meshes));
+    // Packed from the start, in the order they lay.
+    std::uint32_t next = 0;
+    for (const auto& [first, x] : order) {
+        const vx::render::ChunkMeshRecord* record = uploads.find({.x = x});
+        REQUIRE(record != nullptr);
+        CHECK(record->range.first_quad == next);
+        next += record->range.quads;
+    }
+    CHECK(space.stats().live == next);
+    CHECK(space.stats().retired == 0);
+    CHECK(space.stats().free == 450 - next);
+    // Uploads go on in the new space: a replaced mesh's range retires there.
+    REQUIRE(uploads.upload(big.update({.x = 0}, 2), arena, Time{}).value() == Uploaded::written);
+    meshes[0] = &big;
+    CHECK(space.stats().retired == 1);
+    CHECK(every_mesh_in_place(uploads, arena.quads, meshes));
+}
+
+TEST_CASE("under random uploads, batches, stale offers, removals, frames, compaction and "
+          "repacks, each record's range holds its newest mesh, and the arena holds those "
+          "ranges alone") {
     // Three frame slots, one more than RFC 0001's frames in flight; every
     // frame, the slot it reuses is finished.
     constexpr std::uint32_t capacity = 4'096;
@@ -399,6 +684,8 @@ TEST_CASE("under random uploads, batches, stale offers, removals and frames, eac
     std::uint32_t frame = 0;
     std::size_t stale_offers = 0;
     std::size_t batches = 0;
+    std::size_t compactions = 0;
+    std::size_t repacks = 0;
     // A mesh of random groups for chunk `x`, its quads tagged `tag`.
     const auto make_update = [&](int x, std::uint32_t tag) {
         Sizes sizes{};
@@ -437,6 +724,25 @@ TEST_CASE("under random uploads, batches, stale offers, removals and frames, eac
         if (kind < 5) {
             ++frame;
             uploads.begin_frame(frame % 3, Time{});
+        } else if (kind < 8) {
+            // Compaction: the GPU copies within the arena.
+            std::vector<vx::render::ArenaMove> moves;
+            static_cast<void>(uploads.compact(4, capacity, moves));
+            REQUIRE(sources_and_destinations_apart(moves));
+            copy_moves(moves, std::vector<Quad>(arena.quads), arena.quads);
+            compactions += moves.empty() ? 0 : 1;
+        } else if (kind < 9) {
+            // A repack into a new buffer of the same size, from which the
+            // old one's retired ranges are gone.
+            vx::Result<ArenaSpace> fresh = ArenaSpace::create(capacity, 3);
+            REQUIRE(fresh.has_value());
+            std::vector<vx::render::ArenaMove> moves;
+            REQUIRE(uploads.repack(fresh.value(), moves));
+            std::vector<Quad> moved(capacity);
+            copy_moves(moves, arena.quads, moved);
+            arena.quads = moved;
+            space = std::move(fresh).value();
+            ++repacks;
         } else if (kind < 10) {
             uploads.remove({.x = x});
             known.erase(x);
@@ -507,6 +813,8 @@ TEST_CASE("under random uploads, batches, stale offers, removals and frames, eac
     CHECK(generation > 4'000);
     CHECK(stale_offers > 200);
     CHECK(batches > 500);
+    CHECK(compactions > 20);
+    CHECK(repacks > 20);
     // Every slot comes round: nothing waits, and all but the records' ranges
     // is free.
     for (std::uint32_t slot = 0; slot < 3; ++slot) {

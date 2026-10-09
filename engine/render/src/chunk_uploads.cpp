@@ -49,6 +49,7 @@ void ChunkUploads::begin_frame(std::uint32_t slot, Clock::time_point now) noexce
     stats_.quads_uploaded = 0;
     stats_.dropped = 0;
     stats_.refused = 0;
+    stats_.wanted = 0;
 }
 
 Result<Uploaded> ChunkUploads::upload(const ChunkMeshUpdate& update, QuadWriter& writer,
@@ -72,6 +73,7 @@ Result<Uploaded> ChunkUploads::upload(const ChunkMeshUpdate& update, QuadWriter&
     const std::optional<ArenaRange> range = space_->allocate(quads);
     if (!range) {
         ++stats_.refused;
+        stats_.wanted = std::max(stats_.wanted, quads);
         return Uploaded::full;
     }
     return place(update, *range, writer);
@@ -91,10 +93,12 @@ Result<Uploaded> ChunkUploads::upload_batch(std::span<const ChunkMeshUpdate> bat
     }
     std::ranges::stable_sort(order, std::ranges::greater{},
                              [&quads](std::size_t at) { return quads[at]; });
+    // Ranges taken and never written go back at once: no frame reads them,
+    // and held for a frame slot they would hide room the upkeep looks for.
     const auto give_back = [&](std::size_t from) {
         for (std::size_t at = from; at < ranges.size(); ++at) {
             if (ranges[at]) {
-                space_->retire(*ranges[at], slot_);
+                space_->cancel(*ranges[at]);
             }
         }
     };
@@ -106,6 +110,8 @@ Result<Uploaded> ChunkUploads::upload_batch(std::span<const ChunkMeshUpdate> bat
         if (!ranges[at]) {
             give_back(0);
             ++stats_.refused;
+            // The batch goes in whole, so it wants room for all of it.
+            stats_.wanted = std::max(stats_.wanted, fresh_quads(batch, quads));
             return Uploaded::full;
         }
     }
@@ -113,9 +119,9 @@ Result<Uploaded> ChunkUploads::upload_batch(std::span<const ChunkMeshUpdate> bat
         const std::optional<ArenaRange>& range = ranges[at];
         if (stale(batch[at])) {
             // A newer update of its chunk came earlier in the batch: the
-            // range taken for this one goes back unwritten.
+            // range taken for this one goes back, never written.
             if (range) {
-                space_->retire(*range, slot_);
+                space_->cancel(*range);
             }
             ++stats_.dropped;
         } else if (!range) {
@@ -127,6 +133,87 @@ Result<Uploaded> ChunkUploads::upload_batch(std::span<const ChunkMeshUpdate> bat
         }
     }
     return Uploaded::written;
+}
+
+Compacted ChunkUploads::compact(std::uint32_t max_meshes, std::uint32_t max_quads,
+                                std::vector<ArenaMove>& moves) {
+    // Only the highest meshes can move this frame: a partial sort finds them.
+    gather_offsets();
+    const std::size_t candidates = std::min<std::size_t>(max_meshes, by_offset_.size());
+    const auto end = by_offset_.begin() + static_cast<std::ptrdiff_t>(candidates);
+    std::ranges::partial_sort(by_offset_, end, std::ranges::greater{});
+    // With no mesh it may move, compaction can go no further.
+    Compacted done{.meshes = 0, .quads = 0, .stuck = candidates == 0};
+    for (auto at = by_offset_.begin(); at != end; ++at) {
+        ChunkMeshRecord& record = records_[at->record];
+        // The frame's share is moved; its first move always goes, so a mesh
+        // larger than the share still moves.
+        if (done.meshes > 0 && done.quads + record.range.quads > max_quads) {
+            break;
+        }
+        const std::optional<ArenaRange> lower = space_->allocate_lowest(record.range.quads);
+        if (!lower || lower->first_quad > record.range.first_quad) {
+            if (lower) {
+                space_->cancel(*lower);
+            }
+            done.stuck = true;
+            break;
+        }
+        moves.push_back(
+            {.from = record.range.first_quad, .to = lower->first_quad, .quads = lower->quads});
+        // Frames in flight may still draw the old range.
+        space_->retire(record.range, slot_);
+        record.range = *lower;
+        ++done.meshes;
+        done.quads += lower->quads;
+    }
+    return done;
+}
+
+bool ChunkUploads::repack(ArenaSpace& fresh, std::vector<ArenaMove>& moves) {
+    gather_offsets();
+    std::ranges::sort(by_offset_);
+    placed_.assign(records_.size(), ArenaRange{});
+    const std::size_t first_move = moves.size();
+    for (const ByOffset& at : by_offset_) {
+        const std::uint32_t quads = records_[at.record].range.quads;
+        // Nothing was ever freed in the fresh space, so each range comes
+        // straight after the one before.
+        const std::optional<ArenaRange> range = fresh.allocate(quads);
+        if (!range) {
+            for (const ArenaRange& placed : placed_) {
+                if (placed.allocation != VK_NULL_HANDLE) {
+                    fresh.cancel(placed);
+                }
+            }
+            moves.resize(first_move);
+            return false;
+        }
+        placed_[at.record] = *range;
+        moves.push_back({.from = at.first_quad, .to = range->first_quad, .quads = quads});
+    }
+    for (std::size_t at = 0; at < records_.size(); ++at) {
+        records_[at].range = placed_[at];
+    }
+    return true;
+}
+
+void ChunkUploads::gather_offsets() {
+    by_offset_.clear();
+    for (std::uint32_t at = 0; at < records_.size(); ++at) {
+        by_offset_.push_back({.first_quad = records_[at].range.first_quad, .record = at});
+    }
+}
+
+std::uint32_t ChunkUploads::fresh_quads(std::span<const ChunkMeshUpdate> batch,
+                                        std::span<const std::uint32_t> quads) const noexcept {
+    std::uint32_t total = 0;
+    for (std::size_t at = 0; at < batch.size(); ++at) {
+        if (!stale(batch[at])) {
+            total += quads[at];
+        }
+    }
+    return total;
 }
 
 void ChunkUploads::remove(ChunkPos pos) {
