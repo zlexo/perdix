@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vx/render/camera.hpp>
+#include <vx/render/chunk_arena.hpp>
 #include <vx/render/renderer.hpp>
 #include <vx/render/swapchain_choice.hpp>
 
@@ -39,9 +40,11 @@ struct MovementReport {
 
 // RFC 0001's debug overlay, built with Dear ImGui over the window: frame
 // time graphs, the GPU and driver, the present mode switch, RFC 0004's
-// texture filter switch, RFC 0003's meshing toggles, the camera's position,
-// the player's movement (RFC 0010) and the validation count. F3 shows and hides it. It owns the
-// ImGui context, which the renderer it is given to draws with, so it must outlive that renderer.
+// texture filter switch, RFC 0003's meshing toggles, RFC 0007's chunk
+// rendering counters and switches, the camera's position, the player's
+// movement (RFC 0010) and the validation count. F3 shows and hides it. It
+// owns the ImGui context, which the renderer it is given to draws with, so
+// it must outlive that renderer.
 class Overlay {
 public:
     // An overlay for `window`, shown from the start or not. `validation` says
@@ -106,6 +109,7 @@ private:
     static void draw_present_mode(render::Renderer& renderer);
     static void draw_block_filter(render::Renderer& renderer);
     static void draw_chunk(render::Renderer& renderer, ChunkMeshing& meshing);
+    void draw_chunk_rendering(render::Renderer& renderer);
     static void draw_camera(const render::Camera& camera);
     static void draw_movement(const MovementReport& movement);
 
@@ -123,6 +127,10 @@ private:
     std::string device_report_;
     std::string swapchain_report_;
     render::SwapchainChoice reported_choice_;
+    // The arena's statistics walk its free ranges, so they are sampled a few
+    // times a second, not every frame (RFC 0007).
+    render::ArenaStats arena_;
+    std::chrono::steady_clock::time_point arena_sampled_;
 };
 
 } // namespace vx::app
