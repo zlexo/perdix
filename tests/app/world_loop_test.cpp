@@ -29,8 +29,8 @@
 #include <vector>
 
 // RFC 0005's world loop over RFC 0006's streamer: meshes reach the main
-// thread in one ordered stream, and the end state does not depend on how
-// many workers ran the jobs.
+// thread in one ordered stream, an edit's remeshes together, and the end
+// state does not depend on how many workers ran the jobs.
 
 namespace {
 
@@ -74,6 +74,14 @@ void move_camera(WorldLoop& loop, ChunkPos camera) {
     loop.to_world().push(std::move(message));
 }
 
+void edit(WorldLoop& loop, vx::BlockPos block, BlockState state) {
+    ToWorld message;
+    message.kind = ToWorld::Kind::edit;
+    message.block = block;
+    message.state = state;
+    loop.to_world().push(std::move(message));
+}
+
 // The chunks drawn and complete: those the main thread should have meshes of.
 std::set<Chunk> shown(const WorldLoop& loop) {
     std::set<Chunk> out;
@@ -112,6 +120,16 @@ public:
                 take(message.mesh);
                 ++meshes;
                 break;
+            case ToMain::Kind::batch:
+                for (vx::app::MeshUpdate& update : message.batch) {
+                    take(update);
+                }
+                ++batches;
+                last_batch.clear();
+                for (const vx::app::MeshUpdate& update : message.batch) {
+                    last_batch.push_back(chunk_of(update.pos));
+                }
+                break;
             case ToMain::Kind::unload:
                 held.erase(chunk_of(message.pos));
                 ++unloads;
@@ -140,7 +158,9 @@ public:
     };
     std::map<Chunk, Held> held;
     std::size_t meshes = 0;
+    std::size_t batches = 0;
     std::size_t unloads = 0;
+    std::vector<Chunk> last_batch;
 
 private:
     void take(const vx::app::MeshUpdate& update) {
@@ -250,6 +270,18 @@ std::uint64_t chunk_hash(const WorldLoop& loop) {
     return value;
 }
 
+// A drawn, complete chunk in column (x, 3) at the ground, and the block on its
+// west border at the middle of its height and depth.
+std::optional<ChunkPos> ground_chunk(const WorldLoop& loop, std::int32_t x) {
+    const std::set<Chunk> drawn = shown(loop);
+    for (std::int32_t y = 0; y <= 3; ++y) {
+        if (drawn.contains({x, y, 3}) && drawn.contains({x - 1, y, 3})) {
+            return ChunkPos{.x = x, .y = y, .z = 3};
+        }
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 TEST_CASE("the region streams in, and each drawn chunk's mesh reaches the main thread once") {
@@ -272,7 +304,134 @@ TEST_CASE("the region streams in, and each drawn chunk's mesh reaches the main t
     CHECK(loop.meshes_in_flight() == 0);
 }
 
-TEST_CASE("loading, unloading and reloading end the same with 0, 1 and 6 workers") {
+TEST_CASE("a break on a chunk border delivers both meshes in one batch") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small});
+    move_camera(loop, above_hills);
+    loop.settle();
+    std::vector<ToMain> messages;
+    loop.take(messages);
+    const std::optional<ChunkPos> east = ground_chunk(loop, 1);
+    REQUIRE(east.has_value());
+    // The block on chunk x = 1's west face: its neighbor at x = 0 pads it.
+    edit(loop, {.x = 32, .y = (east->y * 32) + 16, .z = (3 * 32) + 16}, BlockState::air);
+    loop.settle();
+    loop.take(messages);
+    MainThread main;
+    main.receive(messages);
+    CHECK(main.batches == 1);
+    CHECK(main.meshes == 0);
+    std::vector<Chunk> expected = {chunk_of(*east), {0, east->y, 3}};
+    std::ranges::sort(expected);
+    std::ranges::sort(main.last_batch);
+    CHECK(main.last_batch == expected);
+}
+
+TEST_CASE("a border break's batch waits for the newest remesh, and loses a chunk that unloads") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small});
+    move_camera(loop, above_hills);
+    loop.settle();
+    std::vector<ToMain> messages;
+    loop.take(messages);
+    const std::optional<ChunkPos> east = ground_chunk(loop, 1);
+    REQUIRE(east.has_value());
+    const std::int32_t y = (east->y * 32) + 16;
+    SUBCASE("a newer remesh of one of them lands first") {
+        edit(loop, {.x = 32, .y = y, .z = 112}, BlockState::air);
+        loop.pass(); // the two remeshes start
+        CHECK(jobs.queued(vx::JobLevel::urgent) == 2);
+        // A second edit inside the east chunk only, while they run.
+        edit(loop, {.x = 40, .y = y, .z = 112}, BlockState::air);
+        loop.settle();
+        loop.take(messages);
+        MainThread main;
+        main.receive(messages);
+        CHECK(main.batches == 1);
+        CHECK(main.meshes == 0);
+        CHECK(main.last_batch.size() == 2);
+    }
+    SUBCASE("the other chunk unloads before the batch is done") {
+        edit(loop, {.x = 32, .y = y, .z = 112}, BlockState::air);
+        loop.pass(); // the two remeshes start
+        // Six columns east of x = 0, outside the region grown for
+        // hysteresis; x = 1 is five away, still inside.
+        move_camera(loop, {.x = 6, .y = above_hills.y, .z = 3});
+        loop.settle();
+        loop.take(messages);
+        MainThread main;
+        main.receive(messages);
+        CHECK(main.batches == 1);
+        CHECK(main.last_batch == std::vector<Chunk>{chunk_of(*east)});
+        CHECK(main.unloads > 0);
+        // The canceled remesh gave its pins back: a write to the chunk it
+        // read, still loaded beside x = 1, leaves no frozen copy behind.
+        edit(loop, {.x = 16, .y = y, .z = 112}, BlockState::air);
+        loop.settle();
+        CHECK(loop.streamer().stats().block_versions == chunks_with_blocks(loop));
+    }
+}
+
+TEST_CASE("a break next to a chunk that is not drawn sends its batch without that chunk") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small});
+    move_camera(loop, above_hills);
+    loop.settle();
+    std::vector<ToMain> messages;
+    loop.take(messages);
+    // Column x = 6 is at the view distance; x = 7 beyond it is loaded, so x = 6
+    // can be meshed, but not drawn. A break on their border changes both.
+    const std::set<Chunk> drawn = shown(loop);
+    std::optional<std::int32_t> ground;
+    for (std::int32_t y = -2; y <= 5 && !ground; ++y) {
+        const vx::ChunkRecord* beyond = loop.streamer().find({.x = 7, .y = y, .z = 3});
+        if (drawn.contains({6, y, 3}) && beyond != nullptr && !beyond->drawn &&
+            vx::counts_as_ready(beyond->state)) {
+            ground = y;
+        }
+    }
+    REQUIRE(ground.has_value());
+    edit(loop, {.x = (7 * 32) - 1, .y = (*ground * 32) + 16, .z = 112}, BlockState::air);
+    loop.settle();
+    loop.take(messages);
+    MainThread main;
+    main.receive(messages);
+    CHECK(main.batches == 1);
+    CHECK(main.last_batch == std::vector<Chunk>{{6, *ground, 3}});
+}
+
+TEST_CASE("the loop goes with remeshes queued, or done and not taken in, and every pin back") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    // In debug builds the streamer's destructor asserts that every job record
+    // came back, and the pool's that every buffer did.
+    for (const bool run : {false, true}) {
+        WorldLoop loop(generator, table, jobs, pool, {.region = small});
+        move_camera(loop, above_hills);
+        loop.settle();
+        const std::optional<ChunkPos> east = ground_chunk(loop, 1);
+        REQUIRE(east.has_value());
+        edit(loop, {.x = 32, .y = (east->y * 32) + 16, .z = 112}, BlockState::air);
+        loop.pass(); // the two remeshes are queued
+        REQUIRE(loop.meshes_in_flight() == 2);
+        if (run) {
+            jobs.run_until_idle(); // done, their results not taken in
+        }
+    }
+}
+
+TEST_CASE("loading, editing, unloading and reloading end the same with 0, 1 and 6 workers") {
     const vx::PlaceholderGenerator generator(0x5EED, blocks);
     const std::vector<vx::BlockVisual> table = visuals();
     std::vector<std::uint64_t> chunks;
@@ -290,9 +449,14 @@ TEST_CASE("loading, unloading and reloading end the same with 0, 1 and 6 workers
         };
         move_camera(loop, above_hills);
         settle();
+        edit(loop, {.x = 100, .y = 70, .z = 100}, stone);
+        edit(loop, {.x = 96, .y = 64, .z = 96}, BlockState::air);
+        settle();
         move_camera(loop, {.x = above_hills.x + 12, .y = above_hills.y, .z = above_hills.z});
         settle();
         move_camera(loop, above_hills);
+        settle();
+        edit(loop, {.x = 120, .y = 70, .z = 90}, stone);
         settle();
         INFO("workers ", workers);
         CHECK(main.held.size() > 27);

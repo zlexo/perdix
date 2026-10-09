@@ -108,6 +108,7 @@ bool WorldLoop::pass() {
     streamer_.integrate();
     follow_events();
     mesh_results_.drain([this](MeshResult&& result) { integrate_mesh(result); });
+    send_ready_batches();
     feed();
     return true;
 }
@@ -134,10 +135,62 @@ void WorldLoop::handle(ToWorld& message) {
         streamer_.set_camera(message.camera);
         follow_events();
         break;
+    case ToWorld::Kind::edit:
+        edit(message.block, message.state);
+        break;
     case ToWorld::Kind::stop:
         stopping_ = true;
         break;
     }
+}
+
+void WorldLoop::edit(BlockPos block, BlockState state) {
+    follow_events();
+    if (!streamer_.set_block(block, state)) {
+        return;
+    }
+    streamer_.take_events(events_);
+    // The chunks the edit changed, and those of any batch one of them is in
+    // already: one batch, sent once all are remeshed.
+    Batch batch{.id = next_batch_++, .members = {}};
+    const auto join = [&](std::uint32_t index) {
+        const bool known = std::ranges::any_of(
+            batch.members, [index](const Batch::Member& member) { return member.record == index; });
+        if (known || mesh_record(index).state == MeshRecord::State::none) {
+            return;
+        }
+        // Any job started from now on reads the edit.
+        batch.members.push_back({.record = index,
+                                 .load_id = mesh_record(index).load_id,
+                                 .wanted = next_generation_,
+                                 .mesh = {},
+                                 .done = false});
+    };
+    for (const ChunkEvent& event : events_) {
+        if (event.kind != ChunkEvent::Kind::changed) {
+            continue;
+        }
+        const std::uint32_t old_batch = mesh_record(event.record).batch;
+        join(event.record);
+        if (old_batch != 0) {
+            const auto merged = std::ranges::find(batches_, old_batch, &Batch::id);
+            if (merged != batches_.end()) {
+                for (const Batch::Member& member : merged->members) {
+                    join(member.record);
+                }
+                batches_.erase(merged);
+            }
+        }
+    }
+    events_.clear();
+    if (batch.members.empty()) {
+        return;
+    }
+    for (const Batch::Member& member : batch.members) {
+        mesh_record(member.record).batch = batch.id;
+        queue_mesh(member.record, true);
+    }
+    batches_.push_back(std::move(batch));
 }
 
 void WorldLoop::follow_events() {
@@ -146,11 +199,11 @@ void WorldLoop::follow_events() {
         switch (event.kind) {
         case ChunkEvent::Kind::shown:
             mesh_record(event.record).load_id = streamer_.records()[event.record].load_id;
-            queue_mesh(event.record);
+            queue_mesh(event.record, false);
             break;
         case ChunkEvent::Kind::changed:
             if (mesh_record(event.record).state != MeshRecord::State::none) {
-                queue_mesh(event.record);
+                queue_mesh(event.record, false);
             }
             break;
         case ChunkEvent::Kind::hidden:
@@ -169,20 +222,26 @@ WorldLoop::MeshRecord& WorldLoop::mesh_record(std::uint32_t index) {
     return meshes_[index];
 }
 
-void WorldLoop::queue_mesh(std::uint32_t index) {
+void WorldLoop::queue_mesh(std::uint32_t index, bool urgent) {
     MeshRecord& record = mesh_record(index);
     switch (record.state) {
     case MeshRecord::State::none:
     case MeshRecord::State::sent:
         record.state = MeshRecord::State::queued;
-        waiting_meshes_.push_back(index);
+        record.urgent = urgent;
+        (urgent ? waiting_urgent_ : waiting_meshes_).push_back(index);
         break;
     case MeshRecord::State::queued:
+        if (urgent && !record.urgent) {
+            record.urgent = true;
+            waiting_urgent_.push_back(index);
+        }
         break;
     case MeshRecord::State::meshing:
         // Meshed again when this job reports: it read the blocks before the
         // change.
         record.dirty = true;
+        record.urgent = record.urgent || urgent;
         break;
     }
 }
@@ -197,7 +256,15 @@ void WorldLoop::drop_mesh(std::uint32_t index, ChunkPos pos) {
         --meshes_in_flight_;
     }
     if (record.forwarded != 0) {
-        to_main_.push({.kind = ToMain::Kind::unload, .pos = pos, .mesh = {}});
+        to_main_.push({.kind = ToMain::Kind::unload, .pos = pos, .mesh = {}, .batch = {}});
+    }
+    // It leaves its batch, which goes out without it.
+    if (record.batch != 0) {
+        const auto batch = std::ranges::find(batches_, record.batch, &Batch::id);
+        if (batch != batches_.end()) {
+            std::erase_if(batch->members,
+                          [index](const Batch::Member& member) { return member.record == index; });
+        }
     }
     record = MeshRecord{};
 }
@@ -221,9 +288,10 @@ void WorldLoop::integrate_mesh(MeshResult& result) {
         if (record.dirty) {
             record.dirty = false;
             record.state = MeshRecord::State::sent; // so queue_mesh queues it
-            queue_mesh(index);
+            queue_mesh(index, record.urgent);
         } else {
             record.state = MeshRecord::State::sent;
+            record.urgent = false;
         }
     }
     // Newer than the last one sent: on its way, even if a newer job runs, so
@@ -236,20 +304,67 @@ void WorldLoop::integrate_mesh(MeshResult& result) {
 void WorldLoop::forward(std::uint32_t index, MeshUpdate&& update) {
     MeshRecord& record = mesh_record(index);
     record.forwarded = update.generation;
-    to_main_.push({.kind = ToMain::Kind::mesh, .pos = {}, .mesh = std::move(update)});
+    if (record.batch != 0) {
+        const auto batch = std::ranges::find(batches_, record.batch, &Batch::id);
+        if (batch != batches_.end()) {
+            for (Batch::Member& member : batch->members) {
+                if (member.record == index) {
+                    member.done = member.done || update.generation >= member.wanted;
+                    member.mesh = std::move(update);
+                    return;
+                }
+            }
+        }
+    }
+    to_main_.push({.kind = ToMain::Kind::mesh, .pos = {}, .mesh = std::move(update), .batch = {}});
+}
+
+void WorldLoop::send_ready_batches() {
+    std::erase_if(batches_, [this](Batch& batch) {
+        const bool ready = std::ranges::all_of(
+            batch.members, [](const Batch::Member& member) { return member.done; });
+        if (!ready) {
+            return false;
+        }
+        ToMain message{.kind = ToMain::Kind::batch, .pos = {}, .mesh = {}, .batch = {}};
+        for (Batch::Member& member : batch.members) {
+            MeshRecord& record = mesh_record(member.record);
+            record.batch = 0;
+            // Still the chunk the edit changed.
+            if (record.load_id == member.load_id && member.mesh.load_id == member.load_id) {
+                message.batch.push_back(std::move(member.mesh));
+            }
+        }
+        if (!message.batch.empty()) {
+            to_main_.push(std::move(message));
+        }
+        return true;
+    });
 }
 
 void WorldLoop::feed() {
-    // Streaming meshes first, then the streamer's jobs, in the room the
-    // normal level has left.
+    // An edit's remeshes first, at the urgent level; then streaming meshes;
+    // then the streamer's jobs.
     const auto room = [this](JobLevel level) {
         const std::uint32_t queued = jobs_->queued(level);
         return queued >= settings_.queue_limit ? 0U : settings_.queue_limit - queued;
     };
+    std::size_t urgent_room = room(JobLevel::urgent);
+    std::erase_if(waiting_urgent_, [&](std::uint32_t index) {
+        const MeshRecord& record = mesh_record(index);
+        if (record.state != MeshRecord::State::queued || !record.urgent) {
+            return true; // started, or dropped
+        }
+        if (urgent_room == 0 || !start_mesh(index)) {
+            return false;
+        }
+        --urgent_room;
+        return true;
+    });
     std::size_t normal_room = room(JobLevel::normal);
     std::erase_if(waiting_meshes_, [&](std::uint32_t index) {
         const MeshRecord& record = mesh_record(index);
-        if (record.state != MeshRecord::State::queued) {
+        if (record.state != MeshRecord::State::queued || record.urgent) {
             return true;
         }
         if (normal_room == 0 || !start_mesh(index)) {
@@ -269,7 +384,8 @@ bool WorldLoop::start_mesh(std::uint32_t index) {
     if (pins == nullptr) {
         return false;
     }
-    const JobPriority priority{.level = JobLevel::normal, .key = 0};
+    const JobPriority priority{.level = record.urgent ? JobLevel::urgent : JobLevel::normal,
+                               .key = 0};
     record.job = jobs_->submit(
         priority,
         MeshJob{.context = &context_, .pins = pins, .pos = pos, .generation = generation});

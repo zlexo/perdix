@@ -6,6 +6,7 @@
 #include <vx/core/wake_event.hpp>
 #include <vx/mesh/mesh_chunk.hpp>
 #include <vx/mesh/padded_chunk.hpp>
+#include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/generator.hpp>
@@ -39,21 +40,26 @@ struct MeshUpdate {
 struct ToMain {
     enum class Kind : std::uint8_t {
         mesh,   // a mesh, uploaded within the frame's budget
+        batch,  // an edit's remeshes, uploaded whole in one frame
         unload, // the chunk's mesh goes
     };
     Kind kind = Kind::mesh;
     ChunkPos pos; // the unloaded chunk
     MeshUpdate mesh;
+    std::vector<MeshUpdate> batch;
 };
 
 // What the main thread tells the world thread.
 struct ToWorld {
     enum class Kind : std::uint8_t {
         camera, // the camera's chunk
+        edit,   // a block to set; M5's actions will bring the view ray
         stop,
     };
     Kind kind = Kind::camera;
     ChunkPos camera;
+    BlockPos block;
+    BlockState state = BlockState::air;
 };
 
 struct WorldLoopSettings {
@@ -74,7 +80,7 @@ struct MeshWorkerScratch {
 // world thread runs it, and tests step it. With RFC 0006's streamer it holds
 // the mesh half of the lifecycle: each chunk shown is meshed by a job that
 // pins it and its 26 neighbors, and each mesh newer than the last one sent
-// goes to the main thread.
+// goes to the main thread, the remeshes of one edit together.
 class WorldLoop {
 public:
     WorldLoop(const Generator& generator, std::span<const BlockVisual> visuals, JobSystem& jobs,
@@ -111,12 +117,27 @@ private:
     struct MeshRecord {
         enum class State : std::uint8_t { none, queued, meshing, sent };
         State state = State::none;
-        bool dirty = false; // changed while meshing: meshed again when it reports
+        bool urgent = false; // an edit's remesh
+        bool dirty = false;  // changed while meshing: meshed again when it reports
         std::uint32_t load_id = 0;
         std::uint32_t generation = 0; // the last mesh job's: from one counter, never reused
         std::uint32_t forwarded = 0;  // the last generation sent, 0 for none
+        std::uint32_t batch = 0;      // the pending edit batch it is in, 0 for none
         JobHandle job;
         JobRecord* pins = nullptr;
+    };
+
+    // An edit's remeshes, sent together once every member has reported.
+    struct Batch {
+        std::uint32_t id = 0;
+        struct Member {
+            std::uint32_t record = 0;
+            std::uint32_t load_id = 0;
+            std::uint32_t wanted = 0; // the first generation started after the edit
+            MeshUpdate mesh;          // its newest mesh, once one arrived
+            bool done = false;
+        };
+        std::vector<Member> members;
     };
 
     // A mesh job's result, back on the world thread.
@@ -141,12 +162,14 @@ private:
     };
 
     void handle(ToWorld& message);
+    void edit(BlockPos block, BlockState state);
     void follow_events();
     MeshRecord& mesh_record(std::uint32_t index);
-    void queue_mesh(std::uint32_t index);
+    void queue_mesh(std::uint32_t index, bool urgent);
     void drop_mesh(std::uint32_t index, ChunkPos pos);
     void integrate_mesh(MeshResult& result);
     void forward(std::uint32_t index, MeshUpdate&& update);
+    void send_ready_batches();
     void feed();
     bool start_mesh(std::uint32_t index);
 
@@ -160,7 +183,10 @@ private:
     MeshContext context_;
 
     std::vector<MeshRecord> meshes_; // by the streamer's record index
+    std::vector<std::uint32_t> waiting_urgent_;
     std::vector<std::uint32_t> waiting_meshes_;
+    std::vector<Batch> batches_;
+    std::uint32_t next_batch_ = 1;
     std::uint32_t next_generation_ = 1;
     std::vector<ChunkEvent> events_;
     WakeEvent main_wake_; // the main thread polls each frame and never waits on it
