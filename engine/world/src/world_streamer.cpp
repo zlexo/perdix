@@ -589,12 +589,16 @@ void WorldStreamer::begin_regeneration() {
         if (column_map_.find(column_key(column.pos)) != index) {
             continue;
         }
+        // One in line already, or whose job runs, stays so: a version
+        // change at every pass, as a dragged slider makes, queues it once.
+        const bool settled = column.known && column.current;
         column.current = false;
-        if (column.job && jobs_->cancel(column.job)) {
+        const bool canceled = column.job && jobs_->cancel(column.job);
+        if (canceled) {
             --in_flight_;
             column.job = {};
         }
-        if (!column.job) {
+        if (settled || canceled) {
             surfaces_backlog_.push({.key = column_score(column.pos.x, column.pos.z, viewer_.chunk),
                                     .index = index,
                                     .load_id = column.load_id});
@@ -611,7 +615,8 @@ void WorldStreamer::restart(std::uint32_t index) {
     ChunkRecord& record = chunks_[index];
     // A queued job of the old version never runs; a running one's result
     // is dropped when it comes, and the chunk asks again then.
-    if (record.job && jobs_->cancel(record.job)) {
+    const bool canceled = record.job && jobs_->cancel(record.job);
+    if (canceled) {
         --in_flight_;
         record.job = {};
         if (record.job_record != nullptr) {
@@ -657,12 +662,13 @@ void WorldStreamer::restart(std::uint32_t index) {
         if (record.edited) {
             break;
         }
-        // Its blocks stay, and its mesh, until new ones are made.
-        set_regeneration(index, Regeneration::replan);
-        if (!record.job) {
+        // Its blocks stay, and its mesh, until new ones are made. One
+        // waiting for a plan already is in line already.
+        if (!record.job && (record.regeneration != Regeneration::replan || canceled)) {
             replans_backlog_.push(
                 {.key = score(record.pos), .index = index, .load_id = record.load_id});
         }
+        set_regeneration(index, Regeneration::replan);
         break;
     }
 }
@@ -1021,15 +1027,6 @@ bool WorldStreamer::integrate() {
         pending_.clear();
         pending_at_ = 0;
     }
-    // A new surface completes its own column's band, or a side's.
-    for (const ColumnPos pos : dirty_) {
-        refresh(pos);
-        refresh({.x = pos.x + 1, .z = pos.z});
-        refresh({.x = pos.x - 1, .z = pos.z});
-        refresh({.x = pos.x, .z = pos.z + 1});
-        refresh({.x = pos.x, .z = pos.z - 1});
-    }
-    dirty_.clear();
     return pending_at_ < pending_.size();
 }
 
@@ -1049,8 +1046,15 @@ void WorldStreamer::integrate_surface(StreamResult& result) {
     column.surface = result.surface;
     column.known = true;
     column.current = true;
-    dirty_.push_back(column.pos);
     surfaces_arrived_ = true;
+    // It completes its own column's band, or a side's: the records that
+    // brings are made now, within the step, as they are most of its cost.
+    const ColumnPos pos = column.pos;
+    refresh(pos);
+    refresh({.x = pos.x + 1, .z = pos.z});
+    refresh({.x = pos.x - 1, .z = pos.z});
+    refresh({.x = pos.x, .z = pos.z + 1});
+    refresh({.x = pos.x, .z = pos.z - 1});
 }
 
 void WorldStreamer::integrate_plan(StreamResult& result) {
@@ -1263,6 +1267,9 @@ StreamingStats WorldStreamer::stats() const noexcept {
         }
     }
     stats.jobs_in_flight = in_flight_;
+    stats.waiting = surfaces_backlog_.size() + plans_backlog_.size() + builds_backlog_.size() +
+                    replans_backlog_.size() + rebuilds_backlog_.size() + parked_.size() +
+                    parked_replans_.size();
     stats.regenerating = regenerating_;
     stats.block_versions = blocks_.live();
     stats.plan_versions = plans_.live();
