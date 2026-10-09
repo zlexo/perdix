@@ -4,7 +4,10 @@
 #include <vx/mesh/mesh_chunk.hpp>
 #include <vx/mesh/quad.hpp>
 #include <vx/render/chunk_arena.hpp>
+#include <vx/render/upload.hpp>
 #include <vx/world/coordinates.hpp>
+
+#include <volk.h>
 
 #include <array>
 #include <cassert>
@@ -30,6 +33,11 @@ std::uint32_t total_quads(const ChunkMesh& mesh) noexcept {
 }
 
 } // namespace
+
+Result<void> ArenaWriter::write(std::uint32_t first, std::span<const Quad> quads) {
+    return upload(*context_, commands_, arena_->buffer(),
+                  VkDeviceSize{first} * ChunkArena::quad_bytes, std::as_bytes(quads));
+}
 
 void ChunkUploads::begin_frame(std::uint32_t slot, Clock::time_point now) noexcept {
     space_->reclaim(slot);
