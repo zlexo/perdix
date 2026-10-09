@@ -65,7 +65,8 @@ add_library(vx_core STATIC
     src/file.cpp
     src/job_system.cpp
     src/thread.cpp
-    src/version.cpp)
+    src/version.cpp
+    src/wake_event.cpp)
 add_library(vx::core ALIAS vx_core)
 
 # Public headers live under include/vx/core and are only visible to targets
