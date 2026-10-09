@@ -1,6 +1,8 @@
-// A chunk's quads (RFC 0003), drawn with one shared index buffer: each quad
-// is four vertices, 0, 1, 2, 2, 3, 0, so a vertex finds its quad at
-// vertex_index >> 2 and its place in it at vertex_index & 3. The vertex
+// Chunks' quads (RFC 0003) in the arena (RFC 0007), drawn with one shared
+// index buffer: each quad is four vertices, 0, 1, 2, 2, 3, 0, so a vertex
+// finds its quad at vertex_index >> 2 and its place in it at vertex_index &
+// 3. A command's vertexOffset makes vertex_index count from the arena's
+// first quad, and its firstInstance picks the chunk's origin. The vertex
 // shader rebuilds its corner from the quad's 8 bytes, as vx/mesh/quad.hpp
 // lays them out; nothing else is stored per vertex.
 
@@ -9,14 +11,15 @@ struct Quad {
     uint material; // texture layer: 16 | occlusion, 2 bits a corner, corner 0 lowest: 8
 };
 
-// The renderer's ChunkPush: 112 of the 128 bytes Vulkan 1.3 guarantees.
+// The renderer's ChunkPush, padded there to 112 of the 128 bytes Vulkan 1.3
+// guarantees.
 struct ChunkPush {
     float4x4 view_projection; // offset 0: rotation and projection only
-    Quad* quads;              // offset 64: the chunk's quads, opaque then cutout
-    float3 origin;            // offset 80: the chunk's lowest corner, from the camera's block
+    Quad* quads;              // offset 64: the arena's quads
+    float4* origins;          // offset 72: each drawn chunk's lowest corner, from the camera's block
+    float3 camera_fraction;   // offset 80: the camera's place within its block
     float occlusion_strength; // offset 92: 0 leaves corners lit, 1 darkens them fully
-    float3 camera_fraction;   // offset 96: the camera's place within its block
-    uint filter;              // offset 108: 0 sharpened, 1 sharpened without anisotropy, 2 nearest
+    uint filter;              // offset 96: 0 sharpened, 1 sharpened without anisotropy, 2 nearest
 };
 
 [[vk::push_constant]] ConstantBuffer<ChunkPush> push;
@@ -52,7 +55,7 @@ uint field(uint word, uint first, uint bits) {
 }
 
 [shader("vertex")]
-Varyings vertex_main(uint vertex_index : SV_VulkanVertexID) {
+Varyings vertex_main(uint vertex_index : SV_VulkanVertexID, uint instance : SV_VulkanInstanceID) {
     const Quad quad = push.quads[vertex_index >> 2];
     const uint face = field(quad.geometry, 25, 3);
     const uint4 occlusion = uint4(field(quad.material, 16, 2), field(quad.material, 18, 2),
@@ -98,7 +101,7 @@ Varyings vertex_main(uint vertex_index : SV_VulkanVertexID) {
 
     Varyings out;
     out.position = mul(push.view_projection,
-                       float4(push.origin + position - push.camera_fraction, 1.0));
+                       float4(push.origins[instance].xyz + position - push.camera_fraction, 1.0));
     out.uv = float3(uv, float(field(quad.material, 0, 16)));
     out.light = shade[face] * lerp(1.0, occluded, push.occlusion_strength);
     return out;
