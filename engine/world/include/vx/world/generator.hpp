@@ -43,6 +43,10 @@ public:
     [[nodiscard]] virtual std::optional<BlockState> out_of_reach(ChunkPos pos) const noexcept = 0;
     // A job.
     [[nodiscard]] virtual ChunkPlan plan(ChunkPos pos, GenScratch& scratch) const = 0;
+    // Bumped whenever what the generator makes changes, as when RFC 0008's
+    // parameters do: streaming then regenerates every unedited chunk,
+    // nearest first. The world thread's.
+    [[nodiscard]] virtual std::uint32_t version() const noexcept { return 0; }
     // A job: the blocks of the chunk at the middle of `plans`, the 27 plans
     // around and including it, x fastest, then z, then y, so plans[13] is
     // its own; null where a neighbor is out of reach.
