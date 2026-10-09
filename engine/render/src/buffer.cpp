@@ -3,11 +3,34 @@
 #include "debug_name.hpp"
 #include "vk_result.hpp"
 
+#include <algorithm>
+#include <span>
 #include <string>
 #include <utility>
 
 namespace vx::render {
 namespace {
+
+// Unified memory, where a memory type is both device-local and host-visible.
+// There VMA scores such a type, also cached, the same as a device-local type
+// the CPU cannot write, and takes whichever comes first: on MoltenVK, the one
+// the CPU cannot write. Upload targets then prefer host-visible, coherent
+// memory too, which settles the tie and keeps VMA's fallback to staging
+// when that memory is full.
+bool unified_memory(VmaAllocator allocator) {
+    const VkPhysicalDeviceProperties* device = nullptr;
+    vmaGetPhysicalDeviceProperties(allocator, &device);
+    if (device->deviceType != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+        return false;
+    }
+    const VkPhysicalDeviceMemoryProperties* memory = nullptr;
+    vmaGetMemoryProperties(allocator, &memory);
+    constexpr VkMemoryPropertyFlags both =
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+    return std::ranges::any_of(
+        std::span(memory->memoryTypes).first(memory->memoryTypeCount),
+        [](const VkMemoryType& type) { return (type.propertyFlags & both) == both; });
+}
 
 VmaAllocationCreateInfo allocation_info(BufferMemory memory) {
     VmaAllocationCreateInfo info{};
@@ -59,7 +82,11 @@ Result<Buffer> Buffer::create(const Device& device, VkDeviceSize size, VkBufferU
         .queueFamilyIndexCount = 0,
         .pQueueFamilyIndices = nullptr,
     };
-    const VmaAllocationCreateInfo memory_info = allocation_info(memory);
+    VmaAllocationCreateInfo memory_info = allocation_info(memory);
+    if (memory == BufferMemory::upload_target && unified_memory(device.allocator())) {
+        memory_info.preferredFlags |=
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    }
 
     Buffer buffer;
     buffer.allocator_ = device.allocator();
