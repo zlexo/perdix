@@ -20,6 +20,10 @@
 #                   and tests, the UndefinedBehaviorSanitizer half of CI's
 #                   sanitizer job
 #
+# Not here: AddressSanitizer and ThreadSanitizer (CI's sanitizer and TSan
+# jobs). On macOS 26 their builds hang or crash before main, with Apple
+# Clang 17 and Homebrew Clang 20 alike.
+#
 # clang-format and clang-tidy must be the versions ci.yml pins. Put them on
 # PATH, or name them in CLANG_FORMAT and CLANG_TIDY, for example after
 #   python3 -m venv ~/.ci-tools

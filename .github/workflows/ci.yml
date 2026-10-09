@@ -59,6 +59,28 @@ jobs:
       - name: Test
         run: ctest --preset linux-asan
 
+  # RFC 0005: ThreadSanitizer, in a job of its own, since it cannot share a
+  # build with AddressSanitizer: every test but the Vulkan ones, and a planted
+  # race that passes only when ThreadSanitizer reports it. This is the only
+  # race check: ThreadSanitizer cannot run on macOS 26.
+  thread-sanitizer:
+    name: Linux (TSan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Ninja and SDL's dependencies
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build $SDL_LINUX_PACKAGES
+      # As for AddressSanitizer: the runtime expects fewer random bits in
+      # memory mappings than recent Ubuntu kernels use.
+      - name: Lower ASLR entropy for ThreadSanitizer
+        run: sudo sysctl vm.mmap_rnd_bits=28
+      - name: Configure
+        run: cmake --preset linux-tsan
+      - name: Build
+        run: cmake --build --preset linux-tsan
+      - name: Test
+        run: ctest --preset linux-tsan
+
   # RFC 0001's headless job: every test, the Vulkan ones included, on Mesa's
   # lavapipe, a software Vulkan driver, with synchronization validation on. Any
   # validation message fails the test that caused it. Ubuntu 26.04 for its
