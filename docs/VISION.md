@@ -26,4 +26,4 @@ Performance is measured on one fixed machine: an Apple M3 laptop with an 8-core 
 
 ## How we will know
 
-Each RFC sets measurable targets for its system: frame time at a given render distance, memory per chunk, generation and meshing throughput. The headline target (a render distance held at a frame rate on the reference machine) is set once the first chunks render and there is a baseline to set it against.
+Each RFC sets measurable targets for its system: frame time at a given render distance, memory per chunk, generation and meshing throughput. The headline target, set on 2026-10-09 against the first benchmark flythrough (1,024 blocks at about 42 frames a second): **16,384 blocks of view distance at 60 frames a second on the reference machine**, as [RFC 0011](design/0011-horizon.md) defines and measures it.
