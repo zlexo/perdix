@@ -27,6 +27,7 @@ add_executable(vx_core_tests
     core/diagnostic_test.cpp
     core/file_test.cpp
     core/job_system_test.cpp
+    core/job_workers_test.cpp
     core/result_test.cpp
     core/thread_test.cpp
     core/vec3d_test.cpp
@@ -39,7 +40,10 @@ target_compile_definitions(vx_core_tests PRIVATE
     VX_ARCHIVES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/core/archives"
     VX_FUZZ_INPUTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fuzz/inputs/archive")
 vx_target_warnings(vx_core_tests)
-doctest_discover_tests(vx_core_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
+# The job workers' tests fail by hanging, as a lost wake-up never returns:
+# five minutes, a thousand times the slowest core test here, fails the test
+# instead of holding a CI job for GitHub's six hours.
+doctest_discover_tests(vx_core_tests PROPERTIES ${VX_DOCTEST_PROPERTIES} TIMEOUT 300)
 
 add_executable(vx_world_tests
     main.cpp

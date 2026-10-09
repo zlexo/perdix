@@ -62,8 +62,10 @@ public:
 };
 
 struct JobSystemDesc {
-    // Threads that run jobs. 0 is the deterministic mode: nothing runs until
-    // the owner calls run_until_idle, which runs the jobs on its own thread.
+    // Threads that run jobs: RFC 0005's default is the core count less two,
+    // 6 on the reference machine. 0 is the deterministic mode: nothing runs
+    // until the owner calls run_until_idle, which runs the jobs on its own
+    // thread.
     std::uint32_t workers = 0;
     // Jobs queued or running at once.
     std::uint32_t slots = 1'024;
@@ -72,12 +74,15 @@ struct JobSystemDesc {
 };
 
 // RFC 0005's scheduler: a table of slots and a queue for each level, under
-// one lock, each queue ordered by key, then by age. Submitting never
-// allocates and never waits for a job.
+// one lock, each queue ordered by key, then by age, and workers that sleep
+// on a condition variable until a job is queued, never spinning. Submitting
+// never waits for a job and never allocates, but for one case on macOS: an
+// urgent job that wakes a worker asleep at utility raises it, and libpthread
+// allocates the raise.
 class JobSystem {
 public:
     explicit JobSystem(const JobSystemDesc& desc);
-    // Asserts that nothing is queued or running.
+    // Asserts that nothing is queued or running, then joins the workers.
     ~JobSystem();
     JobSystem(const JobSystem&) = delete;
     JobSystem& operator=(const JobSystem&) = delete;
@@ -98,6 +103,17 @@ public:
     // worker 0, most urgent first, until none is left, including any the
     // jobs themselves submit.
     void run_until_idle();
+
+    // Waits until no job is queued or running: for tests, and for shutdown
+    // once nothing more is submitted. In the deterministic mode, runs them.
+    void wait_until_idle();
+
+    // While streaming catches up with chunks missing near the player, workers
+    // run at user-initiated QoS instead of utility (RFC 0005), changing class
+    // between jobs.
+    void set_catching_up(bool catching_up) noexcept;
+
+    [[nodiscard]] std::uint32_t worker_count() const noexcept;
 
     // How many jobs wait at `level`.
     [[nodiscard]] std::uint32_t queued(JobLevel level) const noexcept;
