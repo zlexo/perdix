@@ -17,6 +17,7 @@ target_compile_features(vx_nanobench PUBLIC cxx_std_20)
 # every build's with --quick, which checks they still run and times nothing.
 add_executable(vx_bench
     main.cpp
+    core/job_system_bench.cpp
     mesh/mesh_bench.cpp
     mesh/padded_chunk_bench.cpp
     render/block_pack_bench.cpp
