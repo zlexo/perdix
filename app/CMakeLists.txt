@@ -57,6 +57,13 @@ target_link_libraries(vx_app_world PUBLIC vx::core vx::world vx::mesh vx_app_pla
 vx_target_warnings(vx_app_world)
 vx_target_engine_options(vx_app_world)
 
+# The world thread's meshes handed to RFC 0007's uploads, on the main thread.
+add_library(vx_app_stream STATIC src/streamed_meshes.cpp)
+target_include_directories(vx_app_stream PUBLIC src)
+target_link_libraries(vx_app_stream PUBLIC vx_app_world vx::render)
+vx_target_warnings(vx_app_stream)
+vx_target_engine_options(vx_app_stream)
+
 # The view the player sees: the camera with RFC 0010's view bobbing.
 add_library(vx_app_view STATIC src/view.cpp)
 target_include_directories(vx_app_view PUBLIC src)
