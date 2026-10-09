@@ -64,6 +64,7 @@ add_library(vx_core STATIC
     src/diagnostic.cpp
     src/file.cpp
     src/job_system.cpp
+    src/mesh_result_pool.cpp
     src/thread.cpp
     src/version.cpp
     src/wake_event.cpp)
