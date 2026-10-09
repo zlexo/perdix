@@ -66,7 +66,7 @@ void WorldLoop::MeshJob::operator()(JobContext& job) const noexcept {
         }
     }
     assemble_padded(neighborhood, scratch.padded);
-    const ChunkMesh mesh = mesh_chunk(scratch.padded, context->visuals, scratch.mesh);
+    const ChunkMesh mesh = mesh_chunk(scratch.padded, context->visuals, scratch.mesh, options);
     MeshResult result;
     result.pins = pins;
     result.update.pos = pos;
@@ -233,9 +233,25 @@ void WorldLoop::handle(ToWorld& message) {
         // difference would wrap and hold streaming back for good.
         uploaded_ = std::min(std::max(uploaded_, message.uploaded), sent_);
         break;
+    case ToWorld::Kind::meshing:
+        remesh(message.meshing);
+        break;
     case ToWorld::Kind::stop:
         stopping_ = true;
         break;
+    }
+}
+
+void WorldLoop::remesh(MeshOptions options) {
+    if (options.merge == meshing_.merge) {
+        return;
+    }
+    meshing_ = options;
+    // An empty mesh is empty with any options.
+    for (std::uint32_t index = 0; index < meshes_.size(); ++index) {
+        if (meshes_[index].state != MeshRecord::State::none && !known_empty(index)) {
+            queue_mesh(index, false);
+        }
     }
 }
 
@@ -557,9 +573,11 @@ bool WorldLoop::start_mesh(std::uint32_t index, std::uint32_t key) {
     }
     const JobPriority priority{.level = record.urgent ? JobLevel::urgent : JobLevel::normal,
                                .key = key};
-    record.job = jobs_->submit(
-        priority,
-        MeshJob{.context = &context_, .pins = pins, .pos = pos, .generation = generation});
+    record.job = jobs_->submit(priority, MeshJob{.context = &context_,
+                                                 .pins = pins,
+                                                 .pos = pos,
+                                                 .generation = generation,
+                                                 .options = meshing_});
     if (!record.job) {
         streamer_.release(*pins);
         return false;

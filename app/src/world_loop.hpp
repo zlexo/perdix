@@ -58,12 +58,14 @@ struct ToWorld {
         camera,   // where the camera is and looks
         edit,     // a block to set; M5's actions will bring the view ray
         uploaded, // how far the main thread is with the meshes sent alone
+        meshing,  // RFC 0003's merge toggle: every chunk shown meshed again
         stop,
     };
     Kind kind = Kind::camera;
     Viewer camera;
     BlockPos block;
     BlockState state = BlockState::air;
+    MeshOptions meshing{};
     // Of the meshes sent alone (ToMain::Kind::mesh, never a batch's), how
     // many the main thread is done with so far: uploaded, or dropped without
     // an upload (empty, older than the one it holds, or its chunk's unload
@@ -190,10 +192,14 @@ private:
         JobRecord* pins; // read only, until the world thread releases it
         ChunkPos pos;
         std::uint32_t generation;
+        MeshOptions options; // the job's own: the loop's may change while it runs
         void operator()(JobContext& job) const noexcept;
     };
 
     void handle(ToWorld& message);
+    // New mesh options: every chunk that has a mesh, or waits for one,
+    // meshed again with them.
+    void remesh(MeshOptions options);
     void edit(BlockPos block, BlockState state);
     void follow_events();
     MeshRecord& mesh_record(std::uint32_t index);
@@ -235,6 +241,7 @@ private:
     WakeEvent main_wake_; // the main thread polls each frame and never waits on it
     Inbox<ToMain> to_main_;
     std::optional<ChunkPos> camera_;
+    MeshOptions meshing_;
     std::chrono::steady_clock::time_point next_tick_;
     bool ticking_ = false;
     std::uint64_t ticks_ = 0;

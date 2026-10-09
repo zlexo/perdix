@@ -201,7 +201,7 @@ private:
 class Mesher {
 public:
     std::uint64_t hash(const WorldLoop& loop, ChunkPos pos,
-                       std::span<const vx::BlockVisual> visuals) {
+                       std::span<const vx::BlockVisual> visuals, vx::MeshOptions options = {}) {
         std::array<vx::ChunkStorage, 27> uniform;
         const auto chunk_at = [&](int dx, int dy, int dz) -> const vx::ChunkStorage* {
             const vx::ChunkRecord* record =
@@ -226,7 +226,7 @@ public:
             }
         }
         vx::assemble_padded(neighborhood, *padded_);
-        const vx::ChunkMesh mesh = vx::mesh_chunk(*padded_, visuals, scratch_);
+        const vx::ChunkMesh mesh = vx::mesh_chunk(*padded_, visuals, scratch_, options);
         std::array<std::uint32_t, 12> counts{};
         for (const vx::Pass pass : {vx::Pass::opaque, vx::Pass::cutout}) {
             for (std::size_t face = 0; face < 6; ++face) {
@@ -877,4 +877,44 @@ TEST_CASE("held back by the main thread, the meshes known empty at the front sti
     CHECK(main.meshes == loop.meshes_skipped());
     CHECK(loop.meshes_in_flight() == 0);
     CHECK(main.held.size() < shown(loop).size());
+}
+
+TEST_CASE("switching merging off meshes every chunk shown again, unmerged") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small});
+    move_camera(loop, above_hills);
+    loop.settle();
+    std::vector<ToMain> messages;
+    loop.take(messages);
+    MainThread main;
+    main.receive(messages);
+    const std::uint64_t skipped = loop.meshes_skipped();
+    REQUIRE(skipped > 0);
+    ToWorld off;
+    off.kind = ToWorld::Kind::meshing;
+    off.meshing = {.merge = false};
+    loop.to_world().push(std::move(off));
+    loop.settle();
+    // An empty mesh is empty with any options: none went again.
+    CHECK(loop.meshes_skipped() == skipped);
+    loop.take(messages);
+    main.receive(messages);
+    // Each chunk shown holds RFC 0003's unmerged mesh now, and merging made
+    // a difference somewhere.
+    Mesher mesher;
+    std::size_t changed = 0;
+    for (const Chunk& chunk : shown(loop)) {
+        const ChunkPos pos{
+            .x = std::get<0>(chunk), .y = std::get<1>(chunk), .z = std::get<2>(chunk)};
+        REQUIRE(main.held.contains(chunk));
+        const std::uint64_t unmerged = mesher.hash(loop, pos, table, {.merge = false});
+        CHECK(main.held[chunk].bytes == unmerged);
+        if (unmerged != mesher.hash(loop, pos, table)) {
+            ++changed;
+        }
+    }
+    CHECK(changed > 0);
 }
