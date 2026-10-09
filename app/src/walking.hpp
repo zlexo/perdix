@@ -81,6 +81,10 @@ public:
     void advance(std::chrono::nanoseconds elapsed, const TickInput& input, const BlockBoxes& world);
     // One tick, with the keys held now: the world thread's, on its clock.
     void tick(const TickInput& input, const BlockBoxes& world);
+    // A tick the player waits through instead, keys and all, while its move
+    // could touch a chunk not loaded yet (RFC 0010): it stays where it is,
+    // keeping its speed, and the frame shows it still.
+    void hold() noexcept;
 
     // The last two ticks, for the camera.
     [[nodiscard]] const WalkingFrame& frame() const noexcept { return frame_; }

@@ -208,6 +208,35 @@ TEST_CASE("placing the player stops it where it is put, and the camera with it")
     CHECK(walking.eye().z == doctest::Approx(10.5));
 }
 
+TEST_CASE("a tick held leaves the player where it is, and the camera still there") {
+    const vx::ChunkStorage chunk = floor_chunk();
+    const vx::ChunkBoxes blocks(chunk, {});
+    vx::app::Walking walking(on_the_floor, 0.0);
+    // Sprinting off: moving, with the field of view and the bob on their way.
+    for (int tick = 0; tick < 5; ++tick) {
+        walking.tick(sprint, blocks);
+    }
+    const vx::app::WalkingFrame moving = walking.frame();
+    REQUIRE(moving.previous != moving.position);
+    REQUIRE(moving.previous_fov != moving.fov);
+    walking.hold();
+    const vx::app::WalkingFrame& held = walking.frame();
+    CHECK(held.position == moving.position);
+    CHECK(held.ticks == moving.ticks);
+    // Drawn anywhere between the ticks, the camera is where the last one
+    // left it.
+    CHECK(held.previous == held.position);
+    CHECK(held.eye_at(0.0) == held.eye_at(1.0));
+    CHECK(held.fov_factor_at(0.0) == held.fov_factor_at(1.0));
+    const vx::app::Bob first = held.bob_at(0.0, true);
+    const vx::app::Bob last = held.bob_at(1.0, true);
+    CHECK(first.shift_x == last.shift_x);
+    CHECK(first.shift_y == last.shift_y);
+    CHECK(first.turn_z == last.turn_z);
+    CHECK(first.turn_x == last.turn_x);
+    CHECK(held.speed() == 0.0);
+}
+
 TEST_CASE("placing the player drops a sprint's wider field of view") {
     const vx::ChunkStorage chunk = floor_chunk();
     const vx::ChunkBoxes blocks(chunk, {});

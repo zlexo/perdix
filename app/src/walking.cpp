@@ -124,6 +124,14 @@ void Walking::tick(const TickInput& input, const BlockBoxes& world) {
     report();
 }
 
+void Walking::hold() noexcept {
+    frame_.previous = frame_.position;
+    frame_.previous_eye = frame_.eye;
+    frame_.previous_fov = frame_.fov;
+    frame_.previous_bob = frame_.bob;
+    frame_.previous_walked = frame_.walked;
+}
+
 double Walking::between() const noexcept {
     return std::chrono::duration<double>(since_tick_) / std::chrono::duration<double>(tick_length);
 }

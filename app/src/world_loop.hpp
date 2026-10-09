@@ -1,18 +1,24 @@
 #pragma once
 
+#include "walking.hpp"
+
 #include <vx/core/inbox.hpp>
 #include <vx/core/job_system.hpp>
 #include <vx/core/mesh_result_pool.hpp>
+#include <vx/core/vec3d.hpp>
 #include <vx/core/wake_event.hpp>
 #include <vx/mesh/mesh_chunk.hpp>
 #include <vx/mesh/padded_chunk.hpp>
 #include <vx/world/backlog.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
+#include <vx/world/collision.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/generator.hpp>
 #include <vx/world/job_record.hpp>
+#include <vx/world/movement.hpp>
 #include <vx/world/region.hpp>
+#include <vx/world/streamed_boxes.hpp>
 #include <vx/world/world_streamer.hpp>
 
 #include <array>
@@ -45,11 +51,19 @@ struct ToMain {
         mesh,   // a mesh, uploaded within the frame's budget
         batch,  // an edit's remeshes, uploaded whole in one frame
         unload, // the chunk's mesh goes
+        player, // the player after a tick, or after landing
+        landed, // whether the noclip camera's landing worked
     };
     Kind kind = Kind::mesh;
     ChunkPos pos; // the unloaded chunk
     MeshUpdate mesh;
     std::vector<MeshUpdate> batch;
+    WalkingFrame player{};
+    // When the tick was due: the camera draws between the frame's two ticks
+    // by the time since. Its {} lets designated initializers leave it out
+    // (Linux Clang's -Wmissing-designated-field-initializers).
+    std::chrono::steady_clock::time_point tick_at{}; // NOLINT(readability-redundant-member-init)
+    bool landed = false;
 };
 
 // What the main thread tells the world thread.
@@ -58,6 +72,8 @@ struct ToWorld {
         camera,   // where the camera is and looks
         edit,     // a block to set; M5's actions will bring the view ray
         uploaded, // how far the main thread is with the meshes sent alone
+        input,    // the keys held and the yaw, for the player's next ticks
+        land,     // the noclip camera lands the player at `feet`
         meshing,  // RFC 0003's merge toggle: every chunk shown meshed again
         stop,
     };
@@ -65,6 +81,8 @@ struct ToWorld {
     Viewer camera;
     BlockPos block;
     BlockState state = BlockState::air;
+    TickInput input{};
+    Vec3d feet{};
     MeshOptions meshing{};
     // Of the meshes sent alone (ToMain::Kind::mesh, never a batch's), how
     // many the main thread is done with so far: uploaded, or dropped without
@@ -83,6 +101,18 @@ struct WorldLoopSettings {
     std::uint32_t unuploaded_limit = 512;
     // What the streamer's steps are measured on; null for the steady clock.
     const JobClock* clock = nullptr;
+    // The player (RFC 0010), on the loop's ticks: where it starts, and the
+    // world's lowest block, 64 below which a fall returns it there. None
+    // without one, as most tests run.
+    struct PlayerStart {
+        Vec3d spawn;
+        double lowest = 0.0;
+    };
+    std::optional<PlayerStart> player = std::nullopt;
+    // The block registry's physics (RFC 0010), indexed by state, which the
+    // player collides with. Its {} lets designated initializers leave it out
+    // (Linux Clang's -Wmissing-designated-field-initializers).
+    std::span<const BlockPhysics> physics{}; // NOLINT(readability-redundant-member-init)
 };
 
 // A worker's memory for meshing (RFC 0005): RFC 0003's padded chunk and the
@@ -143,6 +173,10 @@ public:
     // RFC 0006's catching up: a chunk of the near cylinder, all of it drawn,
     // has no mesh sent yet. Workers then run at user-initiated (RFC 0005).
     [[nodiscard]] bool catching_up() const noexcept { return catching_up_; }
+    // The player, when the loop has one.
+    [[nodiscard]] const Walking* walking() const noexcept {
+        return walking_.has_value() ? &*walking_ : nullptr;
+    }
 
     static constexpr std::chrono::milliseconds tick_length{50};
 
@@ -217,9 +251,14 @@ private:
     [[nodiscard]] bool known_empty(std::uint32_t index) const noexcept;
     // Sends a known empty mesh, as a job's result would go.
     void skip_mesh(std::uint32_t index);
-    // A tick in Tracy: a frame of its own set, and a zone.
-    void tick();
-    void run_tick();
+    // A tick in Tracy: a frame of its own set, and a zone. `due` is when it
+    // fell due on the loop's clock.
+    void tick(std::chrono::steady_clock::time_point due);
+    void run_tick(std::chrono::steady_clock::time_point due);
+    // Puts the player at `feet` if it stands free there, and tells the main
+    // thread whether it did.
+    void land(Vec3d feet);
+    void send_player(std::chrono::steady_clock::time_point at);
     [[nodiscard]] bool missing_near_camera();
 
     WakeEvent wake_; // before the inboxes that signal it
@@ -241,7 +280,11 @@ private:
     WakeEvent main_wake_; // the main thread polls each frame and never waits on it
     Inbox<ToMain> to_main_;
     std::optional<ChunkPos> camera_;
+    StreamedBoxes boxes_; // the player's world: the streamer's chunks
+    std::optional<Walking> walking_;
+    TickInput input_;
     MeshOptions meshing_;
+    std::chrono::steady_clock::time_point last_tick_;
     std::chrono::steady_clock::time_point next_tick_;
     bool ticking_ = false;
     std::uint64_t ticks_ = 0;
