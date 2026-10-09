@@ -115,6 +115,13 @@ public:
     // and gives back what it pinned. Nothing is fed or integrated after it.
     void cancel_queued() noexcept;
 
+    // Pins held on chunks and plans, and copies made because an edit wrote
+    // a chunk a job read: for Tracy's plots.
+    [[nodiscard]] std::uint64_t pins() const noexcept { return blocks_.pins() + plans_.pins(); }
+    [[nodiscard]] std::uint64_t copies() const noexcept { return blocks_.copies(); }
+    // Results the jobs sent that integrate has not taken yet.
+    [[nodiscard]] std::size_t results_waiting() const { return results_.size(); }
+
     [[nodiscard]] const ChunkRecord* find(ChunkPos pos) const noexcept;
     // Every record: for the mesh half, the overlay and tests.
     [[nodiscard]] const ChunkRecords& records() const noexcept { return chunks_; }

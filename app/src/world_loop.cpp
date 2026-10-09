@@ -13,6 +13,8 @@
 #include <vx/world/versions.hpp>
 #include <vx/world/world_streamer.hpp>
 
+#include <tracy/Tracy.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -27,6 +29,10 @@
 namespace vx::app {
 namespace {
 
+// Tracy's frames for the world thread's ticks: a set of its own, between
+// FrameMarkStart and FrameMarkEnd, since ticks are not frames.
+[[maybe_unused]] constexpr const char* tick_frame = "Tick";
+
 constexpr std::size_t around_index(int dx, int dy, int dz) noexcept {
     const int at = (dx + 1) + (3 * (dz + 1)) + (9 * (dy + 1));
     return static_cast<std::size_t>(at);
@@ -35,6 +41,7 @@ constexpr std::size_t around_index(int dx, int dy, int dz) noexcept {
 } // namespace
 
 void WorldLoop::MeshJob::operator()(JobContext& job) const noexcept {
+    job.describe(pos.x, pos.y, pos.z);
     MeshWorkerScratch& scratch = context->scratch[job.worker()];
     // A uniform chunk has no blocks to pin: it is made here, from its state,
     // with no allocation.
@@ -101,6 +108,14 @@ WorldLoop::~WorldLoop() {
 }
 
 bool WorldLoop::pass() {
+    // RFC 0005's plots, as each pass finds the loop: what waits in each inbox
+    // before the drains. A tick, right after a pass, would find them empty.
+    TracyPlot("Inbox: from main", static_cast<std::int64_t>(from_main_.size()));
+    TracyPlot("Inbox: meshes", static_cast<std::int64_t>(mesh_results_.size()));
+    TracyPlot("Inbox: chunks", static_cast<std::int64_t>(streamer_.results_waiting()));
+    TracyPlot("Pins", static_cast<std::int64_t>(streamer_.pins()));
+    TracyPlot("Copies on write", static_cast<std::int64_t>(streamer_.copies()));
+    TracyPlot("Meshes not uploaded", static_cast<std::int64_t>(unuploaded()));
     from_main_.drain([this](ToWorld&& message) { handle(message); });
     if (stopping_) {
         return false;
@@ -151,12 +166,24 @@ std::chrono::steady_clock::time_point WorldLoop::step(std::chrono::steady_clock:
 }
 
 void WorldLoop::tick() {
+    FrameMarkStart(tick_frame);
+    {
+        ZoneScopedN("Tick");
+        run_tick();
+    }
+    FrameMarkEnd(tick_frame);
+}
+
+void WorldLoop::run_tick() {
     ++ticks_;
     const bool catching_up = missing_near_camera();
     if (catching_up != catching_up_) {
         catching_up_ = catching_up;
         jobs_->set_catching_up(catching_up);
     }
+    // Background jobs wait a second before they move up: a tick's sample of
+    // their level is enough, and spares each pass a lock (RFC 0005's plots).
+    TracyPlot("Queued background", static_cast<std::int64_t>(jobs_->queued(JobLevel::background)));
 }
 
 bool WorldLoop::missing_near_camera() {
@@ -406,11 +433,14 @@ void WorldLoop::send_ready_batches() {
 void WorldLoop::feed() {
     // An edit's remeshes first, at the urgent level; then streaming meshes,
     // unless too many sent wait to be uploaded; then the streamer's jobs.
-    const auto room = [this](JobLevel level) {
+    // Each level's count is plotted where it is read (RFC 0005): how far the
+    // workers ran it down since the last pass, without another lock.
+    const auto room = [this](JobLevel level, [[maybe_unused]] const char* plot) {
         const std::uint32_t queued = jobs_->queued(level);
+        TracyPlot(plot, static_cast<std::int64_t>(queued));
         return queued >= settings_.queue_limit ? 0U : settings_.queue_limit - queued;
     };
-    std::size_t urgent_room = room(JobLevel::urgent);
+    std::size_t urgent_room = room(JobLevel::urgent, "Queued urgent");
     std::erase_if(waiting_urgent_, [&](std::uint32_t index) {
         const MeshRecord& record = mesh_record(index);
         if (record.state != MeshRecord::State::queued || !record.urgent) {
@@ -422,7 +452,7 @@ void WorldLoop::feed() {
         --urgent_room;
         return true;
     });
-    std::size_t normal_room = room(JobLevel::normal);
+    std::size_t normal_room = room(JobLevel::normal, "Queued normal");
     const bool held = unuploaded() >= settings_.unuploaded_limit;
     std::erase_if(waiting_meshes_, [&](std::uint32_t index) {
         const MeshRecord& record = mesh_record(index);

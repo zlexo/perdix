@@ -180,6 +180,7 @@ private:
     };
 
     struct MeshJob {
+        static constexpr const char* profile_name = "Mesh";
         const MeshContext* context;
         JobRecord* pins; // read only, until the world thread releases it
         ChunkPos pos;
@@ -198,7 +199,9 @@ private:
     void send_ready_batches();
     void feed();
     bool start_mesh(std::uint32_t index);
+    // A tick in Tracy: a frame of its own set, and a zone.
     void tick();
+    void run_tick();
     [[nodiscard]] bool missing_near_camera();
 
     WakeEvent wake_; // before the inboxes that signal it
