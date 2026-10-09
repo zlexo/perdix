@@ -45,6 +45,24 @@ constexpr std::size_t around_index(int dx, int dy, int dz) noexcept {
 
 } // namespace
 
+ChunkSight chunk_sight(const Viewer& viewer, ChunkPos pos, double near) noexcept {
+    // The chunk's box relative to the eye.
+    const BlockPos low = block_at(pos, {});
+    const Vec3d min{.x = static_cast<double>(low.x) - viewer.eye.x,
+                    .y = static_cast<double>(low.y) - viewer.eye.y,
+                    .z = static_cast<double>(low.z) - viewer.eye.z};
+    constexpr Vec3d side{.x = chunk_size, .y = chunk_size, .z = chunk_size};
+    const Vec3d max = min + side;
+    if (!viewer.view.may_contain(min, max)) {
+        return {};
+    }
+    // The box's point nearest the eye, at 0.
+    const Vec3d to{.x = std::clamp(0.0, min.x, max.x),
+                   .y = std::clamp(0.0, min.y, max.y),
+                   .z = std::clamp(0.0, min.z, max.z)};
+    return {.in_view = true, .near = (to.x * to.x) + (to.y * to.y) + (to.z * to.z) <= near * near};
+}
+
 void WorldLoop::MeshJob::operator()(JobContext& job) const noexcept {
     job.describe(pos.x, pos.y, pos.z);
     MeshWorkerScratch& scratch = context->scratch[job.worker()];
@@ -119,6 +137,8 @@ WorldLoop::~WorldLoop() {
 }
 
 bool WorldLoop::pass() {
+    const std::chrono::steady_clock::time_point start = time();
+    answering_ = std::chrono::nanoseconds{0};
     // RFC 0005's plots, as each pass finds the loop: what waits in each inbox
     // before the drains. A tick, right after a pass, would find them empty.
     TracyPlot("Inbox: from main", static_cast<std::int64_t>(from_main_.size()));
@@ -136,6 +156,9 @@ bool WorldLoop::pass() {
     mesh_results_.drain([this](MeshResult&& result) { integrate_mesh(result); });
     send_ready_batches();
     feed();
+    // RFC 0006's flythrough reports the longest pass with the longest step:
+    // a step is budgeted, and the rest of a pass is not.
+    longest_pass_ = std::max(longest_pass_, time() - start - answering_);
     return true;
 }
 
@@ -238,6 +261,7 @@ void WorldLoop::handle(ToWorld& message) {
     switch (message.kind) {
     case ToWorld::Kind::camera:
         camera_ = message.camera.chunk;
+        viewer_ = message.camera;
         if (streamer_.set_viewer(message.camera)) {
             rescore_meshes();
         }
@@ -260,6 +284,19 @@ void WorldLoop::handle(ToWorld& message) {
     case ToWorld::Kind::meshing:
         remesh(message.meshing);
         break;
+    case ToWorld::Kind::sample: {
+        // What the loop would do later in this pass, done first: the halves
+        // agree once the streamer's events are followed.
+        follow_events();
+        const std::chrono::steady_clock::time_point start = time();
+        ToMain answer;
+        answer.kind = ToMain::Kind::sample;
+        answer.sample = sample(message.sample_kind);
+        answer.sample.id = message.sample_id;
+        to_main_.push(std::move(answer));
+        answering_ += time() - start;
+        break;
+    }
     case ToWorld::Kind::stop:
         stopping_ = true;
         break;
@@ -443,6 +480,7 @@ void WorldLoop::drop_mesh(std::uint32_t index, ChunkPos pos) {
 void WorldLoop::integrate_mesh(MeshResult& result) {
     streamer_.release(*result.pins);
     --meshes_in_flight_;
+    ++meshes_made_;
     const std::optional<std::uint32_t> found = streamer_.records().find(result.update.pos);
     if (!found) {
         return; // freed: the buffer goes back to the pool
@@ -576,6 +614,90 @@ void WorldLoop::rescore_meshes() {
         }
         return streamer_.score(streamer_.records()[entry.index].pos);
     });
+}
+
+WorldSample WorldLoop::sample(SampleKind kind) {
+    const StreamingStats stats = streamer_.stats();
+    const bool idle = stats.jobs_in_flight == 0 && stats.waiting == 0 && meshes_in_flight_ == 0;
+    WorldSample out{.id = 0,
+                    .kind = kind,
+                    .at = time(),
+                    .generated = stats.generated,
+                    .uniform = stats.uniform,
+                    .meshed = meshes_made_,
+                    .skipped = meshes_skipped_};
+    const ChunkRecords& records = streamer_.records();
+    if (kind == SampleKind::completion) {
+        bool complete = idle;
+        for (std::uint32_t index = 0; complete && index < records.end_index(); ++index) {
+            complete = !missing(index);
+        }
+        if (!complete) {
+            return out;
+        }
+        out.kind = SampleKind::full;
+    }
+    out.longest_step = streamer_.take_longest_step();
+    out.longest_pass = std::exchange(longest_pass_, std::chrono::nanoseconds{0});
+    out.chunk_bytes = streamer_.chunk_bytes();
+    if (out.kind == SampleKind::checked) {
+        out.broken = broken_invariants(stats);
+    }
+    bool any_missing = false;
+    for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+        if (!missing(index)) {
+            continue;
+        }
+        any_missing = true;
+        if (!viewer_) {
+            continue;
+        }
+        const ChunkSight sight = chunk_sight(*viewer_, records[index].pos, near_holes_distance);
+        if (sight.in_view) {
+            ++out.holes;
+        }
+        if (sight.near) {
+            ++out.near_holes;
+        }
+    }
+    out.complete = idle && !any_missing;
+    return out;
+}
+
+bool WorldLoop::missing(std::uint32_t index) {
+    const ChunkRecords& records = streamer_.records();
+    if (!records.live(index)) {
+        return false;
+    }
+    const ChunkRecord& chunk = records[index];
+    return chunk.drawn && mesh_record(index).forwarded == 0 &&
+           !(counts_as_ready(chunk.state) && known_empty(index));
+}
+
+std::uint32_t WorldLoop::broken_invariants(const StreamingStats& stats) {
+    const ChunkRecords& records = streamer_.records();
+    // Each record's counts and state, against its neighbors.
+    std::uint32_t broken = records.broken();
+    // Each record counted once, in its state.
+    std::size_t counted = 0;
+    for (const std::size_t count : stats.chunks) {
+        counted += count;
+    }
+    if (counted != records.size()) {
+        ++broken;
+    }
+    // The mesh half holds a chunk exactly while the world half shows it:
+    // complete, so with its 26 neighbors ready, and in the drawn region.
+    broken += records.disagreements([this](std::uint32_t index) {
+        return mesh_record(index).state != MeshRecord::State::none;
+    });
+    // The region grown by the hysteresis, recomputed from the camera rather
+    // than taken from the streamer: no record stays outside it.
+    if (camera_) {
+        broken +=
+            records.outside(Region(*camera_, settings_.region).grown(settings_.region.hysteresis));
+    }
+    return broken;
 }
 
 bool WorldLoop::known_empty(std::uint32_t index) const noexcept {

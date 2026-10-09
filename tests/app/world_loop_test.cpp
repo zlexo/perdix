@@ -42,6 +42,7 @@ namespace {
 using vx::BlockState;
 using vx::ChunkPos;
 using vx::ChunkState;
+using vx::app::SampleKind;
 using vx::app::ToMain;
 using vx::app::ToWorld;
 using vx::app::WorldLoop;
@@ -159,6 +160,9 @@ public:
             case ToMain::Kind::landed:
                 landings.push_back(message.landed);
                 break;
+            case ToMain::Kind::sample:
+                samples.push_back(message.sample);
+                break;
             }
         }
     }
@@ -189,6 +193,7 @@ public:
     vx::app::WalkingFrame player;
     std::vector<std::chrono::steady_clock::time_point> tick_times;
     std::vector<bool> landings;
+    std::vector<vx::app::WorldSample> samples;
 
 private:
     void take(const vx::app::MeshUpdate& update) {
@@ -887,6 +892,25 @@ TEST_CASE("held back by the main thread, the meshes known empty at the front sti
     CHECK(main.meshes == loop.meshes_skipped());
     CHECK(loop.meshes_in_flight() == 0);
     CHECK(main.held.size() < shown(loop).size());
+    // Nothing runs and nothing waits for a job, yet the region is not
+    // complete: chunks drawn have no mesh sent, which both kinds of sample
+    // see.
+    REQUIRE(loop.streamer().stats().jobs_in_flight == 0);
+    for (const SampleKind kind : {SampleKind::completion, SampleKind::checked}) {
+        ToWorld request;
+        request.kind = ToWorld::Kind::sample;
+        request.sample_kind = kind;
+        loop.to_world().push(std::move(request));
+        loop.pass();
+        loop.take(messages);
+        main.receive(messages);
+        REQUIRE_FALSE(main.samples.empty());
+        CHECK_FALSE(main.samples.back().complete);
+        // A completion request is answered with the totals alone.
+        CHECK(main.samples.back().kind == kind);
+        CHECK(main.samples.back().broken == 0);
+    }
+    CHECK(main.samples.back().holes > 0);
 }
 
 namespace {
@@ -1104,4 +1128,105 @@ TEST_CASE("switching merging off meshes every chunk shown again, unmerged") {
         }
     }
     CHECK(changed > 0);
+}
+
+TEST_CASE("a sample counts the holes in view until the region is complete, and the totals so far, "
+          "and the checks find nothing broken, moving or not") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small});
+    MainThread main;
+    // Every full request checks RFC 0006's invariants too.
+    std::uint32_t asked = 0;
+    const auto ask = [&](SampleKind kind = SampleKind::checked) {
+        ToWorld request;
+        request.kind = ToWorld::Kind::sample;
+        request.sample_id = ++asked;
+        request.sample_kind = kind;
+        loop.to_world().push(std::move(request));
+        loop.pass();
+        std::vector<ToMain> messages;
+        loop.take(messages);
+        main.receive(messages);
+        REQUIRE_FALSE(main.samples.empty());
+        const vx::app::WorldSample answer = main.samples.back();
+        CHECK(answer.id == asked);
+        CHECK(answer.broken == 0);
+        return answer;
+    };
+    turn_to(loop, looking_along_x(above_hills, 1.0));
+    // Nothing known yet: streaming is not idle, so the region is not complete.
+    CHECK_FALSE(ask().complete);
+    CHECK_FALSE(ask(SampleKind::completion).complete);
+    // The surfaces in, a pass later: the drawn region is known, and none of
+    // its chunks that need a mesh has one. A request is answered as its pass
+    // starts.
+    jobs.run_until_idle();
+    loop.pass();
+    // Asked only whether it is complete: no, with the totals and nothing
+    // more, the longest step and pass left for the next full sample.
+    const vx::app::WorldSample light = ask(SampleKind::completion);
+    CHECK(light.kind == SampleKind::completion);
+    CHECK_FALSE(light.complete);
+    CHECK(light.generated == loop.streamer().stats().generated);
+    CHECK(light.holes == 0);
+    CHECK(light.chunk_bytes == 0);
+    CHECK(light.longest_step == std::chrono::nanoseconds(0));
+    CHECK(light.longest_pass == std::chrono::nanoseconds(0));
+    const vx::app::WorldSample loading = ask();
+    CHECK(loading.kind == SampleKind::checked);
+    CHECK_FALSE(loading.complete);
+    CHECK(loading.holes > 0);
+    CHECK(loading.near_holes > 0);
+    CHECK(loading.near_holes <= loading.holes);
+    // Settled: asked whether it is complete, the answer is a full sample,
+    // which a phase waiting for the region ends on.
+    loop.settle();
+    const vx::app::WorldSample settled = ask(SampleKind::completion);
+    CHECK(settled.kind == SampleKind::full);
+    CHECK(settled.complete);
+    CHECK(settled.chunk_bytes == loop.streamer().chunk_bytes());
+    // It took the longest step and pass of the whole load: those of the
+    // full sample after it are an idle pass's, a few clock ticks or none.
+    CHECK(settled.longest_step > std::chrono::nanoseconds(0));
+    CHECK(settled.longest_pass > std::chrono::nanoseconds(0));
+    // A full one: no hole, and the totals are the streamer's and the loop's.
+    const vx::app::WorldSample done = ask();
+    CHECK(done.complete);
+    CHECK(done.at > loading.at);
+    CHECK(done.holes == 0);
+    CHECK(done.near_holes == 0);
+    const vx::StreamingStats stats = loop.streamer().stats();
+    CHECK(done.generated == stats.generated);
+    CHECK(done.uniform == stats.uniform);
+    CHECK(done.skipped == loop.meshes_skipped());
+    CHECK(done.meshed + done.skipped >= shown(loop).size());
+    CHECK(done.chunk_bytes == loop.streamer().chunk_bytes());
+    // A chunk at a time, then three at once: the chunks left behind stop
+    // showing, some kept a while by the hysteresis, and others leave.
+    for (std::int32_t step = 1; step <= 8; ++step) {
+        turn_to(loop,
+                looking_along_x({.x = above_hills.x + step, .y = above_hills.y, .z = above_hills.z},
+                                1.0));
+        CHECK_FALSE(ask().complete);
+        loop.settle();
+        CHECK(ask().complete);
+    }
+    turn_to(loop, looking_along_x({.x = above_hills.x + 11, .y = above_hills.y, .z = above_hills.z},
+                                  1.0));
+    CHECK_FALSE(ask().complete);
+    loop.settle();
+    CHECK(ask().complete);
+    // Far away at once, then loading there: the old region goes with the
+    // move, and nothing breaks while the new one streams in.
+    turn_to(loop, looking_along_x(
+                      {.x = above_hills.x + 1'000, .y = above_hills.y, .z = above_hills.z}, 1.0));
+    CHECK_FALSE(ask().complete);
+    jobs.run_until_idle();
+    loop.pass();
+    CHECK_FALSE(ask().complete);
+    loop.settle();
+    CHECK(ask().complete);
 }

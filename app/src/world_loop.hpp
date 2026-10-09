@@ -44,6 +44,62 @@ struct MeshUpdate {
     MeshBuffer quads;
 };
 
+// What a sample request asks for (RFC 0006's flythrough): whether the region
+// is complete, as a phase waiting for it asks each frame, answered as a full
+// sample once it is, so the phase ends on every number; every number, a few
+// times a second; or every number and the invariants checked.
+enum class SampleKind : std::uint8_t { completion, full, checked };
+
+// Within this many blocks of the eye, a hole counts as near (RFC 0006).
+inline constexpr double near_holes_distance = 256.0;
+
+// How a chunk looks from a viewer: whether the view holds it, and whether
+// its nearest point lies within `near` blocks of the eye.
+struct ChunkSight {
+    bool in_view = false;
+    bool near = false;
+};
+[[nodiscard]] ChunkSight chunk_sight(const Viewer& viewer, ChunkPos pos, double near) noexcept;
+
+// What the world thread reports when the main thread asks (RFC 0006's
+// flythrough). A completion sample, the answer to a completion request
+// while the region is not complete, holds only the totals, which cost
+// nothing to read, and its time.
+struct WorldSample {
+    std::uint32_t id = 0; // the request's
+    SampleKind kind = SampleKind::full;
+    // When the world thread took it, on the loop's clock. Its {} lets
+    // designated initializers leave it out (Linux Clang's
+    // -Wmissing-designated-field-initializers).
+    std::chrono::steady_clock::time_point at{}; // NOLINT(readability-redundant-member-init)
+    // So far: chunks built by a job, chunks found uniform without one, meshes
+    // made by a job, and meshes known empty, sent without one.
+    std::uint64_t generated = 0;
+    std::uint64_t uniform = 0;
+    std::uint64_t meshed = 0;
+    std::uint64_t skipped = 0;
+    // Since the last full sample: the longest streaming step, and the longest
+    // pass of the loop, less the time it spent answering samples.
+    std::chrono::nanoseconds longest_step{0};
+    std::chrono::nanoseconds longest_pass{0};
+    // Chunks of the drawn region in view with no mesh sent and not known
+    // empty, and of them those near the eye. The meshes sent that wait on
+    // the main thread are its to count.
+    std::uint32_t holes = 0;
+    std::uint32_t near_holes = 0;
+    // The chunk data held, in bytes.
+    std::size_t chunk_bytes = 0;
+    // Streaming is idle, and every chunk of the drawn region has its mesh
+    // sent or is known empty.
+    bool complete = false;
+    // RFC 0006's invariants found broken, when the request asked for the
+    // checks: records whose counts or state break the lifecycle's rules,
+    // state counts that do not add up, a mesh half that holds a chunk the
+    // world half does not show or the other way round, and records left
+    // outside the region grown by the hysteresis.
+    std::uint32_t broken = 0;
+};
+
 // What the world thread tells the main thread, in one ordered stream: a mesh
 // never arrives after its chunk's unload.
 struct ToMain {
@@ -53,6 +109,7 @@ struct ToMain {
         unload, // the chunk's mesh goes
         player, // the player after a tick, or after landing
         landed, // whether the noclip camera's landing worked
+        sample, // what the main thread asked for with ToWorld::Kind::sample
     };
     Kind kind = Kind::mesh;
     ChunkPos pos; // the unloaded chunk
@@ -64,6 +121,7 @@ struct ToMain {
     // (Linux Clang's -Wmissing-designated-field-initializers).
     std::chrono::steady_clock::time_point tick_at{}; // NOLINT(readability-redundant-member-init)
     bool landed = false;
+    WorldSample sample{};
 };
 
 // What the main thread tells the world thread.
@@ -75,6 +133,7 @@ struct ToWorld {
         input,    // the keys held and the yaw, for the player's next ticks
         land,     // the noclip camera lands the player at `feet`
         meshing,  // RFC 0003's merge toggle: every chunk shown meshed again
+        sample,   // a WorldSample, for the flythrough
         stop,
     };
     Kind kind = Kind::camera;
@@ -84,6 +143,8 @@ struct ToWorld {
     TickInput input{};
     Vec3d feet{};
     MeshOptions meshing{};
+    std::uint32_t sample_id = 0; // echoed in the WorldSample
+    SampleKind sample_kind = SampleKind::full;
     // Of the meshes sent alone (ToMain::Kind::mesh, never a batch's), how
     // many the main thread is done with so far: uploaded, or dropped without
     // an upload (empty, older than the one it holds, or its chunk's unload
@@ -246,6 +307,21 @@ private:
     void send_ready_batches();
     void feed();
     bool start_mesh(std::uint32_t index, std::uint32_t key);
+    // What a sample request is answered with, now, once the streamer's
+    // events are followed. A full one walks every record and starts the next
+    // longest step and pass: a few times a second, or each frame of a check.
+    // A completion one walks them only once streaming is idle, and is full
+    // once the region is complete.
+    [[nodiscard]] WorldSample sample(SampleKind kind);
+    // RFC 0006's invariants the flythrough's checks count, as
+    // WorldSample::broken says.
+    [[nodiscard]] std::uint32_t broken_invariants(const StreamingStats& stats);
+    // A chunk of the drawn region with no mesh sent and not known empty.
+    [[nodiscard]] bool missing(std::uint32_t index);
+    [[nodiscard]] std::chrono::steady_clock::time_point time() const noexcept {
+        return settings_.clock != nullptr ? settings_.clock->now()
+                                          : std::chrono::steady_clock::now();
+    }
     // Uniform air, or an opaque state among six uniform opaque neighbors:
     // no face of it can show.
     [[nodiscard]] bool known_empty(std::uint32_t index) const noexcept;
@@ -280,7 +356,8 @@ private:
     WakeEvent main_wake_; // the main thread polls each frame and never waits on it
     Inbox<ToMain> to_main_;
     std::optional<ChunkPos> camera_;
-    StreamedBoxes boxes_; // the player's world: the streamer's chunks
+    std::optional<Viewer> viewer_; // where the camera looks, for the holes in view
+    StreamedBoxes boxes_;          // the player's world: the streamer's chunks
     std::optional<Walking> walking_;
     TickInput input_;
     MeshOptions meshing_;
@@ -294,6 +371,11 @@ private:
     std::uint64_t uploaded_ = 0; // of them, uploaded, as the main thread last said
     std::size_t meshes_in_flight_ = 0;
     std::uint64_t meshes_skipped_ = 0;
+    std::uint64_t meshes_made_ = 0; // job results back
+    // The longest pass since the last full sample, and this pass's time
+    // spent answering samples, which it leaves out.
+    std::chrono::nanoseconds longest_pass_{0};
+    std::chrono::nanoseconds answering_{0};
     bool behind_ = false; // the streamer has results left from its last step
     bool stopping_ = false;
 };
