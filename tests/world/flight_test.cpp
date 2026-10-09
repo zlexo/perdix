@@ -220,14 +220,15 @@ TEST_CASE("a ceiling does not end a flight") {
     CHECK_FALSE(player.on_ground);
 }
 
-TEST_CASE(
-    "taking off from the ground jumps too, as 26.2's toggle does, and accelerates as flight") {
+TEST_CASE("taking off from the ground jumps too, and that tick moves on the ground's terms, as "
+          "26.2's do") {
     // Space pressed in the air just before landing opens the window, and
     // pressed again on the ground two ticks later takes off from a tick that
     // began on the ground: 26.2's toggle jumps then, to 0.42, and flight's
-    // Space adds its 0.15 before the move, so the player rises 0.57; W
-    // pushes at flight's acceleration and drag, so the next tick moves
-    // flight's own 0.09359.
+    // Space adds its 0.15 before the move, so the player rises 0.57. As the
+    // tick began on the ground, W pushes at the ground's 0.098 against its
+    // drag of 0.546 (from the jar); the next tick, flying, moves the 0.053508
+    // carried and flight's 0.049.
     const vx::test::FlatWorld world;
     vx::Player player;
     player.position.y = 0.1;
@@ -237,8 +238,8 @@ TEST_CASE(
     REQUIRE(steps[1].on_ground);
     CHECK(steps[2].flying);
     CHECK(steps[2].moved.y == doctest::Approx(0.42 + 0.15).epsilon(tolerance));
-    CHECK(-steps[2].moved.z == doctest::Approx(0.049).epsilon(tolerance));
-    CHECK(-steps[3].moved.z == doctest::Approx(0.09359).epsilon(tolerance));
+    CHECK(-steps[2].moved.z == doctest::Approx(0.098).epsilon(tolerance));
+    CHECK(-steps[3].moved.z == doctest::Approx(0.102508).epsilon(tolerance));
 }
 
 TEST_CASE("flying, the threshold ends a glide: 5.474 blocks over 55 ticks after W") {

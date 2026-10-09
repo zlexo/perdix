@@ -211,15 +211,16 @@ void jump(Player& player, Vec3d facing, const MovementNumbers& numbers) {
     }
 }
 
-// The keys' acceleration this tick: flying, on the ground's terms if the
-// tick began there, or in the air.
+// The keys' acceleration this tick: on the ground's terms if the tick began
+// there, flying or not, as 26.2's (from its jar: a flying player begins a
+// tick on the ground only when it takes off); else flying, or in the air.
 double acceleration_now(const Player& player, bool started_on_ground, double slipperiness,
                         const MovementNumbers& numbers) {
-    if (player.flying) {
-        return numbers.fly_acceleration * (player.sprinting ? numbers.fly_sprint_factor : 1.0);
-    }
     if (started_on_ground) {
         return ground_acceleration(slipperiness, player.sprinting, numbers);
+    }
+    if (player.flying) {
+        return numbers.fly_acceleration * (player.sprinting ? numbers.fly_sprint_factor : 1.0);
     }
     return numbers.air_acceleration * (player.sprinting ? numbers.sprint_factor : 1.0);
 }
@@ -382,12 +383,11 @@ void tick(Player& player, const TickInput& input, const BlockBoxes& world,
     player.minor_horizontal_collision =
         player.horizontal_collision && grazed(wished, move.motion, numbers.minor_collision_degrees);
 
-    // Gravity, then drag: on the ground's terms if the tick began there.
-    // Flying, no gravity, and the vertical speed from before the move keeps
-    // 0.6.
+    // Gravity, then drag: on the ground's terms if the tick began there,
+    // flying or not. Flying, no gravity, and the vertical speed from before
+    // the move keeps 0.6.
     velocity.y = vertical_after_move(velocity.y, flying, numbers);
-    const double drag =
-        started_on_ground && !flying ? ground_drag(slipperiness, numbers) : numbers.air_drag;
+    const double drag = started_on_ground ? ground_drag(slipperiness, numbers) : numbers.air_drag;
     velocity.x *= drag;
     velocity.z *= drag;
 
