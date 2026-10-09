@@ -29,6 +29,7 @@
 #include <random>
 #include <span>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -1977,4 +1978,85 @@ TEST_CASE("the longest step is the longest integrate took, and taking it starts 
     const std::chrono::nanoseconds longest = streamer.take_longest_step();
     CHECK(longest > microseconds(0));
     CHECK(longest <= microseconds(600));
+}
+
+namespace {
+
+// The drawn chunks, in a fixed order.
+std::vector<std::tuple<std::int32_t, std::int32_t, std::int32_t>>
+drawn_chunks(const WorldStreamer& streamer) {
+    std::vector<std::tuple<std::int32_t, std::int32_t, std::int32_t>> drawn;
+    const vx::ChunkRecords& records = streamer.records();
+    for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+        if (records.live(index) && records[index].drawn) {
+            const ChunkPos pos = records[index].pos;
+            drawn.emplace_back(pos.x, pos.y, pos.z);
+        }
+    }
+    std::ranges::sort(drawn);
+    return drawn;
+}
+
+} // namespace
+
+TEST_CASE("a view distance changed while streaming: farther ends as a streamer started there, "
+          "nearer keeps no more than the hysteresis allows") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    const auto started_at = [&](std::int32_t distance) {
+        vx::RegionSettings settings = small;
+        settings.view_distance = distance;
+        WorldStreamer fresh(generator, jobs, wake, settings);
+        fresh.set_camera(above_hills);
+        settle(fresh, jobs);
+        return drawn_chunks(fresh);
+    };
+    // Farther: the same chunks drawn as a streamer that started at 5.
+    streamer.set_view_distance(5);
+    settle(streamer, jobs);
+    const auto at_five = drawn_chunks(streamer);
+    CHECK(at_five == started_at(5));
+    // Nearer: everything a streamer at 2 draws, and nothing a streamer at
+    // 4, the 2 grown by the hysteresis, would not keep.
+    streamer.set_view_distance(2);
+    settle(streamer, jobs);
+    const auto at_two = drawn_chunks(streamer);
+    const auto fresh_two = started_at(2);
+    CHECK(at_two.size() < at_five.size());
+    CHECK(at_two.size() > fresh_two.size());
+    CHECK(std::ranges::includes(at_two, fresh_two));
+    vx::RegionSettings two = small;
+    two.view_distance = 2;
+    const vx::Region kept = vx::Region(above_hills, two).grown(two.hysteresis);
+    CHECK(streamer.records().outside(kept) == 0);
+    CHECK(std::ranges::includes(started_at(4), at_two));
+    // The same distance again changes nothing.
+    std::vector<ChunkEvent> events;
+    streamer.take_events(events);
+    streamer.set_view_distance(2);
+    streamer.take_events(events);
+    CHECK(events.empty());
+}
+
+TEST_CASE("a nearer view distance while the farther ring's surfaces are on their way leaves "
+          "nothing waiting") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    // Farther, its new columns' surface jobs queued, then nearer again
+    // before any came: no surface arrives, and the plans parked for the
+    // columns let go must not wait for one.
+    streamer.set_view_distance(9);
+    streamer.feed();
+    streamer.set_view_distance(3);
+    settle(streamer, jobs);
+    CHECK(streamer.stats().jobs_in_flight == 0);
+    CHECK(streamer.stats().waiting == 0);
 }

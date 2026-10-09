@@ -1230,3 +1230,90 @@ TEST_CASE("a sample counts the holes in view until the region is complete, and t
     loop.settle();
     CHECK(ask().complete);
 }
+
+TEST_CASE("the render distance moves the loop's region: the main thread holds what is shown, and "
+          "the checks find nothing broken") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small});
+    MainThread main;
+    std::vector<ToMain> messages;
+    // Settled, with every mesh the loop sends taken in and reported done.
+    const auto settle = [&] {
+        loop.settle();
+        for (int round = 0; round < 100; ++round) {
+            loop.take(messages);
+            main.receive(messages);
+            uploaded(loop, main.meshes);
+            loop.settle();
+            if (loop.unuploaded() == 0 && loop.meshes_in_flight() == 0) {
+                break;
+            }
+        }
+        loop.take(messages);
+        main.receive(messages);
+    };
+    const auto held = [&] {
+        std::set<Chunk> chunks;
+        for (const auto& [chunk, mesh] : main.held) {
+            chunks.insert(chunk);
+        }
+        return chunks;
+    };
+    const auto checked = [&] {
+        ToWorld request;
+        request.kind = ToWorld::Kind::sample;
+        request.sample_kind = SampleKind::checked;
+        loop.to_world().push(std::move(request));
+        loop.pass();
+        loop.take(messages);
+        main.receive(messages);
+        REQUIRE_FALSE(main.samples.empty());
+        return main.samples.back();
+    };
+    const auto set_distance = [&](std::int32_t chunks) {
+        ToWorld message;
+        message.kind = ToWorld::Kind::view_distance;
+        message.view_distance = chunks;
+        loop.to_world().push(std::move(message));
+        settle();
+    };
+    move_camera(loop, above_hills);
+    settle();
+    const std::set<Chunk> at_three = shown(loop);
+    CHECK(held() == at_three);
+    // Farther, past what the hysteresis around 3 would keep: shown as a
+    // loop started at 6, and complete.
+    set_distance(6);
+    vx::JobSystem fresh_jobs({});
+    vx::MeshResultPool fresh_pool;
+    vx::RegionSettings six = small;
+    six.view_distance = 6;
+    WorldLoop fresh(generator, table, fresh_jobs, fresh_pool, {.region = six});
+    move_camera(fresh, above_hills);
+    fresh.settle();
+    CHECK(shown(loop) == shown(fresh));
+    CHECK(shown(loop).size() > at_three.size());
+    CHECK(held() == shown(loop));
+    vx::app::WorldSample sample = checked();
+    CHECK(sample.broken == 0);
+    CHECK(sample.complete);
+    // Nearer: the chunks past the hysteresis leave, their meshes with them,
+    // and those within it stay, more than a loop started at 2 shows.
+    set_distance(2);
+    CHECK(shown(loop).size() < shown(fresh).size());
+    vx::JobSystem two_jobs({});
+    vx::MeshResultPool two_pool;
+    vx::RegionSettings two = small;
+    two.view_distance = 2;
+    WorldLoop fresh_two(generator, table, two_jobs, two_pool, {.region = two});
+    move_camera(fresh_two, above_hills);
+    fresh_two.settle();
+    CHECK(shown(loop).size() > shown(fresh_two).size());
+    CHECK(held() == shown(loop));
+    sample = checked();
+    CHECK(sample.broken == 0);
+    CHECK(sample.complete);
+}

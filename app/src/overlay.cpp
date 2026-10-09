@@ -9,6 +9,7 @@
 #include <vx/render/draw_lists.hpp>
 #include <vx/render/instance.hpp>
 #include <vx/render/swapchain.hpp>
+#include <vx/world/coordinates.hpp>
 
 #include <SDL3/SDL.h>
 #include <glm/trigonometric.hpp>
@@ -326,8 +327,27 @@ void Overlay::draw_validation(const render::Context& context) const {
     }
 }
 
+void Overlay::draw_render_distance(RenderDistance& distance) {
+    // While dragged, the slider shows the value under the cursor; let go, it
+    // changes the distance, so that the world thread makes its region again
+    // once and not at every step of a drag.
+    int chunks = dragged_distance_ > 0 ? dragged_distance_ : distance.chunks;
+    ImGui::BeginDisabled(distance.fixed);
+    ImGui::SliderInt("Render distance", &chunks, RenderDistance::least, RenderDistance::most,
+                     "%d chunks", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        distance.chunks = chunks;
+    }
+    dragged_distance_ = ImGui::IsItemActive() ? chunks : 0;
+    ImGui::SameLine();
+    ImGui::Text("%d blocks%s", chunks * vx::chunk_size,
+                distance.fixed ? " (fixed by the flythrough)" : "");
+    ImGui::EndDisabled();
+}
+
 ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& camera,
-                           bool mouse_captured, ChunkMeshing& meshing, bool& bobbing) {
+                           bool mouse_captured, ChunkMeshing& meshing, bool& bobbing,
+                           RenderDistance& distance) {
     if (!shown_) {
         return nullptr;
     }
@@ -376,7 +396,9 @@ ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& cam
         ImGui::Separator();
         draw_camera(camera);
         draw_movement(movement_);
-        // The game's View Bobbing option (RFC 0010).
+        // The game's Render Distance and View Bobbing options (RFC 0006,
+        // RFC 0010).
+        draw_render_distance(distance);
         ImGui::Checkbox("View bobbing", &bobbing);
         ImGui::Separator();
         draw_validation(renderer.context());

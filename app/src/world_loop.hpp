@@ -127,13 +127,14 @@ struct ToMain {
 // What the main thread tells the world thread.
 struct ToWorld {
     enum class Kind : std::uint8_t {
-        camera,   // where the camera is and looks
-        edit,     // a block to set; M5's actions will bring the view ray
-        uploaded, // how far the main thread is with the meshes sent alone
-        input,    // the keys held and the yaw, for the player's next ticks
-        land,     // the noclip camera lands the player at `feet`
-        meshing,  // RFC 0003's merge toggle: every chunk shown meshed again
-        sample,   // a WorldSample, for the flythrough
+        camera,        // where the camera is and looks
+        edit,          // a block to set; M5's actions will bring the view ray
+        uploaded,      // how far the main thread is with the meshes sent alone
+        input,         // the keys held and the yaw, for the player's next ticks
+        land,          // the noclip camera lands the player at `feet`
+        meshing,       // RFC 0003's merge toggle: every chunk shown meshed again
+        sample,        // a WorldSample, for the flythrough
+        view_distance, // RFC 0006's Render Distance option, in chunks
         stop,
     };
     Kind kind = Kind::camera;
@@ -145,6 +146,7 @@ struct ToWorld {
     MeshOptions meshing{};
     std::uint32_t sample_id = 0; // echoed in the WorldSample
     SampleKind sample_kind = SampleKind::full;
+    std::int32_t view_distance = 0;
     // Of the meshes sent alone (ToMain::Kind::mesh, never a batch's), how
     // many the main thread is done with so far: uploaded, or dropped without
     // an upload (empty, older than the one it holds, or its chunk's unload

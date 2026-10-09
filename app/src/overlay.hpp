@@ -24,6 +24,17 @@ struct ChunkMeshing {
     bool merge = true;
 };
 
+// The game's Render Distance option (RFC 0006): the terrain disc's radius,
+// 4 to 64 chunks of 32 blocks. Its slider changes `chunks` once let go, and
+// the caller hands it to the world thread. A flythrough fixes it: the
+// slider shows it, and takes nothing.
+struct RenderDistance {
+    static constexpr std::int32_t least = 4;
+    static constexpr std::int32_t most = 64;
+    std::int32_t chunks = 32;
+    bool fixed = false;
+};
+
 // The player's movement, as the overlay shows it (RFC 0010).
 struct MovementReport {
     bool noclip = false;         // RFC 0001's camera, or walking
@@ -73,9 +84,11 @@ public:
     // hidden. A captured mouse flies the camera, and the overlay ignores it.
     // Switching the present mode asks `renderer` for it. Switching merging
     // changes `meshing.merge`, and the caller meshes the chunks again. The
-    // View Bobbing switch changes `bobbing`.
+    // View Bobbing switch changes `bobbing`, and the Render Distance slider
+    // `distance.chunks`.
     [[nodiscard]] ImDrawData* build(render::Renderer& renderer, const render::Camera& camera,
-                                    bool mouse_captured, ChunkMeshing& meshing, bool& bobbing);
+                                    bool mouse_captured, ChunkMeshing& meshing, bool& bobbing,
+                                    RenderDistance& distance);
 
     // What the next build shows of the player's movement.
     void set_movement(const MovementReport& movement) noexcept { movement_ = movement; }
@@ -113,12 +126,16 @@ private:
     void draw_chunk_rendering(render::Renderer& renderer);
     static void draw_camera(const render::Camera& camera);
     static void draw_movement(const MovementReport& movement);
+    void draw_render_distance(RenderDistance& distance);
 
     void draw_validation(const render::Context& context) const;
 
     ImGuiContext* context_;
     MovementReport movement_;
     std::size_t chunk_backlog_ = 0;
+    // The Render Distance slider's value while it is dragged, 0 otherwise:
+    // the distance changes once it is let go.
+    std::int32_t dragged_distance_ = 0;
     bool validation_;
     bool shown_;
     History frame_;
