@@ -2,6 +2,7 @@
 
 #include <vx/core/frustum.hpp>
 #include <vx/core/result.hpp>
+#include <vx/render/arena_upkeep.hpp>
 #include <vx/render/buffer.hpp>
 #include <vx/render/chunk_arena.hpp>
 #include <vx/render/chunk_uploads.hpp>
@@ -19,6 +20,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace vx::render {
@@ -63,8 +65,10 @@ public:
 };
 
 // Where a frame's chunk passes read their commands (RFC 0007): the frame
-// slot's buffer, the origins at its start, then each pass's commands.
+// slot's buffer, the origins at its start, then each pass's commands; and
+// the arena they draw from, which a repack replaces.
 struct ChunkFrame {
+    VkDeviceAddress quads = 0;
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceAddress origins = 0;
     VkDeviceSize opaque_offset = 0;
@@ -74,9 +78,9 @@ struct ChunkFrame {
 };
 
 // RFC 0007's chunk rendering, owned by the renderer, main thread only: the
-// arena, its uploads, and each frame's draw lists, written with the chunks'
-// origins into a host-visible buffer of the frame slot's, grown when a frame
-// needs more.
+// arena, its uploads and upkeep, and each frame's draw lists, written with
+// the chunks' origins into a host-visible buffer of the frame slot's, grown
+// when a frame needs more.
 class ChunkRenderer {
 public:
     // The most quads an arena holds: a command's vertexOffset, four times its
@@ -84,17 +88,27 @@ public:
     static constexpr std::uint32_t max_arena_quads = std::uint32_t{1} << 29U;
 
     // An arena of `capacity_quads` quads in `arena_memory`, an upload target
-    // but in tests, which force staging with device-local memory alone.
+    // but in tests, which force staging with device-local memory alone. The
+    // arena starts no larger than `arena_limit` quads and repacks grow it no
+    // further: by default (0) a quarter of the device's memory budget.
     // `draw_call_limit` lowers the device's limit on commands a call, in
     // tests; 0 keeps it.
     [[nodiscard]] static Result<ChunkRenderer>
     create(const Device& device, std::uint32_t capacity_quads, std::uint32_t slots,
-           BufferMemory arena_memory, std::uint32_t draw_call_limit = 0);
+           BufferMemory arena_memory, std::uint32_t draw_call_limit = 0,
+           std::uint32_t arena_limit = 0);
 
     // Frame slot `slot` is free and the frame is about to record: the ranges
-    // retired in the slot return, its staging buffers go, and the upload
-    // budget starts over.
+    // retired in the slot return, the arenas and staging buffers its last
+    // frame read go, and the upload budget starts over.
     void begin_frame(const Device& device, std::uint32_t slot);
+    // RFC 0007's upkeep, before the frame's changes: compaction's moves, or a
+    // repack into a larger arena, as the uploads the frame before refused
+    // ask, recorded into `commands` with one barrier after them.
+    [[nodiscard]] Result<void> keep_arena(const Device& device, VkCommandBuffer commands);
+    // Compaction starts at the next frame and runs until it is stuck, with no
+    // upload refused: for tests.
+    void start_compaction() noexcept { upkeep_.start_compaction(); }
     // Makes the frame's changes: written in place where the arena is
     // host-visible, otherwise staged, with the copies recorded into
     // `commands` and one barrier after them.
@@ -124,6 +138,13 @@ public:
     [[nodiscard]] ChunkUploads& uploads() noexcept { return uploads_; }
     [[nodiscard]] const ChunkUploads& uploads() const noexcept { return uploads_; }
     [[nodiscard]] const ChunkArena& arena() const noexcept { return *arena_; }
+    // Compaction and repacks, for the overlay; whether the arena is full,
+    // for RFC 0006.
+    [[nodiscard]] const UpkeepStats& upkeep() const noexcept { return upkeep_.stats(); }
+    // The most quads repacks grow the arena to: less after a repack the
+    // device could not make, whose error the overlay shows.
+    [[nodiscard]] std::uint32_t arena_limit() const noexcept { return upkeep_.max_capacity(); }
+    [[nodiscard]] const std::string& repack_error() const noexcept { return repack_error_; }
     // The last frame's culling, for the overlay.
     [[nodiscard]] const DrawStats& draw_stats() const noexcept { return lists_.stats; }
     // The last frame's draw lists: its commands, for the overlay's counts.
@@ -137,12 +158,33 @@ public:
     }
 
 private:
-    ChunkRenderer(std::unique_ptr<ChunkArena> arena, std::vector<UploadContext> staging,
-                  std::vector<Buffer> frames, std::uint32_t draw_limit) noexcept;
+    ChunkRenderer(std::unique_ptr<ChunkArena> arena, BufferMemory arena_memory,
+                  std::uint32_t arena_limit, std::uint32_t slots,
+                  std::vector<UploadContext> staging, std::vector<Buffer> frames,
+                  std::uint32_t draw_limit) noexcept;
 
-    // On the heap, so the uploads' pointer to its space survives a move.
+    // A repack into a new arena of `capacity` quads: every mesh is copied
+    // over, and the old arena goes once the frames that read it are done.
+    [[nodiscard]] Result<void> repack(const Device& device, VkCommandBuffer commands,
+                                      std::uint32_t capacity);
+    // The GPU's copies of moves_, from `from` into `to`, and the barrier
+    // after them.
+    void record_moves(VkCommandBuffer commands, const Buffer& from, const Buffer& to);
+
+    // On the heap, so the uploads' pointer to its space survives a move. A
+    // repack moves a new arena into it.
     std::unique_ptr<ChunkArena> arena_;
+    BufferMemory arena_memory_;
     ChunkUploads uploads_;
+    ArenaUpkeep upkeep_;
+    // What the frame before could not upload, for the upkeep.
+    std::uint32_t wanted_ = 0;
+    std::string repack_error_; // the last repack the device could not make
+    // Arenas a repack replaced, by the frame slot that last read them.
+    std::vector<std::vector<ChunkArena>> replaced_;
+    // Scratch, kept for its capacity: the upkeep's moves and their copies.
+    std::vector<ArenaMove> moves_;
+    std::vector<VkBufferCopy2> regions_;
     // Each frame slot's staging, made afresh when the slot comes round.
     std::vector<UploadContext> staging_;
     std::vector<Buffer> frames_; // each frame slot's origins and commands

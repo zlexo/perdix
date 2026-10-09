@@ -5,6 +5,7 @@
 #include <vx/mesh/quad.hpp>
 #include <vx/render/buffer.hpp>
 #include <vx/render/chunk_arena.hpp>
+#include <vx/render/chunk_renderer.hpp>
 #include <vx/render/chunk_uploads.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/upload.hpp>
@@ -12,16 +13,20 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <vector>
 
-// RFC 0007's arena on a real driver: one buffer with a device address, and
-// meshes uploaded into it in place or through staging.
+// RFC 0007's arena on a real driver: one buffer with a device address,
+// meshes uploaded into it in place or through staging, moved down it by
+// compaction and into larger ones by repacks.
 
 namespace {
 
@@ -66,6 +71,54 @@ void record_readback(VkCommandBuffer commands, const vx::render::Buffer& source,
     };
     vkCmdPipelineBarrier2(commands, &dependency);
 }
+
+// A chunk's mesh: all its quads in one group, each naming the chunk, its
+// generation and its place.
+struct Mesh {
+    std::vector<vx::Quad> quads;
+
+    Mesh(std::int32_t x, std::uint32_t generation, std::uint32_t count) {
+        for (std::uint32_t at = 0; at < count; ++at) {
+            quads.push_back(
+                {.geometry = (static_cast<std::uint32_t>(x) << 16U) | generation, .material = at});
+        }
+    }
+
+    [[nodiscard]] vx::render::ChunkMeshUpdate update(std::int32_t x,
+                                                     std::uint32_t generation) const {
+        vx::ChunkMesh mesh{};
+        mesh.ranges[0][0] = quads;
+        return {.pos = {.x = x}, .generation = generation, .mesh = mesh};
+    }
+};
+
+// The world thread's side, for one test: meshes offered in order every frame
+// until one is refused, and removals.
+class Script final : public vx::render::ChunkChanges {
+public:
+    std::vector<vx::render::ChunkMeshUpdate> offers;
+    std::vector<vx::ChunkPos> removals;
+
+    vx::Result<void> apply(vx::render::ChunkUploader& uploader) override {
+        for (const vx::ChunkPos pos : removals) {
+            uploader.remove(pos);
+        }
+        removals.clear();
+        std::size_t taken = 0;
+        for (; taken < offers.size(); ++taken) {
+            const vx::Result<vx::render::Uploaded> uploaded = uploader.upload(offers[taken]);
+            if (!uploaded.has_value()) {
+                return uploaded.error();
+            }
+            if (uploaded.value() == vx::render::Uploaded::later ||
+                uploaded.value() == vx::render::Uploaded::full) {
+                break;
+            }
+        }
+        offers.erase(offers.begin(), offers.begin() + static_cast<std::ptrdiff_t>(taken));
+        return {};
+    }
+};
 
 } // namespace
 
@@ -167,6 +220,120 @@ TEST_CASE("uploads write each mesh's groups into the arena's buffer, in place or
             }
         }
         staging.reset();
+    }
+    CHECK(context.value().instance().validation_counts().errors == 0);
+    CHECK(context.value().instance().validation_counts().warnings == 0);
+}
+
+TEST_CASE("compaction and repacks keep every mesh's quads, in place and staged") {
+    const vx::Result<vx::render::Context> context =
+        vx::render::Context::create({.surface = std::nullopt, .validation = true});
+    INFO((context.has_value() ? std::string() : context.error().message));
+    REQUIRE(context.has_value());
+    const vx::render::Device& device = context.value().device();
+    for (const vx::render::BufferMemory memory :
+         {vx::render::BufferMemory::upload_target, vx::render::BufferMemory::device_local}) {
+        const bool staged = memory == vx::render::BufferMemory::device_local;
+        INFO("staged: ", staged);
+        // 1,000 quads to start with, room to grow to 4,000.
+        vx::Result<vx::render::ChunkRenderer> created =
+            vx::render::ChunkRenderer::create(device, 1'000, 2, memory, 0, 4'000);
+        INFO((created.has_value() ? std::string() : created.error().message));
+        REQUIRE(created.has_value());
+        vx::render::ChunkRenderer& chunks = created.value();
+        chunks.uploads().set_budget(std::chrono::hours(1));
+        std::map<std::int32_t, std::unique_ptr<Mesh>> meshes; // each chunk's newest
+        std::uint32_t generation = 0;
+        Script script;
+        const auto offer = [&](std::int32_t x, std::uint32_t quads) {
+            ++generation;
+            meshes[x] = std::make_unique<Mesh>(x, generation, quads);
+            script.offers.push_back(meshes[x]->update(x, generation));
+        };
+        const auto remove = [&](std::int32_t x) {
+            meshes.erase(x);
+            script.removals.push_back({.x = x});
+        };
+        std::uint32_t slot = 0;
+        int frames = 0;
+        // A frame as the renderer records one, submitted and waited for;
+        // then every mesh in the arena is read back and checked.
+        const auto frame = [&] {
+            vx::test::OneShot shot(device);
+            chunks.begin_frame(device, slot);
+            const vx::Result<void> kept = chunks.keep_arena(device, shot.commands());
+            INFO((kept.has_value() ? std::string() : kept.error().message));
+            REQUIRE(kept.has_value());
+            REQUIRE(chunks.apply(script, shot.commands()).has_value());
+            const vx::render::Buffer& arena = chunks.arena().buffer();
+            vx::Result<vx::render::Buffer> readback =
+                vx::render::Buffer::create(device, arena.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                           vx::render::BufferMemory::readback, "arena readback");
+            REQUIRE(readback.has_value());
+            record_readback(shot.commands(), arena, readback.value());
+            shot.submit_and_wait();
+            vmaInvalidateAllocation(device.allocator(), readback.value().allocation(), 0,
+                                    VK_WHOLE_SIZE);
+            for (const vx::render::ChunkMeshRecord& record : chunks.uploads().records()) {
+                const Mesh& mesh = *meshes.at(record.pos.x);
+                REQUIRE(record.range.quads == mesh.quads.size());
+                for (std::uint32_t at = 0; at < record.range.quads; ++at) {
+                    vx::Quad held;
+                    std::memcpy(&held,
+                                readback.value().mapping().data() +
+                                    ((std::size_t{record.range.first_quad} + at) * 8),
+                                8);
+                    REQUIRE(held == mesh.quads[at]);
+                }
+            }
+            slot ^= 1U;
+            ++frames;
+        };
+        const auto until_offered = [&] {
+            for (int round = 0; round < 60 && !script.offers.empty(); ++round) {
+                frame();
+            }
+            REQUIRE(script.offers.empty());
+        };
+
+        // Ten meshes of 90 quads, then every other one goes: holes of 90.
+        for (std::int32_t x = 0; x < 10; ++x) {
+            offer(x, 90);
+        }
+        until_offered();
+        for (std::int32_t x = 0; x < 10; x += 2) {
+            remove(x);
+        }
+        frame();
+        frame();
+        // 400 quads fit no hole, but the meshes packed leave 550: compaction
+        // makes room, without a repack.
+        offer(100, 400);
+        until_offered();
+        CHECK(chunks.upkeep().moved_total > 0);
+        CHECK(chunks.upkeep().repacks == 0);
+        CHECK(chunks.arena().space().stats().capacity == 1'000);
+        // 2,000 more quads than the arena holds: repacks, 1.5 times larger.
+        for (std::int32_t x = 200; x < 220; ++x) {
+            offer(x, 100);
+        }
+        until_offered();
+        CHECK(chunks.upkeep().repacks > 0);
+        CHECK(chunks.arena().space().stats().capacity > 2'000);
+        CHECK(chunks.arena().space().stats().capacity <= 4'000);
+        // Past the limit: the arena says it is full, and the meshes in it
+        // stay as they are.
+        for (std::int32_t x = 300; x < 340; ++x) {
+            offer(x, 100);
+        }
+        bool full = false;
+        for (int round = 0; round < 20; ++round) {
+            frame();
+            full = full || chunks.upkeep().full;
+        }
+        CHECK(full);
+        CHECK(chunks.arena().space().stats().capacity == 4'000);
+        CHECK(frames > 10);
     }
     CHECK(context.value().instance().validation_counts().errors == 0);
     CHECK(context.value().instance().validation_counts().warnings == 0);

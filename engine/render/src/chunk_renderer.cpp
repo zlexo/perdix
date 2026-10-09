@@ -4,6 +4,7 @@
 
 #include <vx/core/frustum.hpp>
 #include <vx/core/result.hpp>
+#include <vx/render/arena_upkeep.hpp>
 #include <vx/render/buffer.hpp>
 #include <vx/render/camera_relative.hpp>
 #include <vx/render/chunk_arena.hpp>
@@ -19,6 +20,7 @@
 #include <volk.h>
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -57,16 +59,70 @@ void copy_into(std::span<std::byte> to, VkDeviceSize offset, const std::vector<T
     }
 }
 
+// A quarter of the device's memory budget, in quads (RFC 0007): the largest
+// budget VMA reports for a device-local heap, which is VK_EXT_memory_budget's
+// where the device offers it and enabled, and 80% of the heap otherwise.
+std::uint32_t quarter_of_budget(const Device& device) {
+    const VkPhysicalDeviceMemoryProperties* memory = nullptr;
+    vmaGetMemoryProperties(device.allocator(), &memory);
+    std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
+    vmaGetHeapBudgets(device.allocator(), budgets.data());
+    VkDeviceSize largest = 0;
+    for (std::uint32_t heap = 0; heap < memory->memoryHeapCount; ++heap) {
+        if ((memory->memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
+            largest = std::max(largest, budgets.at(heap).budget);
+        }
+    }
+    return static_cast<std::uint32_t>(std::min<VkDeviceSize>(largest / 4 / ChunkArena::quad_bytes,
+                                                             ChunkRenderer::max_arena_quads));
+}
+
+UpkeepSettings upkeep_settings(std::uint32_t arena_limit, std::uint32_t slots) {
+    UpkeepSettings settings;
+    settings.max_capacity = arena_limit;
+    settings.slots = slots;
+    return settings;
+}
+
+// After copies into the arena, whatever reads or writes it next, vertex
+// pulling or another copy, sees them.
+void record_copy_barrier(VkCommandBuffer commands) {
+    const VkMemoryBarrier2 barrier = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .pNext = nullptr,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+    };
+    const VkDependencyInfo dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .pNext = nullptr,
+        .dependencyFlags = 0,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &barrier,
+        .bufferMemoryBarrierCount = 0,
+        .pBufferMemoryBarriers = nullptr,
+        .imageMemoryBarrierCount = 0,
+        .pImageMemoryBarriers = nullptr,
+    };
+    vkCmdPipelineBarrier2(commands, &dependency);
+}
+
 } // namespace
 
 Result<ChunkRenderer> ChunkRenderer::create(const Device& device, std::uint32_t capacity_quads,
                                             std::uint32_t slots, BufferMemory arena_memory,
-                                            std::uint32_t draw_call_limit) {
+                                            std::uint32_t draw_call_limit,
+                                            std::uint32_t arena_limit) {
     if (capacity_quads > max_arena_quads) {
         return Error{"a chunk arena holds at most " + std::to_string(max_arena_quads) +
                      " quads, not " + std::to_string(capacity_quads)};
     }
-    Result<ChunkArena> arena = ChunkArena::create(device, capacity_quads, slots, arena_memory);
+    const std::uint32_t limit =
+        arena_limit == 0 ? quarter_of_budget(device) : std::min(arena_limit, max_arena_quads);
+    Result<ChunkArena> arena =
+        ChunkArena::create(device, std::min(capacity_quads, limit), slots, arena_memory);
     if (!arena.has_value()) {
         return arena.error();
     }
@@ -83,24 +139,107 @@ Result<ChunkRenderer> ChunkRenderer::create(const Device& device, std::uint32_t 
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(device.physical_device(), &properties);
     const std::uint32_t device_limit = properties.limits.maxDrawIndirectCount;
-    return ChunkRenderer(std::make_unique<ChunkArena>(std::move(arena).value()), std::move(staging),
-                         std::move(frames),
+    return ChunkRenderer(std::make_unique<ChunkArena>(std::move(arena).value()), arena_memory,
+                         limit, slots, std::move(staging), std::move(frames),
                          draw_call_limit == 0 ? device_limit
                                               : std::min(draw_call_limit, device_limit));
 }
 
-ChunkRenderer::ChunkRenderer(std::unique_ptr<ChunkArena> arena, std::vector<UploadContext> staging,
-                             std::vector<Buffer> frames, std::uint32_t draw_limit) noexcept
-    : arena_(std::move(arena)), uploads_(arena_->space()), staging_(std::move(staging)),
+ChunkRenderer::ChunkRenderer(std::unique_ptr<ChunkArena> arena, BufferMemory arena_memory,
+                             std::uint32_t arena_limit, std::uint32_t slots,
+                             std::vector<UploadContext> staging, std::vector<Buffer> frames,
+                             std::uint32_t draw_limit) noexcept
+    : arena_(std::move(arena)), arena_memory_(arena_memory), uploads_(arena_->space()),
+      upkeep_(upkeep_settings(arena_limit, slots)), replaced_(slots), staging_(std::move(staging)),
       frames_(std::move(frames)), draw_limit_(draw_limit) {}
 
 void ChunkRenderer::begin_frame(const Device& device, std::uint32_t slot) {
     assert(slot < frames_.size());
     slot_ = slot;
+    wanted_ = uploads_.stats().wanted;
     uploads_.begin_frame(slot, ChunkUploads::Clock::now());
+    replaced_[slot].clear();
     // The GPU is done with the slot's copies: their staging buffers go. Made
     // afresh, so a renderer moved since holds no stale device.
     staging_[slot] = UploadContext(device);
+}
+
+Result<void> ChunkRenderer::keep_arena(const Device& device, VkCommandBuffer commands) {
+    moves_.clear();
+    switch (upkeep_.step(arena_->space(), wanted_)) {
+    case UpkeepStep::none:
+        return {};
+    case UpkeepStep::compact: {
+        const UpkeepSettings& settings = upkeep_.settings();
+        upkeep_.compacted(uploads_.compact(settings.moves, settings.move_quads, moves_));
+        record_moves(commands, arena_->buffer(), arena_->buffer());
+        return {};
+    }
+    case UpkeepStep::repack:
+        return repack(device, commands, upkeep_.repack_capacity());
+    }
+    return {};
+}
+
+Result<void> ChunkRenderer::repack(const Device& device, VkCommandBuffer commands,
+                                   std::uint32_t capacity) {
+    const std::uint32_t current = arena_->space().capacity();
+    Result<ChunkArena> fresh = ChunkArena::create(
+        device, capacity, static_cast<std::uint32_t>(frames_.size()), arena_memory_);
+    // The device has no memory for it: the arena stays, and is full.
+    if (!fresh.has_value()) {
+        repack_error_ = fresh.error().message;
+        upkeep_.repacked(false, current);
+        return {};
+    }
+    if (!uploads_.repack(fresh.value().space(), moves_)) {
+        repack_error_ =
+            "the meshes did not fit a repack's arena of " + std::to_string(capacity) + " quads";
+        upkeep_.repacked(false, current);
+        return {};
+    }
+    // The uploads point at the arena's space, which now holds the fresh one.
+    ChunkArena old = std::exchange(*arena_, std::move(fresh).value());
+    record_moves(commands, old.buffer(), arena_->buffer());
+    // Frames in flight draw from the old buffer, and this frame copies out of
+    // it: it goes when this frame's slot comes round.
+    replaced_[slot_].push_back(std::move(old));
+    upkeep_.repacked(true, current);
+    return {};
+}
+
+void ChunkRenderer::record_moves(VkCommandBuffer commands, const Buffer& from, const Buffer& to) {
+    if (moves_.empty()) {
+        return;
+    }
+    // Neighbors that stay neighbors copy as one region: a repack moves runs
+    // of meshes that lay side by side.
+    regions_.clear();
+    for (const ArenaMove& move : moves_) {
+        const VkDeviceSize source = VkDeviceSize{move.from} * ChunkArena::quad_bytes;
+        const VkDeviceSize target = VkDeviceSize{move.to} * ChunkArena::quad_bytes;
+        const VkDeviceSize bytes = VkDeviceSize{move.quads} * ChunkArena::quad_bytes;
+        if (!regions_.empty() && regions_.back().srcOffset + regions_.back().size == source &&
+            regions_.back().dstOffset + regions_.back().size == target) {
+            regions_.back().size += bytes;
+            continue;
+        }
+        regions_.push_back({.sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+                            .pNext = nullptr,
+                            .srcOffset = source,
+                            .dstOffset = target,
+                            .size = bytes});
+    }
+    const VkCopyBufferInfo2 copy = {
+        .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+        .pNext = nullptr,
+        .srcBuffer = from.handle(),
+        .dstBuffer = to.handle(),
+        .regionCount = static_cast<std::uint32_t>(regions_.size()),
+        .pRegions = regions_.data(),
+    };
+    vkCmdCopyBuffer2(commands, &copy);
+    record_copy_barrier(commands);
 }
 
 Result<void> ChunkRenderer::apply(ChunkChanges& changes, VkCommandBuffer commands) {
@@ -161,7 +300,8 @@ Result<ChunkFrame> ChunkRenderer::prepare(const Device& device, const glm::i64ve
             return Error{"vmaFlushAllocation failed: " + vk_result_name(result)};
         }
     }
-    return ChunkFrame{.buffer = frame.handle(),
+    return ChunkFrame{.quads = arena_->buffer().address(),
+                      .buffer = frame.handle(),
                       .origins = frame.address(),
                       .opaque_offset = opaque_offset,
                       .opaque = static_cast<std::uint32_t>(lists_.opaque.size()),
