@@ -27,6 +27,7 @@ vx_target_engine_options(vx_tomlplusplus)
 # The world layer (RFC 0002): blocks, chunks and their coordinates. It has no
 # GPU or window code (ADR 0003).
 add_library(vx_world STATIC
+    src/backlog.cpp
     src/block_data_pool.cpp
     src/block_file.cpp
     src/block_registry.cpp

@@ -50,6 +50,7 @@ doctest_discover_tests(vx_core_tests PROPERTIES ${VX_DOCTEST_PROPERTIES} TIMEOUT
 
 add_executable(vx_world_tests
     main.cpp
+    world/backlog_test.cpp
     world/block_data_pool_test.cpp
     world/block_pack_test.cpp
     world/block_file_test.cpp
