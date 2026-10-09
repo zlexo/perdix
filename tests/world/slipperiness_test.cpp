@@ -379,3 +379,44 @@ TEST_CASE("walked off an edge, the block the box came from supports the player f
     CHECK_FALSE(found_none.supporting.has_value());
     CHECK(found_none.ground_without_block);
 }
+
+TEST_CASE("standing, the search reads the boxes the move gathered, and asks the world for none") {
+    // Standing on a floor, every move ends on the ground with the search's
+    // slab inside what the move gathered: the world is asked for the move's
+    // region and the pose's, never for the slab 1e-6 thick under the feet.
+    // Walking, a rounding can leave the slab a hair outside; the search then
+    // gathers its own, and finds the same block.
+    vx::test::BoxWorld world;
+    world.boxes = vx::test::floor_boxes();
+    const vx::MovementNumbers numbers;
+    std::vector<Box> scratch;
+    vx::Player player = at_rest();
+    player.position = {.x = 0.5, .y = 0.0, .z = 0.5};
+    for (int tick = 0; tick < 10; ++tick) {
+        vx::tick(player, {}, world, numbers, scratch);
+        REQUIRE(player.on_ground);
+        REQUIRE(player.supporting.has_value());
+    }
+    REQUIRE_FALSE(world.regions.empty());
+    for (const Box& region : world.regions) {
+        CHECK(region.max.y - region.min.y > 1e-3);
+    }
+}
+
+TEST_CASE("the block found among the move's boxes is the one a search of its own finds") {
+    // Stone up to y = 0 and, beside it, ice whose top is 9e-7 lower: inside
+    // the slab 1e-6 thick under the feet, but outside what a fall that
+    // stopped 5e-7 short of its end gathered. The search gathers its own
+    // boxes then, and finds the ice, whose center is nearer, as 26.2's
+    // would.
+    CellWorld world;
+    world.add(0, -1, 0, 0.6);
+    world.add(1, -1, 0, 0.98, 1.0 - 9e-7);
+    vx::Player player = at_rest();
+    player.position = {.x = 1.2, .y = 0.0784 - 5e-7, .z = 0.5};
+    std::vector<Box> scratch;
+    vx::tick(player, {}, world, vx::MovementNumbers{}, scratch);
+    REQUIRE(player.on_ground);
+    REQUIRE(player.supporting.has_value());
+    CHECK(*player.supporting == vx::BlockPos{.x = 1, .y = -1, .z = 0});
+}
