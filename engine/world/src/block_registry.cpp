@@ -766,6 +766,16 @@ BlockLoad BlockRegistry::load(std::span<const SourceFile> files) {
         registry.types_.insert(registry.types_.end(), registry.blocks_[type].states,
                                static_cast<BlockType>(type));
     }
+    // Each state's physics, from its block's file; air's collides with
+    // nothing.
+    registry.physics_.assign(registry.types_.size(), BlockPhysics{});
+    for (std::size_t at = 0; at < definitions.size(); ++at) {
+        const Block& block = registry.blocks_[at + 1];
+        std::fill_n(std::next(registry.physics_.begin(), static_cast<std::ptrdiff_t>(block.first)),
+                    block.states,
+                    BlockPhysics{.collision = definitions[at].collision,
+                                 .slipperiness = definitions[at].slipperiness});
+    }
     if (std::optional<Diagnostic> error = registry.build_faces(definitions)) {
         load.diagnostics.push_back(*std::move(error));
         return load;

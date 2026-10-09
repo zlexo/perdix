@@ -2,6 +2,7 @@
 
 #include <vx/core/diagnostic.hpp>
 #include <vx/world/block_file.hpp>
+#include <vx/world/block_physics.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
 
@@ -88,6 +89,10 @@ public:
     // What the mesher reads for each state, indexed by BlockState: air has
     // no faces, and every other state a texture layer on each.
     [[nodiscard]] std::span<const BlockVisual> visuals() const noexcept { return visuals_; }
+    // What movement reads for each state, indexed by BlockState (RFC 0010):
+    // air collides with nothing, and every other state as its block's file
+    // says, a full cube unless it says none.
+    [[nodiscard]] std::span<const BlockPhysics> physics() const noexcept { return physics_; }
     // The layers of the block texture array, indexed by layer: the checker,
     // then every texture and turn a face uses, in name order.
     [[nodiscard]] std::span<const TextureRef> textures() const noexcept { return textures_; }
@@ -114,10 +119,11 @@ private:
                                              std::span<const std::size_t> values);
     [[nodiscard]] std::vector<std::size_t> values_of(BlockState state) const;
 
-    std::vector<Block> blocks_;        // indexed by BlockType
-    std::vector<BlockType> types_;     // indexed by BlockState
-    std::vector<BlockVisual> visuals_; // indexed by BlockState
-    std::vector<TextureRef> textures_; // indexed by layer
+    std::vector<Block> blocks_;         // indexed by BlockType
+    std::vector<BlockType> types_;      // indexed by BlockState
+    std::vector<BlockVisual> visuals_;  // indexed by BlockState
+    std::vector<BlockPhysics> physics_; // indexed by BlockState
+    std::vector<TextureRef> textures_;  // indexed by layer
 };
 
 // The registry, or why it could not be built.

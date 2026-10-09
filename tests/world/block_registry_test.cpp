@@ -1,5 +1,6 @@
 #include <vx/core/diagnostic.hpp>
 #include <vx/world/block_file.hpp>
+#include <vx/world/block_physics.hpp>
 #include <vx/world/block_registry.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
@@ -14,6 +15,7 @@
 #include <initializer_list>
 #include <optional>
 #include <random>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -673,4 +675,27 @@ TEST_CASE("more texture layers than a face numbers fail the load") {
     CHECK(vx::format(load.diagnostics[0]) ==
           "assets/test/blocks/k9.toml:2:7: error: the blocks need 65,537 texture layers with the "
           "checker, more than the 65,536 a layer number holds");
+}
+
+TEST_CASE("each state's physics: air collides with nothing, every other state as its file says") {
+    // RFC 0010: ice with two states, a flower and a stone.
+    const vx::BlockLoad load = vx::BlockRegistry::load(std::vector<vx::SourceFile>{
+        {.path = "assets/core/blocks/ice.toml",
+         .text = "slipperiness = 0.98\n[properties]\nsnowy = [false, true]\n[textures]\nall = "
+                 "\"ice\"\n"},
+        {.path = "assets/core/blocks/poppy.toml",
+         .text = "collision = \"none\"\nopacity = \"cutout\"\n[textures]\nall = \"poppy\"\n"},
+        {.path = "assets/core/blocks/stone.toml", .text = "[textures]\nall = \"stone\"\n"}});
+    REQUIRE(load.registry.has_value());
+    const vx::BlockRegistry& registry = *load.registry;
+    const std::span<const vx::BlockPhysics> physics = registry.physics();
+    REQUIRE(physics.size() == registry.state_count());
+    CHECK(physics[0] == vx::BlockPhysics{.collision = vx::Collision::none, .slipperiness = 0.6});
+    const vx::BlockPhysics ice{.collision = vx::Collision::full, .slipperiness = 0.98};
+    CHECK(physics[static_cast<std::size_t>(*registry.find("core:ice[snowy=false]"))] == ice);
+    CHECK(physics[static_cast<std::size_t>(*registry.find("core:ice[snowy=true]"))] == ice);
+    CHECK(physics[static_cast<std::size_t>(*registry.find("core:poppy"))].collision ==
+          vx::Collision::none);
+    CHECK(physics[static_cast<std::size_t>(*registry.find("core:stone"))] ==
+          vx::BlockPhysics{.collision = vx::Collision::full, .slipperiness = 0.6});
 }

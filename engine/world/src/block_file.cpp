@@ -18,8 +18,8 @@
 namespace vx {
 namespace {
 
-constexpr std::array<std::string_view, 5> block_keys = {"opacity", "cull_group", "properties",
-                                                        "textures", "variant"};
+constexpr std::array<std::string_view, 7> block_keys = {
+    "opacity", "cull_group", "collision", "slipperiness", "properties", "textures", "variant"};
 constexpr std::array<std::string_view, 4> variant_keys = {"when", "textures", "rotate_x",
                                                           "rotate_y"};
 // In TextureFace's order.
@@ -118,6 +118,11 @@ private:
 
     void read_opacity(const toml::node& node, BlockDefinition& block);
     void read_cull_group(const toml::node& node, BlockDefinition& block);
+    // RFC 0010's keys: reads `key` if it is collision or slipperiness, and
+    // says whether it was.
+    bool read_physics(std::string_view key, const toml::node& node, BlockDefinition& block);
+    void read_collision(const toml::node& node, BlockDefinition& block);
+    void read_slipperiness(const toml::node& node, BlockDefinition& block);
     void read_properties(const toml::node& node, BlockDefinition& block);
     std::vector<TextureAssignment> read_textures(const toml::node& node);
     void read_variants(const toml::node& node, BlockDefinition& block);
@@ -199,7 +204,7 @@ std::optional<BlockDefinition> Parser::parse() {
             textures_read = diagnostics_.size() == problems;
         } else if (key_name == "variant") {
             read_variants(node, block);
-        } else {
+        } else if (!read_physics(key_name, node, block)) {
             error(key.source(), unknown_key(key_name, block_keys));
             const std::optional<std::string_view> meant = near_miss(key_name, block_keys);
             textures_misspelt = textures_misspelt || meant == "textures";
@@ -248,6 +253,43 @@ void Parser::read_cull_group(const toml::node& node, BlockDefinition& block) {
         }
     } else {
         error(node.source(), "cull_group is a name in quotes");
+    }
+}
+
+bool Parser::read_physics(std::string_view key, const toml::node& node, BlockDefinition& block) {
+    if (key == "collision") {
+        read_collision(node, block);
+        return true;
+    }
+    if (key == "slipperiness") {
+        read_slipperiness(node, block);
+        return true;
+    }
+    return false;
+}
+
+void Parser::read_collision(const toml::node& node, BlockDefinition& block) {
+    const std::optional<std::string_view> value = node.value_exact<std::string_view>();
+    if (value == "full") {
+        block.collision = Collision::full;
+    } else if (value == "none") {
+        block.collision = Collision::none;
+    } else {
+        error(node.source(), R"(collision is "full" or "none")");
+    }
+}
+
+void Parser::read_slipperiness(const toml::node& node, BlockDefinition& block) {
+    // A whole number counts: slipperiness = 1 is the most there is. Above 0,
+    // as ground acceleration divides by it; NaN fails both comparisons.
+    std::optional<double> value = node.value_exact<double>();
+    if (const std::optional<std::int64_t> whole = node.value_exact<std::int64_t>()) {
+        value = static_cast<double>(*whole);
+    }
+    if (value && *value > 0.0 && *value <= 1.0) {
+        block.slipperiness = *value;
+    } else {
+        error(node.source(), "slipperiness is a number above 0 and at most 1");
     }
 }
 

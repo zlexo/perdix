@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vx/core/diagnostic.hpp>
+#include <vx/world/block_physics.hpp>
 #include <vx/world/block_visual.hpp>
 
 #include <cstdint>
@@ -61,7 +62,9 @@ struct BlockDefinition {
     std::string name; // from the file's path
     std::string path;
     Opacity opacity = Opacity::opaque;
-    std::string cull_group; // empty for none
+    Collision collision = Collision::full; // RFC 0010
+    double slipperiness = 0.6;             // RFC 0010: above 0, at most 1
+    std::string cull_group;                // empty for none
     SourcePlace cull_group_place;
     std::vector<PropertyDefinition> properties; // in name order
     std::vector<TextureAssignment> textures;
