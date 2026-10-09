@@ -1,5 +1,7 @@
 #include <vx/core/thread.hpp>
 
+#include <tracy/Tracy.hpp>
+
 #include <algorithm>
 #include <array>
 #include <string_view>
@@ -15,6 +17,8 @@
 namespace vx {
 
 void set_thread_name(const char* name) noexcept {
+    // Tracy keeps a copy.
+    tracy::SetThreadName(name);
 #ifdef __APPLE__
     pthread_setname_np(name);
 #elif defined(__linux__)

@@ -9,6 +9,7 @@
 #include "window.hpp"
 
 #include <vx/core/diagnostic.hpp>
+#include <vx/core/thread.hpp>
 #include <vx/core/vec3d.hpp>
 #include <vx/core/version.hpp>
 #include <vx/mesh/mesh_chunk.hpp>
@@ -239,7 +240,7 @@ std::optional<vx::app::StartupPack> load_pack(const vx::app::Options& options) {
 int main(int argc, char* argv[]) {
     // Named for Tracy (RFC 0005's Main, World and Worker threads) and for the
     // OS, so debuggers show it too.
-    tracy::SetThreadName("Main");
+    vx::set_thread_name("Main");
     const std::span<char* const> args(argv, static_cast<std::size_t>(argc));
     const std::span<char* const> after_name = args.empty() ? args : args.subspan(1);
     const std::vector<std::string_view> arguments(after_name.begin(), after_name.end());

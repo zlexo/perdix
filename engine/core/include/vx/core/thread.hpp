@@ -16,8 +16,8 @@ inline constexpr std::size_t cache_line = 128;
 // performance cores. Other systems have no such thing.
 enum class ThreadQos : std::uint8_t { user_interactive, user_initiated, utility, background };
 
-// Names the calling thread, as debuggers and crash reports show it. Linux
-// keeps the first 15 characters. Nothing outside macOS and Linux.
+// Names the calling thread for Tracy (RFC 0005) and for the system, as
+// debuggers and crash reports show it. Linux keeps the first 15 characters.
 void set_thread_name(const char* name) noexcept;
 
 // Puts the calling thread in `qos`. Nothing outside macOS.

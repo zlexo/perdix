@@ -1,6 +1,7 @@
 #include <vx/core/thread.hpp>
 
 #include <doctest/doctest.h>
+#include <tracy/Tracy.hpp>
 
 #include <array>
 #include <cstddef>
@@ -45,6 +46,20 @@ TEST_CASE("a thread names itself, and a long name keeps what the system keeps") 
 #else
     vx::set_thread_name("Worker 3");
     MESSAGE("skipped: names are read back on macOS and Linux");
+#endif
+}
+
+TEST_CASE("in a profiling build Tracy keeps the whole name, past what Linux keeps") {
+#ifdef TRACY_ENABLE
+    std::string heard;
+    std::thread thread([&heard] {
+        vx::set_thread_name("A name of twenty-eight bytes");
+        heard = tracy::GetThreadName(tracy::GetThreadHandle());
+    });
+    thread.join();
+    CHECK(heard == "A name of twenty-eight bytes");
+#else
+    MESSAGE("skipped: Tracy is compiled in with VX_PROFILE");
 #endif
 }
 

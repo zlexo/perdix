@@ -7,7 +7,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // RFC 0005's job system in its deterministic mode: the order jobs run in,
@@ -378,4 +380,48 @@ TEST_CASE("a lambda capturing what it needs is a job") {
     REQUIRE(jobs.submit({}, add));
     jobs.run_until_idle();
     CHECK(sum == 3);
+}
+
+namespace {
+
+struct NamedJob {
+    static constexpr const char* profile_name = "Named";
+    void operator()(vx::JobContext& /*job*/) const noexcept {}
+};
+
+struct PlainJob {
+    void operator()(vx::JobContext& /*job*/) const noexcept {}
+};
+
+} // namespace
+
+TEST_CASE("a job's zone in Tracy takes its type's profile name, or Job without one") {
+    static_assert(std::string_view(vx::job_profile_name<NamedJob>()) == "Named");
+    static_assert(std::string_view(vx::job_profile_name<PlainJob>()) == "Job");
+    // Text describes a job only while Tracy is compiled in, and a job may
+    // describe itself either way.
+    vx::JobSystem jobs({});
+    bool ran = false;
+    REQUIRE(jobs.submit({}, [&ran](vx::JobContext& job) noexcept {
+        job.describe("0, 1, 2");
+        job.describe(0, 1, 2);
+        job.describe(0, 2);
+        ran = true;
+    }));
+    jobs.run_until_idle();
+    CHECK(ran);
+    // Outside a job there is no zone to describe: nothing happens.
+    const vx::JobContext outside(0);
+    outside.describe("3, 4, 5");
+    outside.describe(3, 4, 5);
+}
+
+TEST_CASE("a job's zone shows a chunk as x, y, z and a column as x, z, at any coordinates") {
+    CHECK(vx::PositionText(3, -1, 12).view() == "3, -1, 12");
+    CHECK(vx::PositionText(-4, 7).view() == "-4, 7");
+    CHECK(vx::PositionText(0, 0, 0).view() == "0, 0, 0");
+    constexpr std::int32_t low = std::numeric_limits<std::int32_t>::min();
+    constexpr std::int32_t high = std::numeric_limits<std::int32_t>::max();
+    CHECK(vx::PositionText(low, low, low).view() == "-2147483648, -2147483648, -2147483648");
+    CHECK(vx::PositionText(high, low).view() == "2147483647, -2147483648");
 }
