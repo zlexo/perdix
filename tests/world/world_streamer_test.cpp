@@ -25,6 +25,7 @@
 namespace {
 
 using vx::BlockState;
+using vx::ChunkEvent;
 using vx::ChunkPos;
 using vx::ChunkRecord;
 using vx::ChunkState;
@@ -187,6 +188,16 @@ void settle(WorldStreamer& streamer, vx::JobSystem& jobs) {
         check_rules(streamer);
     }
     FAIL("streaming never settled");
+}
+
+std::size_t count_events(const std::vector<ChunkEvent>& events, ChunkEvent::Kind kind) {
+    std::size_t total = 0;
+    for (const ChunkEvent& event : events) {
+        if (event.kind == kind) {
+            ++total;
+        }
+    }
+    return total;
 }
 
 // The columns that get surfaces, counted by hand: those whose square of
@@ -387,6 +398,11 @@ TEST_CASE("over the placeholder hills, the region streams in and every drawn chu
             }
         }
     }
+    // Every drawn chunk was shown once.
+    std::vector<ChunkEvent> events;
+    streamer.take_events(events);
+    CHECK(count_events(events, ChunkEvent::Kind::shown) == drawn);
+    CHECK(count_events(events, ChunkEvent::Kind::hidden) == 0);
 }
 
 TEST_CASE("a near cylinder wider than the terrain disc streams in whole") {
@@ -736,6 +752,64 @@ TEST_CASE("at the world's edges every drawn chunk completes, with nothing past t
             }
         }
     }
+}
+
+TEST_CASE("a corner edit changes 8 chunks and an inner one 1") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    std::vector<ChunkEvent> events;
+    streamer.take_events(events);
+    // The camera's chunk starts at block (96, 64, 96).
+    const vx::BlockPos corner{.x = 96, .y = 64, .z = 96};
+    REQUIRE(streamer.set_block(corner, stone));
+    streamer.take_events(events);
+    CHECK(count_events(events, ChunkEvent::Kind::changed) == 8);
+    CHECK(streamer.block(corner) == stone);
+    // The far corner reaches the 7 neighbors on the other sides.
+    REQUIRE(streamer.set_block({.x = 127, .y = 95, .z = 127}, stone));
+    streamer.take_events(events);
+    CHECK(count_events(events, ChunkEvent::Kind::changed) == 8);
+    const std::uint32_t first_version = streamer.find(above_hills)->version;
+    REQUIRE(streamer.set_block({.x = 100, .y = 70, .z = 100}, stone));
+    streamer.take_events(events);
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].kind == ChunkEvent::Kind::changed);
+    CHECK(events[0].pos == above_hills);
+    const ChunkRecord* own = streamer.find(above_hills);
+    REQUIRE(own != nullptr);
+    CHECK(own->edited);
+    CHECK(own->version > first_version);
+    // Only ready chunks take edits.
+    CHECK_FALSE(streamer.set_block({.x = 100'000, .y = 70, .z = 100}, stone));
+}
+
+TEST_CASE("an edited chunk survives leaving the region, and shows again when the camera returns") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    const vx::BlockPos inside{.x = 100, .y = 70, .z = 100};
+    REQUIRE(streamer.set_block(inside, stone));
+    std::vector<ChunkEvent> events;
+    streamer.take_events(events);
+    streamer.set_camera({.x = above_hills.x + 40, .y = above_hills.y, .z = above_hills.z});
+    settle(streamer, jobs);
+    const ChunkRecord* own = streamer.find(above_hills);
+    REQUIRE(own != nullptr);
+    CHECK(own->edited);
+    CHECK_FALSE(own->drawn);
+    CHECK(streamer.block(inside) == stone);
+    streamer.take_events(events);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    CHECK(streamer.find(above_hills)->state == ChunkState::complete);
+    CHECK(streamer.block(inside) == stone);
 }
 
 TEST_CASE("with worker threads the region streams in as in the deterministic mode") {
