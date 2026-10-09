@@ -135,6 +135,10 @@ public:
     bool set_viewer(const Viewer& viewer);
     // set_viewer(viewer_at(camera)), keeping the view's direction.
     void set_camera(ChunkPos camera);
+    // The terrain disc's radius from now on, in chunks: RFC 0006's Render
+    // Distance option. The region is made again around the camera, and
+    // chunks join it and leave it as they do on a move, hysteresis included.
+    void set_view_distance(std::int32_t chunks);
     // Submits the jobs that can start, at most `room` of them: surfaces
     // first, then plans and builds, each lowest score first.
     void feed(std::size_t room = std::numeric_limits<std::size_t>::max());

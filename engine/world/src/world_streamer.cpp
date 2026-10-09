@@ -200,6 +200,20 @@ bool WorldStreamer::set_viewer(const Viewer& viewer) {
     return true;
 }
 
+void WorldStreamer::set_view_distance(std::int32_t chunks) {
+    if (chunks == settings_.view_distance) {
+        return;
+    }
+    settings_.view_distance = chunks;
+    if (region_) {
+        move_region(region_->camera());
+        // Plans parked until their column's surface came are tried again:
+        // a nearer distance may bring no surface, and those of the chunks it
+        // let go would wait for one for good.
+        surfaces_arrived_ = true;
+    }
+}
+
 void WorldStreamer::set_camera(ChunkPos camera) {
     Viewer viewer = viewer_at(camera);
     viewer.forward = viewer_.forward;
