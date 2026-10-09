@@ -41,8 +41,8 @@ constexpr vx::RegionSettings small{
 // Over the hills near block (100, 70, 100).
 constexpr ChunkPos above_hills{.x = 3, .y = 2, .z = 3};
 
-// The placeholder, noting each plan it is asked for. The deterministic mode
-// runs every job on the test's thread.
+// The placeholder, noting each plan and build it is asked for. The
+// deterministic mode runs every job on the test's thread.
 class CountingGenerator final : public vx::Generator {
 public:
     explicit CountingGenerator(const vx::Generator& inner) : inner_(&inner) {}
@@ -60,10 +60,27 @@ public:
     }
     [[nodiscard]] vx::ChunkStorage build(std::span<const vx::ChunkPlan* const, 27> plans,
                                          vx::GenScratch& scratch) const override {
+        const ChunkPos pos = plans[13]->pos;
+        built.push_back(pos);
+        // Each neighbor's plan in RFC 0008's place: x fastest, then z, then y.
+        for (std::int32_t at = 0; at < 27; ++at) {
+            const vx::ChunkPlan* plan = plans[static_cast<std::size_t>(at)];
+            if (at == 13 || plan == nullptr) {
+                continue;
+            }
+            const ChunkPos place{.x = pos.x + (at % 3) - 1,
+                                 .y = pos.y + (at / 9) - 1,
+                                 .z = pos.z + ((at / 3) % 3) - 1};
+            ++neighbor_plans;
+            misplaced_plans += plan->pos == place ? 0U : 1U;
+        }
         return inner_->build(plans, scratch);
     }
 
     mutable std::vector<ChunkPos> planned;
+    mutable std::vector<ChunkPos> built;
+    mutable std::size_t neighbor_plans = 0;
+    mutable std::size_t misplaced_plans = 0;
 
 private:
     const vx::Generator* inner_;
@@ -141,6 +158,13 @@ void check_rules(const WorldStreamer& streamer) {
             REQUIRE(record.loaded);
         }
         switch (record.state) {
+        case ChunkState::planned:
+            REQUIRE((!record.loaded || record.planned_neighbors < 26));
+            break;
+        case ChunkState::build_queued:
+            REQUIRE(record.loaded);
+            REQUIRE(record.planned_neighbors == 26);
+            break;
         case ChunkState::ready:
             REQUIRE(record.ready_neighbors < 26);
             break;
@@ -313,6 +337,127 @@ TEST_CASE("a drawn chunk stays drawn until it leaves the region grown for hyster
     CHECK(streamer.find(*edge)->drawn);
 }
 
+TEST_CASE("over the placeholder hills, the region streams in and every drawn chunk is complete") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    const vx::StreamingStats stats = streamer.stats();
+    CHECK(stats.surfaces_known == stats.columns);
+    CHECK(count(streamer, ChunkState::queued) == 0);
+    CHECK(count(streamer, ChunkState::planning) == 0);
+    CHECK(count(streamer, ChunkState::build_queued) == 0);
+    CHECK(count(streamer, ChunkState::building) == 0);
+    // Loaded chunks are built, plan ring chunks planned, drawn ones complete.
+    const vx::ChunkRecords& records = streamer.records();
+    std::size_t drawn = 0;
+    for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+        if (!records.live(index)) {
+            continue;
+        }
+        const ChunkRecord& record = records[index];
+        if (record.drawn) {
+            ++drawn;
+            CHECK(record.state == ChunkState::complete);
+        } else if (record.loaded) {
+            CHECK(vx::counts_as_ready(record.state));
+        } else if (record.state != ChunkState::planned) {
+            // In the plan ring: planned, or uniform, ready with no job.
+            CHECK(vx::counts_as_ready(record.state));
+            CHECK(record.blocks == nullptr);
+        }
+    }
+    CHECK(drawn > 27);
+    // The near cylinder, a circle of radius 1 a chunk up and down, is drawn
+    // and complete.
+    for (std::int32_t dy = -1; dy <= 1; ++dy) {
+        for (std::int32_t dz = -1; dz <= 1; ++dz) {
+            for (std::int32_t dx = -1; dx <= 1; ++dx) {
+                if ((dx * dx) + (dz * dz) > 1) {
+                    continue;
+                }
+                const ChunkRecord* record = streamer.find(
+                    {.x = above_hills.x + dx, .y = above_hills.y + dy, .z = above_hills.z + dz});
+                REQUIRE(record != nullptr);
+                CHECK(record->drawn);
+                CHECK(record->state == ChunkState::complete);
+            }
+        }
+    }
+}
+
+TEST_CASE("a near cylinder wider than the terrain disc streams in whole") {
+    // RFC 0006's slider goes down to a view distance of 4, under the near
+    // cylinder's 8: the columns that get surfaces follow the wider shape.
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    const vx::RegionSettings narrow{
+        .view_distance = 1, .near_distance = 4, .near_height = 1, .hysteresis = 1};
+    WorldStreamer streamer(generator, jobs, wake, narrow);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    CHECK(count(streamer, ChunkState::queued) == 0);
+    for (std::int32_t dz = -4; dz <= 4; ++dz) {
+        for (std::int32_t dx = -4; dx <= 4; ++dx) {
+            if ((dx * dx) + (dz * dz) > 16) {
+                continue;
+            }
+            for (std::int32_t dy = -1; dy <= 1; ++dy) {
+                INFO("chunk ", dx, ", ", dy, ", ", dz, " from the camera's");
+                const ChunkRecord* record = streamer.find(
+                    {.x = above_hills.x + dx, .y = above_hills.y + dy, .z = above_hills.z + dz});
+                REQUIRE(record != nullptr);
+                CHECK(record->drawn);
+                CHECK(record->state == ChunkState::complete);
+            }
+        }
+    }
+}
+
+TEST_CASE("one result at a time, a chunk is build-queued exactly at its 26th neighbor's plan and "
+          "complete exactly at its 26th ready neighbor") {
+    // One job slot: each step runs one job, and the rules are checked after
+    // each.
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({.slots = 1});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    // The camera's chunk: the step its last neighbor's plan lands and the
+    // step it is build-queued; the same for ready neighbors and complete.
+    int step_planned = -1;
+    int step_build_queued = -1;
+    int step_all_ready = -1;
+    int step_complete = -1;
+    for (int pass = 0; pass < 10'000 && step(streamer, jobs); ++pass) {
+        check_rules(streamer);
+        const ChunkRecord* own = streamer.find(above_hills);
+        if (own == nullptr) {
+            continue;
+        }
+        if (step_planned < 0 && own->planned_neighbors == 26) {
+            step_planned = pass;
+        }
+        if (step_build_queued < 0 && own->state >= ChunkState::build_queued) {
+            step_build_queued = pass;
+        }
+        if (step_all_ready < 0 && own->ready_neighbors == 26) {
+            step_all_ready = pass;
+        }
+        if (step_complete < 0 && own->state == ChunkState::complete) {
+            step_complete = pass;
+        }
+    }
+    REQUIRE(step_planned >= 0);
+    CHECK(step_build_queued == step_planned);
+    REQUIRE(step_all_ready >= 0);
+    CHECK(step_complete >= step_all_ready);
+    CHECK(streamer.find(above_hills)->state == ChunkState::complete);
+}
+
 TEST_CASE("uniform chunks never create jobs") {
     const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
     const CountingGenerator generator(placeholder);
@@ -330,6 +475,7 @@ TEST_CASE("uniform chunks never create jobs") {
         CHECK_FALSE(placeholder.out_of_reach(pos).has_value());
         CHECK(pos.y <= surface.max_y);
     }
+    CHECK(generator.built.size() <= generator.planned.size());
     // The near cylinder around the camera has records, all uniform air.
     const ChunkRecord* own = streamer.find({.x = 3, .y = 40, .z = 3});
     REQUIRE(own != nullptr);
@@ -337,6 +483,29 @@ TEST_CASE("uniform chunks never create jobs") {
     CHECK(own->blocks == nullptr);
     CHECK(own->uniform == BlockState::air);
     CHECK_FALSE(generator.planned.empty());
+}
+
+TEST_CASE("a build reads every neighbor's plan, each in its place") {
+    const vx::PlaceholderGenerator placeholder(0x5EED, blocks);
+    const CountingGenerator generator(placeholder);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    REQUIRE_FALSE(generator.built.empty());
+    // With the camera still, the neighbors with plans now had them then;
+    // the others are uniform, and builds read a null plan for them.
+    std::size_t with_plans = 0;
+    const vx::ChunkRecords& records = streamer.records();
+    for (const ChunkPos pos : generator.built) {
+        records.for_neighbors(pos, [&](std::uint32_t neighbor) {
+            with_plans += records[neighbor].plan != nullptr ? 1U : 0U;
+        });
+    }
+    CHECK(with_plans > 0);
+    CHECK(generator.neighbor_plans == with_plans);
+    CHECK(generator.misplaced_plans == 0);
 }
 
 TEST_CASE("a chunk that leaves while its plan job runs is freed when the job reports back") {
