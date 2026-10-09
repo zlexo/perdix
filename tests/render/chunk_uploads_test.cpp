@@ -220,6 +220,20 @@ TEST_CASE("uploads stop once the frame's budget is spent, and go on the next fra
     CHECK(uploads.upload(mesh.update({.x = 3}, 1), arena, next + microseconds(5'000)).value() ==
           Uploaded::written);
     CHECK(uploads.stats().uploads == 2);
+    // A frame whose budget went before its first upload, as when the frame
+    // waited for its image, still takes that one, and no more.
+    const Time late = next + microseconds(16'000);
+    uploads.begin_frame(2, late);
+    CHECK(uploads.upload(mesh.update({.x = 4}, 1), arena, late + microseconds(9'000)).value() ==
+          Uploaded::written);
+    CHECK(uploads.upload(mesh.update({.x = 5}, 1), arena, late + microseconds(9'000)).value() ==
+          Uploaded::later);
+    uploads.set_budget(std::chrono::nanoseconds(0));
+    uploads.begin_frame(0, late + microseconds(16'000));
+    CHECK(uploads.upload(mesh.update({.x = 5}, 1), arena, late + microseconds(16'000)).value() ==
+          Uploaded::written);
+    CHECK(uploads.upload(mesh.update({.x = 6}, 1), arena, late + microseconds(16'000)).value() ==
+          Uploaded::later);
 }
 
 TEST_CASE("an edit's batch goes in whole whatever the budget, or not at all without room") {
