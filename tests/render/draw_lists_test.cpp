@@ -1,4 +1,5 @@
 #include <vx/core/frustum.hpp>
+#include <vx/core/vec3d.hpp>
 #include <vx/render/chunk_uploads.hpp>
 #include <vx/render/draw_lists.hpp>
 
@@ -9,10 +10,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <random>
 #include <span>
+#include <utility>
 #include <vector>
 
 // RFC 0007's draw lists without a GPU: runs of face groups, face-direction
@@ -141,6 +144,96 @@ TEST_CASE("every quad that can face the camera is in a group the face mask keeps
     CHECK(vx::render::facing_mask({64, -5, -5}) == 0b111'110);
     CHECK(vx::render::facing_mask({0, 0, 0}) == 0b111'111);
     CHECK(vx::render::facing_mask({-32, -32, -32}) == 0b000'111);
+}
+
+namespace {
+
+// A random view: an orthonormal frame, a field of view and an aspect.
+vx::Frustum random_view(std::mt19937& random, vx::Vec3d& forward, vx::Vec3d& right, vx::Vec3d& up,
+                        double& tan_y, double& aspect) {
+    std::uniform_real_distribution<double> angle(-3.14159, 3.14159);
+    const double yaw = angle(random);
+    const double pitch = angle(random) / 2.2;
+    forward = {.x = std::cos(pitch) * std::sin(yaw),
+               .y = std::sin(pitch),
+               .z = -std::cos(pitch) * std::cos(yaw)};
+    right = {.x = std::cos(yaw), .y = 0.0, .z = std::sin(yaw)};
+    up = {.x = (right.y * forward.z) - (right.z * forward.y),
+          .y = (right.z * forward.x) - (right.x * forward.z),
+          .z = (right.x * forward.y) - (right.y * forward.x)};
+    std::uniform_real_distribution<double> fov(0.3, 1.5);
+    tan_y = std::tan(fov(random) / 2.0);
+    aspect = std::uniform_real_distribution<double>(0.5, 2.5)(random);
+    return {forward, right, up, tan_y, aspect, 0.05};
+}
+
+double dot(vx::Vec3d a, vx::Vec3d b) {
+    return (a.x * b.x) + (a.y * b.y) + (a.z * b.z);
+}
+
+} // namespace
+
+TEST_CASE("a chunk with any point inside the view is never culled") {
+    std::mt19937 random(0xC011);
+    std::uniform_int_distribution<std::int32_t> chunk(-8, 8);
+    std::uniform_real_distribution<double> inside(0.0, 32.0);
+    std::uniform_real_distribution<float> fraction(0.0F, 1.0F);
+    ChunkMeshRecord record{};
+    record.count.fill(1);
+    std::size_t seen = 0;
+    for (int sample = 0; sample < 3'000; ++sample) {
+        vx::Vec3d forward;
+        vx::Vec3d right;
+        vx::Vec3d up;
+        double tan_y = 0.0;
+        double aspect = 0.0;
+        const vx::Frustum view = random_view(random, forward, right, up, tan_y, aspect);
+        record.pos = {.x = chunk(random), .y = chunk(random), .z = chunk(random)};
+        const glm::i64vec3 camera_block(5, -3, 7);
+        const glm::vec3 camera(fraction(random), fraction(random), fraction(random));
+        // Points of the chunk relative to the camera; inside when ahead of
+        // the near plane and within both fields of view.
+        bool any = false;
+        for (int point = 0; point < 32 && !any; ++point) {
+            const vx::Vec3d p{.x = static_cast<double>((record.pos.x * 32) - camera_block.x) +
+                                   inside(random) - static_cast<double>(camera.x),
+                              .y = static_cast<double>((record.pos.y * 32) - camera_block.y) +
+                                   inside(random) - static_cast<double>(camera.y),
+                              .z = static_cast<double>((record.pos.z * 32) - camera_block.z) +
+                                   inside(random) - static_cast<double>(camera.z)};
+            const double ahead = dot(p, forward);
+            any = ahead >= 0.05 && std::abs(dot(p, right)) <= tan_y * aspect * ahead &&
+                  std::abs(dot(p, up)) <= tan_y * ahead;
+        }
+        if (!any) {
+            continue;
+        }
+        ++seen;
+        DrawLists lists;
+        vx::render::build_draw_lists(std::span(&record, 1), camera_block, camera, view,
+                                     {.frustum = true, .faces = false, .merge = true}, lists);
+        INFO("chunk ", record.pos.x, ", ", record.pos.y, ", ", record.pos.z);
+        CHECK(lists.stats.culled == 0);
+        CHECK(lists.stats.chunks == 1);
+    }
+    CHECK(seen > 300);
+}
+
+TEST_CASE("a limit of 3 commands a call splits them and loses none") {
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> calls;
+    vx::render::for_each_call(
+        10, 3, [&](std::uint32_t first, std::uint32_t count) { calls.emplace_back(first, count); });
+    CHECK(calls ==
+          std::vector<std::pair<std::uint32_t, std::uint32_t>>{{0, 3}, {3, 3}, {6, 3}, {9, 1}});
+    calls.clear();
+    vx::render::for_each_call(10, 65'535, [&](std::uint32_t first, std::uint32_t count) {
+        calls.emplace_back(first, count);
+    });
+    CHECK(calls == std::vector<std::pair<std::uint32_t, std::uint32_t>>{{0, 10}});
+    calls.clear();
+    vx::render::for_each_call(
+        0, 3, [&](std::uint32_t first, std::uint32_t count) { calls.emplace_back(first, count); });
+    CHECK(calls.empty());
 }
 
 TEST_CASE("draw lists: each drawn chunk's origin, its commands in both passes, and the counts") {

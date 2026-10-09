@@ -15,5 +15,6 @@ void block_pack(ankerl::nanobench::Bench& bench);
 void padded_chunk(ankerl::nanobench::Bench& bench);
 void mesh(ankerl::nanobench::Bench& bench);
 void movement(ankerl::nanobench::Bench& bench);
+void draw_lists(ankerl::nanobench::Bench& bench);
 
 } // namespace vx::bench

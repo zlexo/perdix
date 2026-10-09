@@ -22,6 +22,7 @@ add_executable(vx_bench
     mesh/padded_chunk_bench.cpp
     render/block_pack_bench.cpp
     render/block_textures_bench.cpp
+    render/draw_lists_bench.cpp
     world/block_registry_bench.cpp
     world/chunk_map_bench.cpp
     world/chunk_storage_bench.cpp
