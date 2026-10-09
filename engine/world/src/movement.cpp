@@ -299,6 +299,15 @@ double eye_height(Pose pose) noexcept {
     return pose == Pose::crouching ? 1.27 : 1.62;
 }
 
+Box tick_reach(const Player& player) noexcept {
+    const Box body = body_box(player.position, player.pose);
+    constexpr double past_speed = 2.0;
+    const Vec3d grown{.x = std::abs(player.velocity.x) + past_speed,
+                      .y = std::abs(player.velocity.y) + past_speed,
+                      .z = std::abs(player.velocity.z) + past_speed};
+    return {.min = body.min - grown, .max = body.max + grown};
+}
+
 double ground_acceleration(double slipperiness, bool sprinting,
                            const MovementNumbers& numbers) noexcept {
     // The game's 0.216 over the slipperiness cubed: 0.216 is 0.6 cubed.

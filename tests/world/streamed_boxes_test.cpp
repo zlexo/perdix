@@ -85,3 +85,27 @@ TEST_CASE("a chunk not loaded yet is solid, so a player cannot fall into it") {
                   found);
     CHECK(found.size() == 8);
 }
+
+TEST_CASE("a region is ready once every chunk it reaches into is, whatever it only touches") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    vx::WorldStreamer streamer(generator, jobs, wake, small);
+    const vx::StreamedBoxes world(streamer, {});
+    const auto body = [](double min_x, double max_x) {
+        return vx::Box{.min = {.x = min_x, .y = 1.0, .z = 1.2},
+                       .max = {.x = max_x, .y = 2.8, .z = 1.8}};
+    };
+    CHECK_FALSE(world.ready(body(0.2, 0.8))); // nothing streamed yet
+    streamer.set_camera({.x = 0, .y = 0, .z = 0});
+    settle(streamer, jobs);
+    // Chunks up to (4, 0, 0) are loaded, (5, 0, 0) is not.
+    REQUIRE(world.ready(body(159.2, 159.8)));
+    REQUIRE_FALSE(world.ready(body(160.2, 160.8)));
+    // Up against the face of the chunk not loaded is not in it.
+    CHECK(world.ready(body(159.4, 160.0)));
+    CHECK_FALSE(world.ready(body(159.5, 160.1)));
+    CHECK_FALSE(world.ready(body(159.9, 160.5)));
+    // Far past the world no chunk ever loads, and nothing waits for one.
+    CHECK(world.ready(body(4.0e9, 4.0e9 + 0.6)));
+}
