@@ -19,10 +19,12 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iterator>
 #include <new>
 #include <optional>
 #include <span>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -63,9 +65,23 @@ Viewer camera_viewer(const render::Camera& camera, float aspect) {
 }
 
 void StreamedMeshes::receive(std::vector<ToMain>& messages) {
+    take(messages, {});
+}
+
+void StreamedMeshes::receive(std::vector<ToMain>& messages,
+                             const std::function<void(const WorldSample&)>& sampled) {
+    take(messages, sampled);
+}
+
+void StreamedMeshes::take(std::vector<ToMain>& messages,
+                          const std::function<void(const WorldSample&)>& sampled) {
     std::size_t kept = 0;
     for (std::size_t at = 0; at < messages.size(); ++at) {
         ToMain& message = messages[at];
+        if (message.kind == ToMain::Kind::sample && sampled) {
+            sampled(message.sample);
+            continue;
+        }
         switch (message.kind) {
         case ToMain::Kind::mesh:
             meshes_.push_back({.order = next_order_, .update = std::move(message.mesh)});
@@ -112,6 +128,49 @@ bool StreamedMeshes::in_waiting_batch(ChunkPos pos) const noexcept {
         return std::ranges::any_of(batch,
                                    [pos](const MeshUpdate& update) { return update.pos == pos; });
     });
+}
+
+Holes StreamedMeshes::holes(const render::ChunkUploads& uploads, const Viewer& viewer,
+                            double near) const {
+    // Each chunk's meshes waiting, the newest last: the uploads keep the
+    // newest, and an empty one leaves nothing to draw.
+    struct Waiting {
+        ChunkPos pos;
+        std::uint32_t generation = 0;
+        bool quads = false;
+    };
+    std::vector<Waiting> waiting;
+    const auto add = [&waiting](const MeshUpdate& update) {
+        waiting.push_back(
+            {.pos = update.pos, .generation = update.generation, .quads = !update.quads.empty()});
+    };
+    for (const Mesh& mesh : meshes_) {
+        if (!unloaded(mesh)) {
+            add(mesh.update);
+        }
+    }
+    for (const std::vector<MeshUpdate>& batch : batches_) {
+        std::ranges::for_each(batch, add);
+    }
+    std::ranges::sort(waiting, {}, [](const Waiting& mesh) {
+        return std::tuple(mesh.pos.x, mesh.pos.y, mesh.pos.z, mesh.generation);
+    });
+    Holes holes;
+    for (std::size_t at = 0; at < waiting.size(); ++at) {
+        const Waiting& newest = waiting[at];
+        if ((at + 1 < waiting.size() && waiting[at + 1].pos == newest.pos) || !newest.quads ||
+            uploads.find(newest.pos) != nullptr) {
+            continue;
+        }
+        const ChunkSight sight = chunk_sight(viewer, newest.pos, near);
+        if (sight.in_view) {
+            ++holes.all;
+        }
+        if (sight.near) {
+            ++holes.near;
+        }
+    }
+    return holes;
 }
 
 bool StreamedMeshes::unloaded(const Mesh& mesh) const noexcept {
