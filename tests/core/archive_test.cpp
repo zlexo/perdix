@@ -652,7 +652,9 @@ TEST_CASE("every entry of the player's Minecraft jar reads back, when one is nam
     std::size_t textures = 0;
     for (const std::string_view name : archive.names()) {
         if (name.starts_with("assets/minecraft/textures/block/") && name.ends_with(".png")) {
-            textures += archive.read(name).has_value() ? 1 : 0;
+            if (archive.read(name).has_value()) {
+                ++textures;
+            }
         }
     }
     const auto read_textures = std::chrono::steady_clock::now();

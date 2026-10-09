@@ -81,7 +81,7 @@ void chunk_map(ankerl::nanobench::Bench& bench) {
         .run("chunk map, 17,045 chunks: find, miss, throughput", [&] {
             std::size_t found = 0;
             for (const ChunkPos pos : misses) {
-                found += map.find(pos).has_value() ? 1 : 0;
+                found += static_cast<std::size_t>(map.find(pos).has_value());
             }
             ankerl::nanobench::doNotOptimizeAway(found);
         });
