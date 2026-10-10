@@ -2,19 +2,19 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Accepted (2026-10-10) |
 | **Milestone** | M3.5 Body (settled: open question 1) |
 | **Issue** | #341 |
 
 ## Summary
 
-The world gets a second player, named Perdix, who lives in it on his own: he strolls to a spot nearby every few seconds, looks around, looks at you when you come close, and climbs one-block steps the way the game's auto-jump climbs them, with a name tag over his head. Both players get bodies: Minecraft Java Edition 26.2's player model, skins, posing and light, so a camera anywhere in the world sees them. You stay yourself, in first person, as before; step out of your body with the free camera (F4) and you see yourself too, in your own skin. Every size, angle, rate and color the player sees is the game's, read from its 26.2 jar. The bodies are twelve textured boxes posed on the CPU each frame; the name tag is text drawn in the world with the game's font, read from the player's own jar like the block textures (RFC 0009), or Perdix's own. There is no new UI: Perdix's mode is a command-line option and a key.
+The world gets a second player, named Perdix, who lives in it on his own: he strolls to a spot nearby every few seconds, looks around, looks at you when you come close, and climbs one-block steps the way the game's auto-jump climbs them, with a name tag over his head. Both players get bodies: Minecraft Java Edition 26.2's player model, skins, posing and light, so a camera anywhere in the world sees them. You stay yourself, in first person, as before; step out of your body with the free camera (F4) and you see yourself too, in your own skin. Every size, angle, rate and color the player sees is the game's, read from its 26.2 jar. The bodies are twelve textured boxes posed on the CPU each frame; the name tag is text drawn in the world with the game's font, read from the player's own jar like the block textures (RFC 0009), or Perdix's own. The app gains its first panel, the god panel on G, to set Perdix's mode, bring him to you and choose both skins; and nothing is bound to the F row any more: the overlay moves from F3 to O and the free camera from F4 to V.
 
 In this RFC "Perdix" is the character; the engine is "the engine".
 
 ## Motivation
 
-On 2026-10-10 the owner asked to see a player from outside, "not in the f5 view sense, i want to have the camera look at the player from somewhere", and to "build the feature in perdix of viewing another player, no ui yet". It is for a video series in which "the 'player' is loose in this world and we add more and more features each time and viewers can suggest what to add". The player has a name: "i was thinking of naming the other player Perdix ... we zoom into his face and we give him a name and we add the name tag and then we give him a skin and he will be our main guy in this series". He is not the owner: "i still want to see the body walk inside the app, just not my body ... for now i want to be myself and be able to see this player", and he has a life of his own: "by default it should live its own life, we are developing its universe so we are god".
+On 2026-10-10 the owner asked to see a player from outside, "not in the f5 view sense, i want to have the camera look at the player from somewhere", and to "build the feature in perdix of viewing another player, no ui yet". It is for a video series in which "the 'player' is loose in this world and we add more and more features each time and viewers can suggest what to add". The player has a name: "i was thinking of naming the other player Perdix ... we zoom into his face and we give him a name and we add the name tag and then we give him a skin and he will be our main guy in this series". He is not the owner: "i still want to see the body walk inside the app, just not my body ... for now i want to be myself and be able to see this player", and he has a life of his own: "by default it should live its own life, we are developing its universe so we are god". The app may grow UI for it, but not on the F row: "feel free to start adding ui to the app. i don't like using the f keys because i have a 60% keyboard so bind stuff not to f keys".
 
 Today there is one player, and it has no body. RFC 0010's noclip camera leaves it standing, a 0.6 by 1.8 box that collides with blocks but draws nothing, and the engine draws no text in the world at all.
 
@@ -39,6 +39,7 @@ Goals:
 - **Skins**: Perdix's own, the character's look, made for the engine; the owner's own, `Zlex`, which you wear; the game's 18 default skins, read from the player's jar, never copied, kept or published; and any skin file in the game's format.
 - **Perdix's life**, the game's idle rhythm: strolling, looking around, looking at you, climbing steps by the auto-jump rule; and two other modes, following you and standing still.
 - **Name tags** as the game draws a player's, with the game's font from the jar or Perdix's own font: over Perdix, and over you when the free camera sees you.
+- **The god panel** (G): Perdix's mode, bringing him to you, both players' skins. **No key on the F row**: the overlay on O and the free camera on V, instead of F3 and F4.
 - Up to 64 bodies and tags a frame; no allocation in a frame; posing, life and tags cheap enough not to show beside the chunks.
 
 Non-goals:
@@ -227,13 +228,13 @@ Three kinds, all `Skin`s by the time the renderer sees them:
 - **The owner's**, `assets/core/textures/entity/player/zlex.png`, slim arms: the skin of the Minecraft account `Zlex`, fetched once on 2026-10-10 with the owner's permission (552 bytes; its SHA-256 is the hash in its texture URL) and committed as an asset. It is what you wear.
 - **The game's 18 defaults**: `assets/minecraft/textures/entity/player/{wide,slim}/<name>.png` in the 26.2 jar, 64 by 64 palette PNGs with a transparent entry, alpha 0 or 255 only, their hat layers empty. Read through RFC 0009's reader; nothing of the game's is written anywhere. A missing, unreadable, non-PNG or wrong-sized entry is a warning, and that player falls back to Perdix's own skin.
 
-`read_skin` follows the game's rules for a skin file: a 64 by 64 image as it is; a legacy 64 by 32 one made 64 by 64 by copying its right arm and leg, mirrored, into the left limbs' places; in both, the base layer's regions (0, 0 to 32, 16; 0, 16 to 64, 32; 16, 48 to 48, 64) forced opaque. Any other size is refused. Options choose skins (open question 9): `--skin <name>[:slim]` for you, `--perdix-skin <name>[:slim]` for him, where a name is one of the 18, `perdix`, `zlex` or a path to a PNG.
+`read_skin` follows the game's rules for a skin file: a 64 by 64 image as it is; a legacy 64 by 32 one made 64 by 64 by copying its right arm and leg, mirrored, into the left limbs' places; in both, the base layer's regions (0, 0 to 32, 16; 0, 16 to 64, 32; 16, 48 to 48, 64) forced opaque. Any other size is refused. The god panel chooses each player's skin from the list (Perdix's own, `zlex`, the 18 defaults); at startup `--skin <name>[:slim]` sets yours and `--perdix-skin <name>[:slim]` his, where a name is one of those or a path to a PNG.
 
 ### Two players
 
 Both players run on the world thread, as RFC 0010's player does since M3: each a `Walking` against the streamed chunks, held in place when its move could touch a chunk not loaded yet. The main thread receives each one's `WalkingFrame` after every tick and draws between the last two. Perdix appears when the world starts, on the ground 5 blocks in front of where you spawn, facing you (open question 8), and again there if he ever falls 64 blocks below the lowest block, as RFC 0010 respawns you.
 
-Perdix's `TickInput` comes from his mode:
+Perdix's `TickInput` comes from his mode, set in the god panel or at startup with `--perdix`:
 
 - **life**, the default: his life below.
 - **follow**: as a tamed wolf follows its owner, he walks toward you once you are more than 10 blocks away and stops within 2 (the distances to be confirmed against the jar's `FollowOwnerGoal` in the pull request), climbing by auto-jump. Unlike the wolf he never teleports: beyond 16 blocks he sprints instead, our choice.
@@ -319,8 +320,10 @@ struct FrameInputs {
 ### In the app
 
 - **Walking**, as today, you are the camera: your body and tag are not drawn. Perdix is.
-- **The free camera** (F4) leaves your body standing where it was, as today, and now you see it, in your skin, with `Zlex` over it; and Perdix, wherever he is.
-- **Perdix's mode** starts from `--perdix life|follow|still` (life by default), and a key cycles it, shown in the overlay (open question 9).
+- **The free camera**, on V (was F4), leaves your body standing where it was, as today, and now you see it, in your skin, with `Zlex` over it; and Perdix, wherever he is.
+- **The overlay**, on O (was F3), as before. No key is on the F row: a 60% keyboard reaches it only through a function layer.
+- **The god panel**, on G: a Dear ImGui panel like the overlay's, that frees the mouse while it is open, as the game's inventory does, and gives it back on a click in the world. It sets Perdix's mode (life, follow, still), brings him to you (5 blocks in front of you, on the ground), and chooses his skin and yours; a skin change applies at once, the skins being in the texture table from startup.
+- **At startup**, `--perdix life|follow|still`, `--skin` and `--perdix-skin` set the same things.
 - **The startup report** gains the skins and the font: `Skins: Perdix's own (Perdix), zlex (you)`, `Font: Minecraft 26.2, from <the jar>` or `Font: Perdix's own`.
 
 A film tool, or any program on the engine, does the same with its own cameras: it runs the players, poses their bodies from their frames, adds their tags, and places the camera where it likes.
@@ -336,6 +339,7 @@ A film tool, or any program on the engine, does the same with its own cameras: i
 - **Pathfinding now**: walking straight and climbing steps gives the game's idle rhythm in open terrain; a path search over streamed chunks is a feature of its own, with its own budget.
 - **Tags in the overlay** (screen-space text from Dear ImGui): simple, but never hidden by walls, never sized by distance, and not the game's look.
 - **A scripted path instead of a life**: what the film tool does for a shot; in the app the owner asked for a life.
+- **F-row keys**, as the game's F3 and F5: out of reach on a 60% keyboard without its function layer.
 
 ## Performance budget
 
@@ -372,6 +376,8 @@ On the reference machine, Release build:
 
 **In `vx_render_tests`**, headless: one body in Perdix's own skin from a fixed camera, front and side, with checked pixels on the face, the arm and the background and its silhouette inside the projected key points; one tag behind a wall, visible at half white, and in the open at full white; validation clean.
 
+**In `app`**, with SDL's dummy video driver and no window shown: O, V and G toggle the overlay, the free camera and the god panel; pressing every F key changes nothing; the panel frees the mouse and a click in the world takes it back.
+
 **By eye**, the owner sets the engine and the game side by side: bodies standing, walking, sprinting, sneaking, strafing, walking backward and turning past 50 degrees; a tag in the open and behind a wall; a cow and Perdix idling side by side, their rhythm compared.
 
 ## Pull request plan
@@ -380,29 +386,26 @@ On the reference machine, Release build:
 2. **The animation** (`world`): `BodyMotion` and `animate`; the swing and body vectors.
 3. **The skins** (`world`, `minecraft`, `assets`): `Skin`, `read_skin` with the game's rules; Perdix's own and the owner's skins in the core pack; `default_skin` through RFC 0009's reader; the tests.
 4. **Drawing bodies** (`render`): `RendererDesc::skins`, `FrameInputs::players`, the body pipeline and its shaders, posing into the frame's buffer; the headless render test and the allocation test with bodies.
-5. **Your body** (`app`): `WalkingFrame` carries `BodyMotion`; the free camera sees your body in your skin; the skin options; the startup report's skin line.
-6. **A second player** (`app`, `world`): Perdix on the world thread, spawned before you, his frames to the main thread, the still and follow modes, the leash, `--perdix` and the key.
+5. **Your body** (`app`): `WalkingFrame` carries `BodyMotion`; the free camera sees your body in your skin; the keys off the F row, the overlay on O and the free camera on V; the skin options; the startup report's skin line.
+6. **A second player** (`app`, `world`): Perdix on the world thread, spawned before you, his frames to the main thread, the still and follow modes, the leash, `--perdix`, and the god panel on G with his mode and bringing him to you.
 7. **Perdix's life** (`world`): the three goals, the look control, walking at a target, auto-jump, the stuck check; the seeded vectors and the controls.
 8. **Text** (`minecraft`, `mesh`, `render`): the font from the jar and Perdix's own, the tag layout, the text pipeline with its two passes; the tag tests.
-9. **Name tags** (`app`): Perdix's tag, yours in the free camera, the font line in the startup report. Then As built.
+9. **Name tags and skins in the panel** (`app`): Perdix's tag, yours in the free camera, both skins in the god panel, the font line in the startup report. Then As built.
 
 ## Open questions
 
-Settled on 2026-10-10 with the owner, as recommended unless noted:
+All settled on 2026-10-10 with the owner, as recommended unless noted:
 
 1. **When**: right after M3 closes, as **M3.5 Body**, before M9's and M4's code.
-2. **Skins** (changed by the owner): Perdix wears Perdix's own skin; you wear the owner's, `Zlex`, kept in the repository; the game's defaults by option.
+2. **Skins** (changed by the owner): Perdix wears Perdix's own skin; you wear the owner's, `Zlex`, kept in the repository; the game's defaults by choice.
 3. **Perdix's own skin**: original art made the way the core pack's eleven textures were, in the owner's texture tool on the Resurrect 64 palette, wide arms. It is the character's look.
 4. **Seeing a body move in the app** (changed by the owner): yes, Perdix's, living on his own; yours in the free camera.
 5. **Exact trigonometry** rather than the game's sine table, and **discarding** below alpha 0.1 rather than blending, for bodies.
-
-Open:
-
-6. **Perdix's body**: the player rules (0.3 a tick, within 50 degrees) or a mob's (pinned to the walking direction, catching up with the head after 10 still ticks)? Recommended: the player rules, as above; he is a player.
-7. **The leash**: strolls within 24 blocks of you, walking back beyond 48? Recommended: yes; the streamed world stays loaded around you, and 24 keeps him in view.
-8. **Where he appears**: recommended 5 blocks in front of where you spawn, on the ground, facing you. The alternative is a fixed spot on the world, which the film tool can also set.
-9. **Choosing without UI**: recommended `--perdix life|follow|still` and `--skin`, `--perdix-skin` at startup, and F7 to cycle Perdix's mode, shown in the overlay.
-10. **The font without the game**: recommended Perdix's own 8 by 8 ASCII font, made in the owner's texture tool like the textures and the skin, so `--no-minecraft` and published clips have a tag in Perdix's own letters. The stopgap until then is to draw no tag without the game.
+6. **Perdix's body**: the player rules (0.3 a tick, within 50 degrees), not a mob's; he is a player.
+7. **The leash**: strolls within 24 blocks of you; beyond 48 he walks back.
+8. **Where he appears**: 5 blocks in front of where you spawn, on the ground, facing you.
+9. **Choosing** (changed by the owner): UI is welcome, and nothing goes on the F row: the god panel on G for his mode, bringing him over and both skins; the overlay moves to O and the free camera to V; the startup options stay.
+10. **The font without the game**: Perdix's own 8 by 8 ASCII font, made in the owner's texture tool like the textures and the skin; until it exists, no tag is drawn without the game.
 
 ## As built
 
