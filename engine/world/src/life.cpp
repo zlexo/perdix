@@ -33,21 +33,55 @@ constexpr double most_pitch = radians(40.0);
 constexpr int point_hold = 2;
 constexpr double least_offset = 9.999999747378752e-6;
 
+// Looking at a player, from the jar: the chance at each choice; how far a
+// player is seen, sneaking hiding one to 0.8 of that but never under 2;
+// and 40 ticks and up to 39 more, counted in choices, two ticks each, so
+// halved and rounded up.
+constexpr float look_chance = 0.02F;
+constexpr double look_reach = 6.0;
+constexpr double sneaking_seen = 0.8;
+constexpr double least_reach = 2.0;
+constexpr int look_least = 40;
+constexpr int look_spread = 40;
 // Looking around: the chance at each choice, and 20 ticks and up to 19
 // more, counted every tick.
 constexpr float around_chance = 0.02F;
 constexpr int around_least = 20;
 constexpr int around_spread = 20;
 
-constexpr std::array goals = {LifeGoal::look_around};
+constexpr std::array goals = {LifeGoal::look_at_player, LifeGoal::look_around};
 
 // `from` turned toward `to` by at most `most`, the shorter way round.
 double turned_toward(double from, double to, double most) noexcept {
     return wrap_turn(from + std::clamp(wrap_turn(to - from), -most, most));
 }
 
+double squared_distance(Vec3d a, Vec3d b) noexcept {
+    const Vec3d d = b - a;
+    return (d.x * d.x) + (d.y * d.y) + (d.z * d.z);
+}
+
 Vec3d eyes(const Player& body) noexcept {
     return body.position + Vec3d{.x = 0.0, .y = eye_height(body.pose), .z = 0.0};
+}
+
+Vec3d eyes(const Onlooker& someone) noexcept {
+    return someone.feet + Vec3d{.x = 0.0, .y = someone.eye_height, .z = 0.0};
+}
+
+// Whether the blocks leave a clear line from `from` to `to`: no block box
+// the segment passes through.
+bool clear_line(Vec3d from, Vec3d to, const BlockBoxes& world, std::vector<Box>& scratch) {
+    const Box region{.min = {.x = std::min(from.x, to.x),
+                             .y = std::min(from.y, to.y),
+                             .z = std::min(from.z, to.z)},
+                     .max = {.x = std::max(from.x, to.x),
+                             .y = std::max(from.y, to.y),
+                             .z = std::max(from.z, to.z)}};
+    scratch.clear();
+    world.collect(region, scratch);
+    return std::ranges::none_of(scratch,
+                                [&](const Box& box) { return segment_enters(box, from, to); });
 }
 
 } // namespace
@@ -116,9 +150,11 @@ std::uint64_t Life::starts(LifeGoal goal) const noexcept {
 
 void Life::choose(const Player& body, const Onlooker& you, const BlockBoxes& world,
                   std::vector<Box>& scratch) {
-    const auto claims = [](LifeGoal /*goal*/) -> std::span<const Claim> {
+    const auto claims = [](LifeGoal goal) -> std::span<const Claim> {
+        static constexpr std::array eyes_only = {Claim::eyes};
         static constexpr std::array legs_and_eyes = {Claim::legs, Claim::eyes};
-        return legs_and_eyes;
+        return goal == LifeGoal::look_around ? std::span<const Claim>(legs_and_eyes)
+                                             : std::span<const Claim>(eyes_only);
     };
     // First the running goals that can no longer go on stop, and what the
     // stopped goals held is free.
@@ -157,18 +193,32 @@ void Life::choose(const Player& body, const Onlooker& you, const BlockBoxes& wor
     }
 }
 
-bool Life::can_use(LifeGoal goal, const Player& /*body*/, const Onlooker& /*you*/,
-                   const BlockBoxes& /*world*/, std::vector<Box>& /*scratch*/) {
+bool Life::can_use(LifeGoal goal, const Player& body, const Onlooker& you, const BlockBoxes& world,
+                   std::vector<Box>& scratch) {
     const auto chance = static_cast<float>(next() >> 40U) * 0x1p-24F;
     switch (goal) {
+    case LifeGoal::look_at_player: {
+        if (chance >= look_chance) {
+            return false;
+        }
+        const double reach =
+            std::max(look_reach * (you.sneaking ? sneaking_seen : 1.0), least_reach);
+        return squared_distance(body.position, you.feet) <= reach * reach &&
+               clear_line(eyes(body), eyes(you), world, scratch);
+    }
     case LifeGoal::look_around:
         return chance < around_chance;
     }
     return false;
 }
 
-bool Life::can_go_on(LifeGoal goal, const Player& /*body*/, const Onlooker& /*you*/) const {
+bool Life::can_go_on(LifeGoal goal, const Player& body, const Onlooker& you) const {
     switch (goal) {
+    case LifeGoal::look_at_player:
+        // Within the plain reach, sneaking or not, and with no look at
+        // the line of sight: a look once begun lasts through a wall.
+        return squared_distance(body.position, you.feet) <= look_reach * look_reach &&
+               look_time_ > 0;
     case LifeGoal::look_around:
         return around_time_ >= 0;
     }
@@ -179,6 +229,9 @@ void Life::start(LifeGoal goal) {
     running_[static_cast<std::size_t>(goal)] = true;
     ++starts_[static_cast<std::size_t>(goal)];
     switch (goal) {
+    case LifeGoal::look_at_player:
+        look_time_ = (look_least + static_cast<int>(next() % look_spread) + 1) / 2;
+        return;
     case LifeGoal::look_around: {
         const double angle = 2.0 * pi * (static_cast<double>(next() >> 11U) * 0x1p-53);
         around_ = {.x = std::cos(angle), .y = 0.0, .z = std::sin(angle)};
@@ -192,8 +245,12 @@ void Life::stop(LifeGoal goal) {
     running_[static_cast<std::size_t>(goal)] = false;
 }
 
-void Life::tick_goal(LifeGoal goal, const Player& body, const Onlooker& /*you*/) {
+void Life::tick_goal(LifeGoal goal, const Player& body, const Onlooker& you) {
     switch (goal) {
+    case LifeGoal::look_at_player:
+        look_.look_at(eyes(you));
+        --look_time_;
+        return;
     case LifeGoal::look_around:
         --around_time_;
         look_.look_at(eyes(body) + around_);
