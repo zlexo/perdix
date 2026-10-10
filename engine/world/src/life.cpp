@@ -425,6 +425,19 @@ void Life::set_mode(LifeMode mode) noexcept {
     }
 }
 
+void Life::start_over(float facing) noexcept {
+    for (const LifeGoal goal : goals) {
+        if (running(goal)) {
+            stop(goal);
+        }
+    }
+    look_ = LookControl(facing);
+    walking_yaw_ = facing;
+    look_time_ = 0;
+    around_time_ = 0;
+    jump_next_ = false;
+}
+
 bool Life::in_mode(LifeGoal goal) const noexcept {
     switch (mode_) {
     case LifeMode::life:

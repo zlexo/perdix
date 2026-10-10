@@ -1,6 +1,7 @@
 #include "life_scene.hpp"
 
 #include <vx/core/vec3d.hpp>
+#include <vx/world/body_motion.hpp>
 #include <vx/world/life.hpp>
 
 #include <doctest/doctest.h>
@@ -154,6 +155,35 @@ TEST_CASE("a mode set mid-stroll stops the stroll at once") {
     CHECK_FALSE(scene.life.walk_target());
     CHECK_FALSE(scene.step().input.held.forward);
     CHECK(scene.life.mode() == LifeMode::still);
+}
+
+TEST_CASE("put elsewhere mid-stroll he starts over, his head where he now faces") {
+    Scene scene(3);
+    scene.you.feet = {.x = 0.0, .y = 7.0, .z = 0.0};
+    while (!scene.life.walk_target()) {
+        static_cast<void>(scene.step());
+    }
+    // As the app brings him: his body put down 5 blocks away, turned about.
+    const auto facing = static_cast<float>(
+        vx::wrap_turn(static_cast<double>(scene.motion.head_yaw) + vx::test::pi));
+    scene.perdix.position = {.x = 5.0, .y = 0.0, .z = 5.0};
+    scene.motion = vx::body_facing(facing, 0.0F);
+    scene.life.start_over(facing);
+    CHECK_FALSE(scene.life.walk_target());
+    for (const LifeGoal goal : {LifeGoal::go_back, LifeGoal::follow, LifeGoal::stroll,
+                                LifeGoal::look_at_player, LifeGoal::look_around}) {
+        CHECK_FALSE(scene.life.running(goal));
+    }
+    // His head turns from there, at most 10 degrees a tick, not from where
+    // it looked before.
+    const vx::LifeTick next = scene.step();
+    CHECK(std::abs(vx::wrap_turn(static_cast<double>(next.look_yaw - facing))) <=
+          vx::test::radians(10.0) + 1e-5);
+    // No walk began, so the keys push the way he faces.
+    REQUIRE_FALSE(scene.life.walk_target());
+    CHECK(next.input.yaw == facing);
+    CHECK_FALSE(next.input.held.jump);
+    CHECK(scene.life.mode() == LifeMode::life);
 }
 
 TEST_CASE("in life beyond 48 blocks he walks back to you until within 24") {
