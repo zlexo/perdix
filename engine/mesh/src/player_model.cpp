@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 #include <span>
 
 namespace vx {
@@ -123,7 +124,8 @@ Rotation part_rotation(const PartPose& part) noexcept {
             .z = {.x = -sy, .y = cy * sx, .z = cy * cx}};
 }
 
-// Every part from rest, then the head's turn (RFC 0012).
+// The game's poses, in its order: every part from rest, then the head, the
+// walk swing, the leg splay and the idle sway (RFC 0012).
 std::array<PartPose, part_count> pose_parts(const PlayerPose& pose, const Model& model) noexcept {
     std::array<PartPose, part_count> parts{};
     for (std::size_t part = 0; part < part_count; ++part) {
@@ -137,6 +139,28 @@ std::array<PartPose, part_count> pose_parts(const PlayerPose& pose, const Model&
     parts[head].yaw = static_cast<double>(pose.body_yaw) - static_cast<double>(pose.head_yaw);
     parts[head].pitch = -static_cast<double>(pose.head_pitch);
 
+    // Each arm swings with the opposite leg, the legs 1.4 times as far.
+    const double phase = 0.6662 * pose.limb_position;
+    const double amount = pose.limb_amount;
+    parts[right_arm].pitch = std::cos(phase + std::numbers::pi) * amount;
+    parts[left_arm].pitch = std::cos(phase) * amount;
+    parts[right_leg].pitch = std::cos(phase) * 1.4 * amount;
+    parts[left_leg].pitch = std::cos(phase + std::numbers::pi) * 1.4 * amount;
+
+    // The feet always point a little outward.
+    parts[right_leg].yaw = 0.005;
+    parts[right_leg].roll = 0.005;
+    parts[left_leg].yaw = -0.005;
+    parts[left_leg].roll = -0.005;
+
+    // Both arms drift outward and back again, never in, over about 70 and
+    // 94 ticks.
+    const double sway_roll = (0.05 * std::cos(0.09 * pose.age)) + 0.05;
+    const double sway_pitch = 0.05 * std::sin(0.067 * pose.age);
+    parts[right_arm].roll += sway_roll;
+    parts[right_arm].pitch += sway_pitch;
+    parts[left_arm].roll -= sway_roll;
+    parts[left_arm].pitch -= sway_pitch;
     return parts;
 }
 

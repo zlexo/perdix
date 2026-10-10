@@ -47,6 +47,8 @@ enum : std::size_t { top, bottom, right_side, front, left_side, back, face_count
 // arms hang straight down but for the sway's small pitch.
 constexpr double unrolled = std::numbers::pi / 0.09;
 
+constexpr double scale = 0.9375; // the model's, against its pixels
+
 Body posed(const PlayerPose& pose, vx::BlockPos origin = {}) {
     Body body{};
     vx::pose_player(pose, origin, body);
@@ -102,6 +104,14 @@ template <std::size_t count> Vec3d center(std::span<const BodyVertex, count> ver
 void check_near(double actual, double expected, double tolerance = 1e-4) {
     INFO(actual, " against ", expected);
     CHECK(std::abs(actual - expected) <= tolerance);
+}
+
+// How far a limb is pitched back about `pivot`, seen from the player's
+// right with yaw 0: the angle from straight down to the direction from the
+// pivot to its box's far end, back (+z) positive.
+double pitch_back(const Body& body, std::size_t limb, Vec3d pivot) {
+    const Vec3d end = center(face_of(body, limb, bottom)) - pivot;
+    return std::atan2(end.z, -end.y);
 }
 
 } // namespace
@@ -231,6 +241,25 @@ TEST_CASE("the standing body's key points are where RFC 0012 puts them") {
     check_near((position(*low).y + position(*high).y) / 2.0, 1.6416);
 }
 
+TEST_CASE("the shoulders are the arms' pivots 1.29 above the feet") {
+    // A swing turns every point of an arm about its shoulder, keeping its
+    // distance from it.
+    const Body rest = posed({.age = unrolled});
+    const Body swung = posed({.limb_amount = 1.0, .age = unrolled});
+    for (const auto& [arm, x] :
+         {std::pair{right_arm, 5.0 / 16.0 * scale}, std::pair{left_arm, -5.0 / 16.0 * scale}}) {
+        const Vec3d shoulder{.x = x, .y = 1.2900, .z = 0.0};
+        check_near(shoulder.x, arm == right_arm ? 0.2930 : -0.2930);
+        const std::span<const BodyVertex, 36> before = box_of(rest, arm);
+        const std::span<const BodyVertex, 36> after = box_of(swung, arm);
+        for (std::size_t at = 0; at < before.size(); ++at) {
+            CHECK(length(position(after[at]) - position(before[at])) > 0.01);
+            check_near(length(position(after[at]) - shoulder),
+                       length(position(before[at]) - shoulder));
+        }
+    }
+}
+
 TEST_CASE("the arms span 0.9375 blocks across wide and 0.8203 slim") {
     for (const auto& [arms, width] :
          {std::pair{Arms::wide, 0.9375}, std::pair{Arms::slim, 0.8203}}) {
@@ -320,4 +349,69 @@ TEST_CASE("every face points out of its box and winds counter-clockwise seen fro
             }
         }
     }
+}
+
+TEST_CASE("the walk swing pitches arms and legs as the game does") {
+    const Vec3d right_hip{.x = 1.9 / 16.0 * scale, .y = 0.7041};
+    const Vec3d left_hip{.x = -1.9 / 16.0 * scale, .y = 0.7041};
+    const Vec3d right_shoulder{.x = 5.0 / 16.0 * scale, .y = 1.2900};
+    const Vec3d left_shoulder{.x = -5.0 / 16.0 * scale, .y = 1.2900};
+    // The arms' share of the idle sway at this age: its roll is 0, its
+    // pitch this, back on the right arm and forward on the left.
+    const double sway = 0.05 * std::sin(0.067 * unrolled);
+
+    // At limb position 0 and amount 1 the right leg is pitched back 1.4
+    // radians and the left forward; the right arm forward 1 and the left
+    // back.
+    const Body start = posed({.limb_amount = 1.0, .age = unrolled});
+    check_near(pitch_back(start, right_leg, right_hip), 1.4, 1e-3);
+    check_near(pitch_back(start, left_leg, left_hip), -1.4, 1e-3);
+    check_near(pitch_back(start, right_arm, right_shoulder), -1.0 + sway);
+    check_near(pitch_back(start, left_arm, left_shoulder), 1.0 - sway);
+
+    // Half a stride on they have traded places.
+    const Body half =
+        posed({.limb_position = std::numbers::pi / 0.6662, .limb_amount = 1.0, .age = unrolled});
+    check_near(pitch_back(half, right_leg, right_hip), -1.4, 1e-3);
+    check_near(pitch_back(half, left_leg, left_hip), 1.4, 1e-3);
+    check_near(pitch_back(half, right_arm, right_shoulder), 1.0 + sway);
+    check_near(pitch_back(half, left_arm, left_shoulder), -1.0 - sway);
+
+    // A swing scales with the amount, and at 0 nothing swings.
+    const Body walking = posed({.limb_position = 1.0, .limb_amount = 0.863, .age = unrolled});
+    check_near(pitch_back(walking, right_leg, right_hip), std::cos(0.6662) * 1.4 * 0.863, 1e-3);
+    check_near(pitch_back(walking, right_arm, right_shoulder),
+               std::cos(0.6662 + std::numbers::pi) * 0.863 + sway);
+    const Body still = posed({.limb_position = 3.0, .age = unrolled});
+    check_near(pitch_back(still, right_leg, right_hip), 0.0, 1e-3);
+    check_near(pitch_back(still, left_leg, left_hip), 0.0, 1e-3);
+    check_near(pitch_back(still, right_arm, right_shoulder), sway);
+    check_near(pitch_back(still, left_arm, left_shoulder), -sway);
+}
+
+TEST_CASE("the feet point a little outward and the arms sway outward and back") {
+    // The leg splay: yaw and roll of 0.005, outward on both legs.
+    const Body body = posed({.age = unrolled});
+    check_near(normal(face_of(body, right_leg, front)[0]).x, std::sin(0.005), 1e-5);
+    check_near(normal(face_of(body, left_leg, front)[0]).x, -std::sin(0.005), 1e-5);
+
+    // The sway's roll tilts each arm's outer side up: 0.1 at age 0, none
+    // at about 34.9 ticks.
+    const auto roll_out = [](const Body& posed_body) {
+        return std::array{std::asin(normal(face_of(posed_body, right_arm, right_side)[0]).y),
+                          std::asin(normal(face_of(posed_body, left_arm, left_side)[0]).y)};
+    };
+    for (const double roll : roll_out(posed({}))) {
+        check_near(roll, 0.1);
+    }
+    for (const double roll : roll_out(posed({.age = 34.9}))) {
+        check_near(roll, 0.0, 1e-3);
+    }
+    // And its pitch, 0.05 at its height (0.067 age a quarter turn), swings
+    // the right arm back and the left forward.
+    const double peak = std::numbers::pi / 2.0 / 0.067;
+    const Body swaying = posed({.age = peak});
+    check_near(std::acos(-normal(face_of(swaying, right_arm, front)[0]).z), 0.05);
+    CHECK(normal(face_of(swaying, right_arm, front)[0]).y < 0.0);
+    CHECK(normal(face_of(swaying, left_arm, front)[0]).y > 0.0);
 }
