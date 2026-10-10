@@ -26,7 +26,7 @@ target_include_directories(vx_imgui_sdl3 SYSTEM PUBLIC "${imgui_SOURCE_DIR}/back
 target_link_libraries(vx_imgui_sdl3 PUBLIC vx_imgui SDL3::SDL3-static)
 
 # The debug overlay, a library of its own so that tests can drive it.
-add_library(vx_app_overlay STATIC src/overlay.cpp)
+add_library(vx_app_overlay STATIC src/keys.cpp src/overlay.cpp)
 target_include_directories(vx_app_overlay PUBLIC src)
 target_link_libraries(vx_app_overlay PUBLIC vx::render vx_imgui_sdl3)
 vx_target_warnings(vx_app_overlay)

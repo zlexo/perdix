@@ -53,7 +53,7 @@ struct MovementReport {
 // time graphs, the GPU and driver, the present mode switch, RFC 0004's
 // texture filter switch, RFC 0003's meshing toggles, RFC 0007's chunk
 // rendering counters and switches, the camera's position, the player's
-// movement (RFC 0010) and the validation count. F3 shows and hides it. It
+// movement (RFC 0010) and the validation count. O shows and hides it. It
 // owns the ImGui context, which the renderer it is given to draws with, so
 // it must outlive that renderer.
 class Overlay {
@@ -69,6 +69,9 @@ public:
 
     [[nodiscard]] ImGuiContext* context() const noexcept { return context_; }
     [[nodiscard]] bool shown() const noexcept { return shown_; }
+    // Whether the overlay is taking text, as into a slider's value: the
+    // app's keys then type, and do nothing else.
+    [[nodiscard]] bool wants_text() const;
     void toggle() noexcept { shown_ = !shown_; }
 
     // Passes `event` to ImGui while the overlay shows and the mouse is free.

@@ -98,6 +98,14 @@ Overlay::~Overlay() {
     ImGui::DestroyContext(context_);
 }
 
+bool Overlay::wants_text() const {
+    ImGuiContext* const current = ImGui::GetCurrentContext();
+    ImGui::SetCurrentContext(context_);
+    const bool typing = shown_ && ImGui::GetIO().WantTextInput;
+    ImGui::SetCurrentContext(current);
+    return typing;
+}
+
 bool Overlay::take_event(const SDL_Event& event, bool mouse_captured) {
     // A captured mouse flies the camera, so ImGui sees it only release a
     // button. The click that starts flying reaches ImGui pressed and ends
@@ -311,10 +319,10 @@ void Overlay::draw_camera(const render::Camera& camera) {
 
 void Overlay::draw_movement(const MovementReport& movement) {
     if (movement.noclip) {
-        ImGui::TextUnformatted("Noclip camera (F4 walks, from outside blocks)");
+        ImGui::TextUnformatted("Noclip camera (V walks, from outside blocks)");
         return;
     }
-    ImGui::Text("%s (F4 for noclip): %.3f blocks a second, %.3f up%s%s%s",
+    ImGui::Text("%s (V for noclip): %.3f blocks a second, %.3f up%s%s%s",
                 movement.flying ? "Flying" : "Walking", movement.speed, movement.vertical_speed,
                 movement.sprinting ? ", sprinting" : "", movement.crouching ? ", crouching" : "",
                 movement.on_ground || movement.flying ? "" : ", in the air");

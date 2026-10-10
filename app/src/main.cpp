@@ -135,7 +135,7 @@ void send(vx::app::WorldLoop& loop, const vx::app::ToWorld& message) {
 
 // The player (RFC 0010): walking on the world thread's ticks, which send
 // their last two ticks for the camera to draw between, or flying RFC 0001's
-// noclip camera, which F4 switches between.
+// noclip camera, which V switches between.
 struct Mover {
     vx::app::WalkingFrame frame;
     std::chrono::steady_clock::time_point tick_at; // when the frame's tick fell due
@@ -152,10 +152,10 @@ double between_ticks(const Mover& mover, std::chrono::steady_clock::time_point n
                       0.0, 1.0);
 }
 
-// One frame of the player. F4 switches modes: flying leaves the player
+// One frame of the player. V switches modes: flying leaves the player
 // standing where it was; walking again asks the world thread to land it
 // where the camera is, which it does unless that is inside a block or a
-// chunk still loading, and then F4 keeps flying. Walking, the mouse turns
+// chunk still loading, and then V keeps flying. Walking, the mouse turns
 // the camera every frame, the keys go to the world thread's next ticks, and
 // the camera follows the player between them.
 void move_player(Mover& mover, vx::app::Window& window, vx::render::Camera& camera,
@@ -707,7 +707,7 @@ int main(int argc, char* argv[]) {
     }
 
     // The player stands on the grass beside the spire, looking at it (RFC
-    // 0010); F4 switches to RFC 0001's noclip camera and back.
+    // 0010); V switches to RFC 0001's noclip camera and back.
     vx::render::Camera camera;
     camera.position = {spawn.x, spawn.y + vx::eye_height(vx::Pose::standing), spawn.z};
     camera.yaw = 0.785F;  // toward -x and -z, an eighth of a turn left of north
@@ -721,9 +721,9 @@ int main(int argc, char* argv[]) {
     mover.frame.previous = spawn;
     mover.frame.position = spawn;
     std::cout << "Click the window to walk: W A S D, Space to jump, Ctrl with W or W twice to "
-                 "sprint, Shift to sneak, Space twice to fly, the mouse to look. F4 switches to a "
+                 "sprint, Shift to sneak, Space twice to fly, the mouse to look. V switches to a "
                  "camera that flies through everything (W A S D, Space and Shift for up and "
-                 "down, Ctrl to go faster) and back. Escape releases the mouse; F3 shows the "
+                 "down, Ctrl to go faster) and back. Escape releases the mouse; O shows the "
                  "overlay.\n";
 
     using Clock = std::chrono::steady_clock;
