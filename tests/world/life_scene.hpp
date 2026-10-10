@@ -30,16 +30,35 @@ inline double yaw_toward(Vec3d from, Vec3d to) {
     return std::atan2(-(to.x - from.x), -(to.z - from.z));
 }
 
-// Perdix on a flat floor, living: each step runs his life, then RFC 0010's
-// tick with what it chose, then RFC 0012's animation, as the app runs him.
-struct Scene {
-    explicit Scene(std::uint64_t seed, float facing = 0.0F)
+// Loose boxes and nothing else: a world with no floor but what a test lays.
+class LooseWorld final : public BlockBoxes {
+public:
+    std::vector<Box> boxes;
+
+    [[nodiscard]] double slipperiness(BlockPos /*block*/) const override { return 0.6; }
+
+    void collect(const Box& region, std::vector<Box>& out) const override {
+        for (const Box& box : boxes) {
+            if (box.max.x >= region.min.x && box.min.x <= region.max.x &&
+                box.max.y >= region.min.y && box.min.y <= region.max.y &&
+                box.max.z >= region.min.z && box.min.z <= region.max.z) {
+                out.push_back(box);
+            }
+        }
+    }
+};
+
+// Perdix living: each step runs his life, then RFC 0010's tick with what it
+// chose, then RFC 0012's animation, as the app runs him. He starts on the
+// ground at the origin.
+template <class World> struct SceneOf {
+    explicit SceneOf(std::uint64_t seed, float facing = 0.0F)
         : life(seed, facing), motion(body_facing(facing, 0.0F)) {
         perdix.velocity.y = -0.0784;
         perdix.on_ground = true;
     }
 
-    FlatWorld world;
+    World world;
     MovementNumbers numbers;
     Player perdix;
     Life life;
@@ -53,6 +72,19 @@ struct Scene {
         tick(perdix, ticked.input, world, numbers, scratch);
         animate(motion, perdix.position - before, ticked.look_yaw, ticked.look_pitch);
         return ticked;
+    }
+};
+
+// On a flat floor that goes on for good.
+using Scene = SceneOf<FlatWorld>;
+
+// On a pillar a block across, its top at y = 0, with nothing else to stand
+// on, so his strolls never take him anywhere: he stands in the middle of
+// its top.
+struct PillarScene : SceneOf<LooseWorld> {
+    explicit PillarScene(std::uint64_t seed) : SceneOf<LooseWorld>(seed) {
+        world.boxes.push_back(block_box(0.0, -1.0, 0.0));
+        perdix.position = {.x = 0.5, .y = 0.0, .z = 0.5};
     }
 };
 
@@ -103,13 +135,13 @@ struct Watch {
     Tally tally{};
     std::vector<Spell> spells{};
 
-    void run(Scene& scene, std::uint64_t ticks) {
+    template <class World> void run(SceneOf<World>& scene, std::uint64_t ticks) {
         for (std::uint64_t tick = 0; tick < ticks; ++tick) {
             step(scene, tick);
         }
     }
 
-    void step(Scene& scene, std::uint64_t tick) {
+    template <class World> void step(SceneOf<World>& scene, std::uint64_t tick) {
         const bool before = scene.life.running(goal);
         const std::uint64_t starts = scene.life.starts(goal);
         static_cast<void>(scene.step());
