@@ -385,13 +385,22 @@ LifeTick Life::tick(const Player& body, float body_yaw, const Onlooker& you,
     } else if (running(LifeGoal::look_around)) {
         tick_goal(LifeGoal::look_around, body, you);
     }
-    // Then, as the game's mob does, the walk at a target, then the head.
-    const MovementKeys held = walk(body);
+    // Then, as the game's mob does, the walk at a target, then the head;
+    // and the jump the last move's auto-jump found.
+    MovementKeys held = walk(body);
     look_.tick(eyes(body), body_yaw, target_.has_value());
+    held.jump = jump_next_;
+    jump_next_ = false;
     ++ticks_;
-    return {.input = {.held = held, .yaw = walking_yaw_},
-            .look_yaw = look_.yaw(),
-            .look_pitch = look_.pitch()};
+    last_ = {.input = {.held = held, .yaw = walking_yaw_},
+             .look_yaw = look_.yaw(),
+             .look_pitch = look_.pitch()};
+    return last_;
+}
+
+void Life::after_move(const Player& body, Vec3d moved, const BlockBoxes& world,
+                      std::vector<Box>& scratch) {
+    jump_next_ = auto_jumps(body, last_.input, last_.look_pitch, moved, world, numbers_, scratch);
 }
 
 bool Life::running(LifeGoal goal) const noexcept {

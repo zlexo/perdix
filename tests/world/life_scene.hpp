@@ -49,13 +49,14 @@ public:
 };
 
 // Perdix living: each step runs his life, then RFC 0010's tick with what it
-// chose, then RFC 0012's animation, as the app runs him. He starts on the
-// ground at the origin.
+// chose, the life's look ahead after the move, then RFC 0012's animation,
+// as the app runs him. He starts on the ground at the origin.
 template <class World> struct SceneOf {
     explicit SceneOf(std::uint64_t seed, float facing = 0.0F)
         : life(seed, facing), motion(body_facing(facing, 0.0F)) {
         perdix.velocity.y = -0.0784;
         perdix.on_ground = true;
+        perdix.may_fly = false; // Perdix does not fly
     }
 
     World world;
@@ -70,6 +71,7 @@ template <class World> struct SceneOf {
         const LifeTick ticked = life.tick(perdix, motion.body_yaw, you, world, scratch);
         const Vec3d before = perdix.position;
         tick(perdix, ticked.input, world, numbers, scratch);
+        life.after_move(perdix, perdix.position - before, world, scratch);
         animate(motion, perdix.position - before, ticked.look_yaw, ticked.look_pitch);
         return ticked;
     }
