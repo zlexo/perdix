@@ -97,6 +97,24 @@ void Walking::advance(std::chrono::nanoseconds elapsed, const TickInput& input,
 }
 
 void Walking::tick(const TickInput& input, const BlockBoxes& world) {
+    tick(input, world, input.yaw, input.pitch);
+}
+
+void Walking::set_may_fly(bool may_fly) noexcept {
+    may_fly_ = may_fly;
+    player_.may_fly = may_fly;
+    if (!may_fly) {
+        player_.flying = false;
+    }
+}
+
+void Walking::face(float yaw, float pitch) noexcept {
+    frame_.motion = body_facing(yaw, pitch);
+    frame_.previous_motion = frame_.motion;
+}
+
+void Walking::tick(const TickInput& input, const BlockBoxes& world, float look_yaw,
+                   float look_pitch) {
     // The bob's amount, as the game takes it at the start of a tick: toward
     // the horizontal speed the player carries into it, at most 0.1, on the
     // ground; toward 0 off it.
@@ -118,7 +136,7 @@ void Walking::tick(const TickInput& input, const BlockBoxes& world) {
     frame_.previous_walked = frame_.walked;
     frame_.walked += walk_per_block * std::hypot(moved.x, moved.z);
     frame_.previous_motion = frame_.motion;
-    animate(frame_.motion, moved, input.yaw, input.pitch);
+    animate(frame_.motion, moved, look_yaw, look_pitch);
     frame_.previous_fov = frame_.fov;
     const double target =
         (player_.flying ? flying_fov : 1.0) * (player_.sprinting ? sprinting_fov : 1.0);
@@ -151,6 +169,7 @@ void Walking::place(Vec3d feet) noexcept {
     // A new player there: no speed, no sprint, no wall hit or double tap
     // carried over from before.
     player_ = Player{};
+    player_.may_fly = may_fly_;
     player_.position = feet;
     frame_.previous = feet;
     frame_.position = feet;

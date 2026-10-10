@@ -9,11 +9,13 @@
 #include <vx/mesh/quad.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
+#include <vx/world/body_motion.hpp>
 #include <vx/world/chunk_records.hpp>
 #include <vx/world/chunk_storage.hpp>
 #include <vx/world/collision.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/job_record.hpp>
+#include <vx/world/life.hpp>
 #include <vx/world/movement.hpp>
 #include <vx/world/versions.hpp>
 #include <vx/world/world_streamer.hpp>
@@ -23,9 +25,11 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <numbers>
 #include <optional>
 #include <span>
 #include <utility>
@@ -125,6 +129,16 @@ WorldLoop::WorldLoop(const Generator& generator, std::span<const BlockVisual> vi
     }
     if (settings.player) {
         walking_.emplace(settings.player->spawn, settings.player->lowest);
+        if (settings.perdix) {
+            perdix_.emplace(
+                Perdix{.walking = Walking(settings.perdix->spawn, settings.player->lowest),
+                       .life = Life(settings.perdix->seed, settings.perdix->facing),
+                       .scratch = {}});
+            perdix_->walking.set_may_fly(false);
+            perdix_->walking.face(settings.perdix->facing, 0.0F);
+            perdix_->life.set_mode(settings.perdix->mode);
+            perdix_->scratch.reserve(256);
+        }
     }
 }
 
@@ -228,6 +242,9 @@ void WorldLoop::run_tick(std::chrono::steady_clock::time_point due) {
             walking_->hold();
         }
         send_player(due);
+        if (perdix_) {
+            tick_perdix(due);
+        }
     }
     const bool catching_up = missing_near_camera();
     if (catching_up != catching_up_) {
@@ -286,6 +303,14 @@ void WorldLoop::handle(ToWorld& message) {
         break;
     case ToWorld::Kind::land:
         land(message.feet);
+        break;
+    case ToWorld::Kind::perdix_mode:
+        if (perdix_) {
+            perdix_->life.set_mode(message.perdix_mode);
+        }
+        break;
+    case ToWorld::Kind::bring_perdix:
+        bring_perdix(message.feet, message.input.yaw);
         break;
     case ToWorld::Kind::meshing:
         remesh(message.meshing);
@@ -402,6 +427,69 @@ void WorldLoop::land(Vec3d feet) {
     ToMain message;
     message.kind = ToMain::Kind::landed;
     message.landed = landed;
+    to_main_.push(std::move(message));
+}
+
+void WorldLoop::tick_perdix(std::chrono::steady_clock::time_point due) {
+    assert(perdix_.has_value());
+    assert(walking_.has_value());
+    Perdix& perdix = *perdix_;
+    if (!boxes_.ready(tick_reach(perdix.walking.player()))) {
+        perdix.walking.hold();
+        send_perdix(due);
+        return;
+    }
+    const Player& you = walking_->player();
+    const Onlooker onlooker{.feet = you.position,
+                            .eye_height = eye_height(you.pose),
+                            .sneaking = you.pose == Pose::crouching};
+    const LifeTick choice =
+        perdix.life.tick(perdix.walking.player(), perdix.walking.frame().motion.body_yaw, onlooker,
+                         boxes_, perdix.scratch);
+    const Vec3d before = perdix.walking.player().position;
+    perdix.walking.tick(choice.input, boxes_, choice.look_yaw, choice.look_pitch);
+    perdix.life.after_move(perdix.walking.player(), perdix.walking.player().position - before,
+                           boxes_, perdix.scratch);
+    send_perdix(due);
+}
+
+void WorldLoop::bring_perdix(Vec3d feet, float yaw) {
+    if (!perdix_) {
+        return;
+    }
+    // The first place from 4 above to 64 below, 5 blocks ahead, where a
+    // standing body fits and stands on something: from a free camera high
+    // over the ground, down to it.
+    const auto heading = static_cast<double>(yaw);
+    const Vec3d ahead{.x = feet.x - (5.0 * std::sin(heading)),
+                      .y = std::floor(feet.y),
+                      .z = feet.z - (5.0 * std::cos(heading))};
+    std::vector<Box>& inside = perdix_->scratch;
+    for (int rise = 4; rise >= -64; --rise) {
+        const Vec3d spot = ahead + Vec3d{.x = 0.0, .y = static_cast<double>(rise), .z = 0.0};
+        const Box body = body_box(spot, Pose::standing);
+        // A sliver under his feet: something there holds him up.
+        const Box below{.min = {.x = body.min.x, .y = spot.y - 0.05, .z = body.min.z},
+                        .max = {.x = body.max.x, .y = spot.y, .z = body.max.z}};
+        inside.clear();
+        boxes_.collect(Box{.min = below.min, .max = body.max}, inside);
+        if (!overlaps_any(body, inside) && overlaps_any(below, inside)) {
+            const auto facing = static_cast<float>(wrap_turn(heading + std::numbers::pi));
+            perdix_->walking.place(spot);
+            perdix_->walking.face(facing, 0.0F);
+            perdix_->life.start_over(facing);
+            send_perdix(last_tick_);
+            return;
+        }
+    }
+}
+
+void WorldLoop::send_perdix(std::chrono::steady_clock::time_point at) {
+    assert(perdix_.has_value());
+    ToMain message;
+    message.kind = ToMain::Kind::perdix;
+    message.player = perdix_->walking.frame();
+    message.tick_at = at;
     to_main_.push(std::move(message));
 }
 
