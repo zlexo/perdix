@@ -109,11 +109,24 @@ std::uint32_t arena_quads(std::int32_t view_distance) {
         quads, 1'048'576.0, static_cast<double>(vx::render::ChunkRenderer::max_arena_quads)));
 }
 
-// RFC 0005's workers: the cores less two, one for the main thread and one
-// for the world thread, and at least one.
-std::uint32_t worker_count() {
+// RFC 0005's workers: as many as the options say, or the cores less two,
+// one for the main thread and one for the world thread, and at least one.
+std::uint32_t worker_count(const vx::app::Options& options) {
     const std::uint32_t cores = std::thread::hardware_concurrency();
-    return cores > 3 ? cores - 2 : 1;
+    return options.workers.value_or(cores > 3 ? cores - 2 : 1);
+}
+
+// "6 workers, switching QoS", for the startup line and the flythrough's
+// report.
+std::string describe_workers(std::uint32_t count, vx::WorkerQos qos) {
+    std::string_view mode = "switching";
+    if (qos == vx::WorkerQos::utility) {
+        mode = "utility";
+    } else if (qos == vx::WorkerQos::user_initiated) {
+        mode = "user-initiated";
+    }
+    return std::to_string(count) + (count == 1 ? " worker, " : " workers, ") + std::string(mode) +
+           " QoS";
 }
 
 void send(vx::app::WorldLoop& loop, const vx::app::ToWorld& message) {
@@ -333,6 +346,8 @@ std::optional<vx::app::FlythroughPlan> flythrough_plan(vx::app::Flythrough which
         return vx::app::FlythroughPlan::full();
     case vx::app::Flythrough::quick:
         return vx::app::FlythroughPlan::quick();
+    case vx::app::Flythrough::endurance:
+        return vx::app::FlythroughPlan::endurance();
     }
     return std::nullopt;
 }
@@ -452,7 +467,8 @@ struct FlythroughSamples {
 // What the flythrough's report opens with.
 vx::app::FlythroughHeader flythrough_header(const vx::render::Renderer& renderer,
                                             const vx::render::Extent& size,
-                                            std::int32_t view_distance, std::uint32_t workers) {
+                                            std::int32_t view_distance,
+                                            const std::string& workers) {
     const vx::render::DeviceInfo& device = renderer.context().device_info();
     const vx::render::Swapchain* swapchain = renderer.swapchain();
     const bool immediate =
@@ -472,8 +488,7 @@ vx::app::FlythroughHeader flythrough_header(const vx::render::Renderer& renderer
             .device = device.name,
             .driver = device.driver_name + " " + device.driver_info,
             .settings = std::to_string(size.width) + "x" + std::to_string(size.height) +
-                        ", view distance " + std::to_string(view_distance) + ", " +
-                        std::to_string(workers) + " workers, " +
+                        ", view distance " + std::to_string(view_distance) + ", " + workers + ", " +
                         (immediate ? "immediate" : "FIFO") + " present"};
 }
 
@@ -492,7 +507,7 @@ int checked(std::span<const vx::app::PhaseResult> results, const vx::render::Con
 // last phase is over. Closing the window stops it with no report.
 int fly(const vx::app::FlythroughPlan& plan, vx::app::Window& window,
         vx::render::Renderer& renderer, vx::app::Overlay& overlay, vx::app::WorldLoop& loop,
-        vx::app::StreamedMeshes& meshes, std::uint32_t workers) {
+        vx::app::StreamedMeshes& meshes, const std::string& workers) {
     using Clock = std::chrono::steady_clock;
     vx::app::FlythroughRun run(plan, Clock::now());
     vx::render::Camera camera;
@@ -678,17 +693,17 @@ int main(int argc, char* argv[]) {
     // the renderer and the camera to it. Destroyed in reverse: the meshes
     // still waiting go back to the pool before the thread stops and joins,
     // then the loop waits for its jobs.
-    vx::JobSystem jobs({.workers = worker_count()});
+    vx::JobSystem jobs(
+        {.workers = worker_count(options.value()), .qos = options.value().worker_qos});
     vx::MeshResultPool pool;
     vx::app::WorldLoop loop(generator, registry.visuals(), jobs, pool, settings);
     const vx::app::WorldThread world(loop);
     vx::app::StreamedMeshes meshes;
+    const std::string workers = describe_workers(jobs.worker_count(), options.value().worker_qos);
     std::cout << "World: placeholder hills, seed 0x5EED, view distance "
-              << settings.region.view_distance << " chunks, " << jobs.worker_count()
-              << " workers\n";
+              << settings.region.view_distance << " chunks, " << workers << "\n";
     if (plan) {
-        return fly(*plan, window.value(), renderer.value(), overlay, loop, meshes,
-                   jobs.worker_count());
+        return fly(*plan, window.value(), renderer.value(), overlay, loop, meshes, workers);
     }
 
     // The player stands on the grass beside the spire, looking at it (RFC
