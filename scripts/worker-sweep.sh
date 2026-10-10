@@ -113,6 +113,9 @@ if [ -n "${SUMMARIZE:-}" ]; then
     exit 0
 fi
 perdix=${PERDIX:-build/mac-release/app/perdix}
+# shellcheck source=scripts/vulkan-environment.sh
+source "$root/scripts/vulkan-environment.sh"
+vulkan_environment || exit 1
 if [ ! -x "$perdix" ]; then
     echo "error: no $perdix: build the release preset first" >&2
     exit 1
