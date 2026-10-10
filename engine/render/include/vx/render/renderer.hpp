@@ -2,6 +2,7 @@
 
 #include <vx/core/result.hpp>
 #include <vx/mesh/mesh_chunk.hpp>
+#include <vx/mesh/player_model.hpp>
 #include <vx/render/buffer.hpp>
 #include <vx/render/camera.hpp>
 #include <vx/render/chunk_renderer.hpp>
@@ -14,6 +15,7 @@
 #include <vx/render/swapchain_choice.hpp>
 #include <vx/render/texture_table.hpp>
 #include <vx/world/coordinates.hpp>
+#include <vx/world/skin.hpp>
 
 #include <glm/ext/vector_int3_sized.hpp>
 #include <volk.h>
@@ -49,6 +51,11 @@ struct RendererDesc {
     // build_block_textures lays them out, such as a BlockPack's textures.
     // Uploaded at startup; empty binds an array of one layer, the checker.
     std::span<const std::byte> block_textures;
+    // Player skins (RFC 0012), uploaded at startup: a pose's `skin` picks one
+    // of them. A body whose skin is not among them shows the missing
+    // texture's magenta and black, as a block does.
+    std::span<const Skin>
+        skins{}; // NOLINT(readability-redundant-member-init): partial designated init
     // The chunk arena's room, in quads (RFC 0007): 32 MiB, until the app
     // sizes it from its view distance.
     std::uint32_t chunk_arena_quads = std::uint32_t{1} << 22U;
@@ -79,6 +86,10 @@ struct FrameInputs {
     // Where cubes stand: each one's block, its lowest corner. At most
     // Renderer::max_cubes.
     std::span<const glm::i64vec3> cubes;
+    // The bodies the frame draws (RFC 0012), each posed between its ticks.
+    // At most Renderer::max_players.
+    std::span<const PlayerPose>
+        players{}; // NOLINT(readability-redundant-member-init): partial designated init
     // The overlay's draw lists, from ImGui::GetDrawData(), drawn over the
     // frame; null draws none. Not const: drawing updates its textures' state.
     ImDrawData* overlay = nullptr;
@@ -150,9 +161,11 @@ public:
 
     // How many cubes one frame can draw.
     static constexpr std::size_t max_cubes = 256;
+    // How many bodies one frame can draw (RFC 0012).
+    static constexpr std::size_t max_players = 64;
 
     // Clears the target to the sky, makes the frame's chunk changes, draws
-    // the cubes and the arena's chunks as the camera sees them, and presents
+    // the cubes, the arena's chunks and the bodies as the camera sees them, and presents
     // the target when it is a window's. An error from the chunk changes or
     // the draw lists leaves staged copies that never ran: the renderer is
     // not drawn with again.
@@ -233,6 +246,14 @@ private:
         std::uint32_t checker_slot = 0;
     };
 
+    // What draws bodies (RFC 0012): their pipeline, and each skin's image and
+    // texture table slot, the given skins' and last the missing texture's.
+    struct BodyDrawing {
+        GraphicsPipeline pipeline;
+        std::vector<Image> skins;
+        std::vector<std::uint32_t> slots;
+    };
+
     // What draws chunks (RFC 0003, RFC 0007): a pipeline for each pass,
     // from one shader, and the index buffer every command shares, 0, 1, 2,
     // 2, 3, 0 for each quad, as many as a chunk can have.
@@ -245,10 +266,16 @@ private:
 
     Renderer(Context context, std::optional<Swapchain> swapchain, std::optional<Image> offscreen,
              Image depth, TextureTable textures, Image block_textures, Cube cube,
-             ChunkDrawing chunk_drawing, ChunkRenderer chunks, Extent framebuffer,
-             PresentMode present_mode);
+             BodyDrawing body_drawing, ChunkDrawing chunk_drawing, ChunkRenderer chunks,
+             Extent framebuffer, PresentMode present_mode);
     [[nodiscard]] Result<void> create_frame_objects();
-    [[nodiscard]] Result<void> upload_at_startup(std::span<const std::byte> block_textures);
+    [[nodiscard]] Result<void> upload_at_startup(std::span<const std::byte> block_textures,
+                                                 std::span<const Skin> skins);
+    // Poses the frame's bodies into frame slot `slot`'s buffers; how many.
+    [[nodiscard]] Result<std::uint32_t> write_bodies(std::span<const PlayerPose> players,
+                                                     const glm::i64vec3& camera_block,
+                                                     std::size_t slot,
+                                                     std::span<std::uint32_t> skins);
     [[nodiscard]] Result<void> add_rendered_semaphores();
     [[nodiscard]] Result<void> recreate_target();
     // Makes the target again where the swapchain is stale or the framebuffer
@@ -266,6 +293,7 @@ private:
     // RendererDesc::block_textures, or the checker alone without them.
     Image block_textures_;
     Cube cube_;
+    BodyDrawing body_drawing_;
     ChunkDrawing chunk_drawing_;
     ChunkRenderer chunks_;
     // Where set_chunk's chunk is, and the generation its next mesh takes.
@@ -293,6 +321,12 @@ private:
     // Each slot's cube origins, relative to the camera's block, rewritten
     // every frame: one float4 for each of up to max_cubes instances.
     std::vector<Buffer> origins_;
+    // Each slot's bodies, rewritten every frame: up to max_players bodies'
+    // posed vertices, and each body's block relative to the camera's.
+    std::vector<Buffer> body_vertices_;
+    std::vector<Buffer> body_origins_;
+    // Where a body is posed before it is copied into its slot's buffer.
+    std::array<BodyVertex, player_vertices> posed_{};
     // One per swapchain image, not per frame: the presentation engine may hold
     // one after the frame that signaled it is done (RFC 0001).
     std::vector<VkSemaphore> image_rendered_;

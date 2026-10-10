@@ -140,6 +140,7 @@ set(VX_VULKAN_DOCTEST_PROPERTIES
 add_executable(vx_render_vulkan_tests
     main.cpp
     render/block_texture_array_test.cpp
+    render/body_test.cpp
     render/buffer_test.cpp
     render/chunk_arena_test.cpp
     render/chunk_renderer_test.cpp

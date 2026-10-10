@@ -6,6 +6,7 @@
 
 #include <vx/core/diagnostic.hpp>
 #include <vx/mesh/mesh_chunk.hpp>
+#include <vx/mesh/player_model.hpp>
 #include <vx/mesh/quad.hpp>
 #include <vx/render/block_texture_array.hpp>
 #include <vx/render/block_textures.hpp>
@@ -17,9 +18,11 @@
 #include <vx/render/gpu_timer.hpp>
 #include <vx/render/texture_table.hpp>
 #include <vx/render/upload.hpp>
+#include <vx/shaders/body.hpp>
 #include <vx/shaders/chunk.hpp>
 #include <vx/shaders/cube.hpp>
 #include <vx/world/block_registry.hpp>
+#include <vx/world/skin.hpp>
 
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
@@ -32,6 +35,7 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -178,6 +182,52 @@ DrawPush make_draw_push(const Camera& camera, const BlockAndFraction& split, VkE
             .origins = origins,
             .camera_fraction = split.fraction,
             .texture = texture};
+}
+
+// The body pipeline (RFC 0012) pulls vx::BodyVertex as two float4s and
+// reads the cube's push constants, the skin in place of the texture.
+static_assert(sizeof(BodyVertex) == 32 && offsetof(BodyVertex, texel) == 12 &&
+              offsetof(BodyVertex, normal) == 20);
+
+// Bodies are drawn from both sides, as the game draws them: through an outer
+// layer's clear texels, the inside of the box behind shows.
+Result<GraphicsPipeline> make_body_pipeline(const Device& device, VkFormat color_format,
+                                            VkDescriptorSetLayout textures) {
+    return GraphicsPipeline::create(device,
+                                    {.spirv = shaders::body,
+                                     .vertex_entry = "vertex_main",
+                                     .fragment_entry = "fragment_main",
+                                     .color_format = color_format,
+                                     .depth_format = depth_format,
+                                     .cull_mode = VK_CULL_MODE_NONE,
+                                     .set_layout = textures,
+                                     .push_constant_size = sizeof(DrawPush),
+                                     .push_constant_stages = push_stages},
+                                    "body");
+}
+
+// The skin of a body whose skin is missing: the missing texture's magenta
+// and black, as layer 0 of the block textures shows them, in squares of 4
+// texels, so each face of the head has two by two as a block's face has.
+// Only the base layer is filled: the outer layer stays clear, as the game's
+// own skins' hats are, so the body shows the model's own boxes.
+std::array<std::byte, std::size_t{skin_size} * skin_size * 4> make_missing_skin() {
+    std::array<std::byte, std::size_t{skin_size} * skin_size * 4> texels{};
+    for (int y = 0; y < skin_size; ++y) {
+        for (int x = 0; x < skin_size; ++x) {
+            const bool base =
+                (y < 16 && x < 32) || (y >= 16 && y < 32) || (y >= 48 && x >= 16 && x < 48);
+            if (!base) {
+                continue;
+            }
+            const bool magenta = ((x / 4) + (y / 4)) % 2 == 0;
+            const auto at = static_cast<std::size_t>((y * skin_size) + x) * 4;
+            texels.at(at) = std::byte{magenta ? std::uint8_t{255} : std::uint8_t{0}};
+            texels.at(at + 2) = std::byte{magenta ? std::uint8_t{255} : std::uint8_t{0}};
+            texels.at(at + 3) = std::byte{255};
+        }
+    }
+    return texels;
 }
 
 Result<GraphicsPipeline> make_cube_pipeline(const Device& device, VkFormat color_format,
@@ -346,6 +396,15 @@ struct ChunkDraw {
     std::uint32_t draw_limit; // the device's maxDrawIndirectCount
 };
 
+// The bodies to draw: their pipeline, the push constants, how many, and
+// each one's skin, a slot of the texture table.
+struct BodyDraw {
+    const GraphicsPipeline* pipeline;
+    DrawPush push;
+    std::uint32_t count;
+    std::array<std::uint32_t, Renderer::max_players> skins;
+};
+
 struct FrameDraw {
     Color clear;
     const GraphicsPipeline* pipeline;
@@ -353,8 +412,28 @@ struct FrameDraw {
     DrawPush push;
     std::uint32_t cubes;
     ChunkDraw chunk;
+    BodyDraw bodies;
     ImDrawData* overlay; // null: no overlay
 };
+
+// Draws each body in its own skin: its 432 vertices from its firstVertex on,
+// its block through its firstInstance, and its skin's slot pushed before it.
+void record_bodies(VkCommandBuffer commands, VkDescriptorSet textures, const BodyDraw& bodies) {
+    if (bodies.count == 0) {
+        return;
+    }
+    VkPipelineLayout layout = bodies.pipeline->layout();
+    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, bodies.pipeline->handle());
+    vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &textures, 0,
+                            nullptr);
+    vkCmdPushConstants(commands, layout, push_stages, 0, sizeof(bodies.push), &bodies.push);
+    constexpr auto vertices = static_cast<std::uint32_t>(player_vertices);
+    for (std::uint32_t body = 0; body < bodies.count; ++body) {
+        vkCmdPushConstants(commands, layout, push_stages, offsetof(DrawPush, texture),
+                           sizeof(std::uint32_t), &bodies.skins.at(body));
+        vkCmdDraw(commands, vertices, 1, body * vertices, body);
+    }
+}
 
 // Draws the chunks' runs through the shared index buffer (RFC 0007): every
 // opaque run, then every cutout one, each pass one multi-draw indirect call,
@@ -459,6 +538,7 @@ void record_main_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* g
                        &draw.push);
     vkCmdDraw(commands, static_cast<std::uint32_t>(cube_vertices.size()), draw.cubes, 0, 0);
     record_chunks(commands, draw.textures, draw.chunk);
+    record_bodies(commands, draw.textures, draw.bodies);
     if (draw.overlay != nullptr) {
         // Last in the pass, so it draws over everything else. Its pipeline
         // neither tests nor writes depth.
@@ -802,6 +882,33 @@ Result<ChunkResources> make_chunk_resources(const Device& device, VkFormat color
                           .indices = std::move(indices).value()};
 }
 
+// What draws bodies: their pipeline, and an image for each of `skins`
+// skins and last one for the missing texture's.
+struct BodyResources {
+    GraphicsPipeline pipeline;
+    std::vector<Image> skins;
+};
+
+Result<BodyResources> make_body_resources(const Device& device, VkFormat color_format,
+                                          VkDescriptorSetLayout textures, std::size_t skins) {
+    Result<GraphicsPipeline> pipeline = make_body_pipeline(device, color_format, textures);
+    if (!pipeline.has_value()) {
+        return pipeline.error();
+    }
+    std::vector<Image> images;
+    for (std::size_t skin = 0; skin <= skins; ++skin) {
+        Result<Image> image = Image::create(
+            device, {.width = skin_size, .height = skin_size}, VK_FORMAT_R8G8B8A8_SRGB,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+            skin < skins ? "skin " + std::to_string(skin) : std::string("missing skin"));
+        if (!image.has_value()) {
+            return image.error();
+        }
+        images.push_back(std::move(image).value());
+    }
+    return BodyResources{.pipeline = std::move(pipeline).value(), .skins = std::move(images)};
+}
+
 } // namespace
 
 Result<Renderer> Renderer::create(const RendererDesc& desc) {
@@ -859,6 +966,11 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     if (!checker.has_value()) {
         return checker.error();
     }
+    Result<BodyResources> body_resources = make_body_resources(
+        context.value().device(), color_format, textures.value().layout(), desc.skins.size());
+    if (!body_resources.has_value()) {
+        return body_resources.error();
+    }
     Result<Image> block_textures =
         create_block_texture_array(context.value().device(), layers.value());
     if (!block_textures.has_value()) {
@@ -891,6 +1003,9 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
                       {.pipeline = std::move(pipeline).value(),
                        .vertices = std::move(vertices).value(),
                        .checker = std::move(checker).value()},
+                      {.pipeline = std::move(body_resources.value().pipeline),
+                       .skins = std::move(body_resources.value().skins),
+                       .slots = {}},
                       {.opaque = std::move(chunk_resources.value().pipelines.opaque),
                        .cutout = std::move(chunk_resources.value().pipelines.cutout),
                        .wireframe = std::move(chunk_resources.value().pipelines.wireframe),
@@ -899,7 +1014,7 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
     if (const Result<void> made = renderer.create_frame_objects(); !made.has_value()) {
         return made.error();
     }
-    if (const Result<void> uploaded = renderer.upload_at_startup(desc.block_textures);
+    if (const Result<void> uploaded = renderer.upload_at_startup(desc.block_textures, desc.skins);
         !uploaded.has_value()) {
         return uploaded.error();
     }
@@ -915,25 +1030,29 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
 
 Renderer::Renderer(Context context, std::optional<Swapchain> swapchain,
                    std::optional<Image> offscreen, Image depth, TextureTable textures,
-                   Image block_textures, Cube cube, ChunkDrawing chunk_drawing,
-                   ChunkRenderer chunks, Extent framebuffer, PresentMode present_mode)
+                   Image block_textures, Cube cube, BodyDrawing body_drawing,
+                   ChunkDrawing chunk_drawing, ChunkRenderer chunks, Extent framebuffer,
+                   PresentMode present_mode)
     : context_(std::move(context)), swapchain_(std::move(swapchain)),
       offscreen_(std::move(offscreen)), depth_(std::move(depth)), textures_(std::move(textures)),
       block_textures_(std::move(block_textures)), cube_(std::move(cube)),
-      chunk_drawing_(std::move(chunk_drawing)), chunks_(std::move(chunks)),
-      framebuffer_(framebuffer), target_framebuffer_(framebuffer), present_mode_(present_mode) {}
+      body_drawing_(std::move(body_drawing)), chunk_drawing_(std::move(chunk_drawing)),
+      chunks_(std::move(chunks)), framebuffer_(framebuffer), target_framebuffer_(framebuffer),
+      present_mode_(present_mode) {}
 
 Renderer::Renderer(Renderer&& other) noexcept
     : context_(std::move(other.context_)), swapchain_(std::move(other.swapchain_)),
       offscreen_(std::move(other.offscreen_)), depth_(std::move(other.depth_)),
       textures_(std::move(other.textures_)), block_textures_(std::move(other.block_textures_)),
-      cube_(std::move(other.cube_)), chunk_drawing_(std::move(other.chunk_drawing_)),
-      chunks_(std::move(other.chunks_)), set_chunk_at_(other.set_chunk_at_),
-      set_chunk_generation_(other.set_chunk_generation_), block_filter_(other.block_filter_),
-      occlusion_strength_(other.occlusion_strength_), wireframe_(other.wireframe_),
-      framebuffer_(other.framebuffer_), target_framebuffer_(other.target_framebuffer_),
-      present_mode_(other.present_mode_), swapchain_stale_(other.swapchain_stale_),
-      slots_(std::exchange(other.slots_, {})), origins_(std::move(other.origins_)),
+      cube_(std::move(other.cube_)), body_drawing_(std::move(other.body_drawing_)),
+      chunk_drawing_(std::move(other.chunk_drawing_)), chunks_(std::move(other.chunks_)),
+      set_chunk_at_(other.set_chunk_at_), set_chunk_generation_(other.set_chunk_generation_),
+      block_filter_(other.block_filter_), occlusion_strength_(other.occlusion_strength_),
+      wireframe_(other.wireframe_), framebuffer_(other.framebuffer_),
+      target_framebuffer_(other.target_framebuffer_), present_mode_(other.present_mode_),
+      swapchain_stale_(other.swapchain_stale_), slots_(std::exchange(other.slots_, {})),
+      origins_(std::move(other.origins_)), body_vertices_(std::move(other.body_vertices_)),
+      body_origins_(std::move(other.body_origins_)), posed_(other.posed_),
       image_rendered_(std::exchange(other.image_rendered_, {})),
       frames_done_(std::exchange(other.frames_done_, VK_NULL_HANDLE)), frame_(other.frame_),
       gpu_timer_(std::move(other.gpu_timer_)), times_(other.times_),
@@ -1003,6 +1122,23 @@ Result<void> Renderer::create_frame_objects() {
             return origins.error();
         }
         origins_.push_back(std::move(origins).value());
+
+        Result<Buffer> body_vertices = Buffer::create(
+            context_.device(), max_players * player_vertices * sizeof(BodyVertex),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            BufferMemory::per_frame, "frame slot " + std::to_string(slot) + " body vertices");
+        if (!body_vertices.has_value()) {
+            return body_vertices.error();
+        }
+        body_vertices_.push_back(std::move(body_vertices).value());
+        Result<Buffer> body_origins = Buffer::create(
+            context_.device(), max_players * sizeof(glm::vec4),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            BufferMemory::per_frame, "frame slot " + std::to_string(slot) + " body origins");
+        if (!body_origins.has_value()) {
+            return body_origins.error();
+        }
+        body_origins_.push_back(std::move(body_origins).value());
     }
 
     Result<GpuTimer> timer = GpuTimer::create(context_.device(), frames_in_flight);
@@ -1031,11 +1167,13 @@ Result<void> Renderer::add_rendered_semaphores() {
     return {};
 }
 
-// The cube's vertices and checker, and the block texture array. On unified
-// memory the vertices go through their buffer's mapping and nothing is
-// recorded for them. The images always stage: the copies are submitted, and
-// waited for before their staging buffers go away with `uploads`.
-Result<void> Renderer::upload_at_startup(std::span<const std::byte> block_textures) {
+// The cube's vertices and checker, the block texture array and the skins.
+// On unified memory the vertices go through their buffer's mapping and
+// nothing is recorded for them. The images always stage: the copies are
+// submitted, and waited for before their staging buffers go away with
+// `uploads`.
+Result<void> Renderer::upload_at_startup(std::span<const std::byte> block_textures,
+                                         std::span<const Skin> skins) {
     ZoneScopedN("Upload at startup");
     const Device& device = context_.device();
     UploadContext uploads(device);
@@ -1060,6 +1198,13 @@ Result<void> Renderer::upload_at_startup(std::span<const std::byte> block_textur
         uploaded = upload_image(uploads, commands, block_textures_,
                                 build_block_textures(checker_only, {}, diagnostics));
     }
+    const auto missing_skin = make_missing_skin();
+    for (std::size_t skin = 0; uploaded.has_value() && skin < body_drawing_.skins.size(); ++skin) {
+        uploaded = upload_image(uploads, commands, body_drawing_.skins[skin],
+                                skin < skins.size() ? std::span<const std::byte>(std::as_bytes(
+                                                          std::span(skins[skin].rgba)))
+                                                    : std::span<const std::byte>(missing_skin));
+    }
     uploads.finish(commands);
     vkEndCommandBuffer(commands);
     if (!uploaded.has_value()) {
@@ -1076,6 +1221,13 @@ Result<void> Renderer::upload_at_startup(std::span<const std::byte> block_textur
         return slot.error();
     }
     cube_.checker_slot = slot.value();
+    for (const Image& skin : body_drawing_.skins) {
+        const Result<std::uint32_t> skin_slot = textures_.add(skin.view());
+        if (!skin_slot.has_value()) {
+            return skin_slot.error();
+        }
+        body_drawing_.slots.push_back(skin_slot.value());
+    }
     textures_.set_block_textures(block_textures_.view());
     return {};
 }
@@ -1133,6 +1285,12 @@ Result<void> Renderer::recreate_target() {
                 return rebuilt.error();
             }
             cube_.pipeline = std::move(rebuilt).value();
+            Result<GraphicsPipeline> body =
+                make_body_pipeline(context_.device(), format, textures_.layout());
+            if (!body.has_value()) {
+                return body.error();
+            }
+            body_drawing_.pipeline = std::move(body).value();
             Result<ChunkPipelines> chunk_pipelines =
                 make_chunk_pipelines(context_.device(), format, textures_.layout());
             if (!chunk_pipelines.has_value()) {
@@ -1174,12 +1332,16 @@ void Renderer::set_present_mode(PresentMode mode) noexcept {
 
 namespace {
 
-// What a frame may ask for: at most max_cubes cubes, and an overlay only of
-// a renderer made with an overlay context.
+// What a frame may ask for: at most max_cubes cubes and max_players bodies,
+// and an overlay only of a renderer made with an overlay context.
 Result<void> check_frame_inputs(const FrameInputs& inputs, bool has_overlay) {
     if (inputs.cubes.size() > Renderer::max_cubes) {
         return Error{"a frame draws at most " + std::to_string(Renderer::max_cubes) +
                      " cubes, not " + std::to_string(inputs.cubes.size())};
+    }
+    if (inputs.players.size() > Renderer::max_players) {
+        return Error{"a frame draws at most " + std::to_string(Renderer::max_players) +
+                     " bodies, not " + std::to_string(inputs.players.size())};
     }
     if (inputs.overlay != nullptr && !has_overlay) {
         return Error{"a frame's overlay needs a renderer made with an overlay context"};
@@ -1188,6 +1350,41 @@ Result<void> check_frame_inputs(const FrameInputs& inputs, bool has_overlay) {
 }
 
 } // namespace
+
+// Each body is posed in doubles relative to the block its feet are in, then
+// copied into the slot's vertices; that block, from the camera's block, goes
+// into the slot's origins, subtracted in 64-bit integers as the cubes' are.
+Result<std::uint32_t> Renderer::write_bodies(std::span<const PlayerPose> players,
+                                             const glm::i64vec3& camera_block, std::size_t slot,
+                                             std::span<std::uint32_t> skins) {
+    const Buffer& vertices = body_vertices_[slot];
+    const Buffer& origins = body_origins_[slot];
+    constexpr std::size_t body_bytes = player_vertices * sizeof(BodyVertex);
+    for (std::size_t body = 0; body < players.size(); ++body) {
+        const PlayerPose& pose = players[body];
+        const BlockPos block{.x = static_cast<std::int32_t>(std::floor(pose.feet.x)),
+                             .y = static_cast<std::int32_t>(std::floor(pose.feet.y)),
+                             .z = static_cast<std::int32_t>(std::floor(pose.feet.z))};
+        pose_player(pose, block, posed_);
+        std::memcpy(vertices.mapping().subspan(body * body_bytes).data(), posed_.data(),
+                    body_bytes);
+        const glm::vec4 origin(relative_origin({block.x, block.y, block.z}, camera_block), 0.0F);
+        std::memcpy(origins.mapping().subspan(body * sizeof(glm::vec4)).data(), &origin,
+                    sizeof(origin));
+        // A skin the renderer was not given shows the missing texture, the last.
+        skins[body] = body_drawing_.slots.at(
+            std::min<std::size_t>(pose.skin, body_drawing_.slots.size() - 1));
+    }
+    VmaAllocator allocator = context_.device().allocator();
+    for (const Buffer* buffer : {&vertices, &origins}) {
+        if (const VkResult result =
+                vmaFlushAllocation(allocator, buffer->allocation(), 0, VK_WHOLE_SIZE);
+            result != VK_SUCCESS) {
+            return Error{"vmaFlushAllocation failed: " + vk_result_name(result)};
+        }
+    }
+    return static_cast<std::uint32_t>(players.size());
+}
 
 Result<void> Renderer::refresh_target() {
     if (!swapchain_stale_ && framebuffer_.width == target_framebuffer_.width &&
@@ -1240,6 +1437,20 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
         return written.error();
     }
     const auto cubes = static_cast<std::uint32_t>(inputs.cubes.size());
+    BodyDraw bodies{.pipeline = &body_drawing_.pipeline, .push = {}, .count = 0, .skins = {}};
+    const Result<std::uint32_t> written =
+        write_bodies(inputs.players, split.block, frame % frames_in_flight, bodies.skins);
+    if (!written.has_value()) {
+        return written.error();
+    }
+    bodies.count = written.value();
+    const auto body_draw = [&](VkExtent2D extent) {
+        BodyDraw draw = bodies;
+        draw.push = make_draw_push(inputs.camera, split, extent,
+                                   body_vertices_[frame % frames_in_flight].address(),
+                                   body_origins_[frame % frames_in_flight].address(), 0);
+        return draw;
+    };
     // The chunks as a target of `extent` sees them; the arena, which a
     // repack replaces, and the frame's origins and commands come once the
     // arena's upkeep is done and the draw lists are built.
@@ -1280,6 +1491,7 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
                                         origins.address(), cube_.checker_slot),
                  .cubes = cubes,
                  .chunk = chunk_draw(extent),
+                 .bodies = body_draw(extent),
                  .overlay = inputs.overlay},
                 chunks_, chunk_view(extent));
             !recorded.has_value()) {
@@ -1328,6 +1540,7 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
                                     origins.address(), cube_.checker_slot),
              .cubes = cubes,
              .chunk = chunk_draw(extent),
+             .bodies = body_draw(extent),
              .overlay = inputs.overlay},
             chunks_, chunk_view(extent));
         !recorded.has_value()) {
