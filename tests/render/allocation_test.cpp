@@ -2,9 +2,11 @@
 // An executable of its own, since it replaces the global operator new to count
 // heap allocations, which would count every other test's too.
 
+#include <vx/mesh/name_tag.hpp>
 #include <vx/mesh/player_model.hpp>
 #include <vx/render/camera.hpp>
 #include <vx/render/renderer.hpp>
+#include <vx/world/font.hpp>
 #include <vx/world/skin.hpp>
 
 #include <dlfcn.h>
@@ -17,6 +19,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <new>
 #include <optional>
 #include <string>
@@ -117,10 +120,11 @@ TEST_CASE("after its first frames, a frame allocates nothing on the heap") {
     CHECK(counted == 0);
 }
 
-TEST_CASE("with bodies to draw, a frame allocates nothing on the heap either") {
-    // RFC 0012's budget: bodies are posed into the frame slot's buffers,
-    // which are made with the renderer.
+TEST_CASE("with bodies and name tags to draw, a frame allocates nothing on the heap either") {
+    // RFC 0012's budget: bodies are posed and tags laid out into the frame
+    // slot's buffers, which are made with the renderer.
     const std::array<vx::Skin, 1> skins{};
+    const auto font = std::make_unique<vx::Font>();
     vx::Result<vx::render::Renderer> created =
         vx::render::Renderer::create({.surface = std::nullopt,
                                       .framebuffer = {.width = 64, .height = 32},
@@ -128,7 +132,8 @@ TEST_CASE("with bodies to draw, a frame allocates nothing on the heap either") {
                                       .present_mode = vx::render::PresentMode::fifo,
                                       .overlay = nullptr,
                                       .block_textures = {},
-                                      .skins = skins});
+                                      .skins = skins,
+                                      .font = font.get()});
     INFO((created.has_value() ? std::string() : created.error().message));
     REQUIRE(created.has_value());
     vx::render::Renderer& renderer = created.value();
@@ -140,10 +145,13 @@ TEST_CASE("with bodies to draw, a frame allocates nothing on the heap either") {
         players.at(body).feet = {.x = static_cast<double>(body), .y = 0.0, .z = 0.5};
         players.at(body).skin = static_cast<std::uint32_t>(body); // the last has none: missing
     }
+    const std::array tags = {vx::Tag{.anchor = {.x = 0.5, .y = 2.3, .z = 0.5}, .text = "Perdix"},
+                             vx::Tag{.anchor = {.x = 1.5, .y = 2.3, .z = 0.5}, .text = "Zlex"}};
     const vx::render::FrameInputs inputs = {.sky = {.r = 0.2F, .g = 0.4F, .b = 1.0F, .a = 1.0F},
                                             .camera = camera,
                                             .cubes = {},
-                                            .players = players};
+                                            .players = players,
+                                            .tags = tags};
     for (int frame = 0; frame < 3; ++frame) {
         REQUIRE(renderer.render(inputs).has_value());
     }
@@ -157,8 +165,8 @@ TEST_CASE("with bodies to draw, a frame allocates nothing on the heap either") {
     const std::size_t counted = ours;
     const std::size_t by_drivers = drivers;
 
-    MESSAGE("60 frames with 3 bodies: " << counted << " allocations by Perdix, " << by_drivers
-                                        << " by the driver");
+    MESSAGE("60 frames with 3 bodies and 2 tags: " << counted << " allocations by Perdix, "
+                                                   << by_drivers << " by the driver");
     CHECK(drawn);
     CHECK(counted == 0);
 }

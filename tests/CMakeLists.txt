@@ -155,6 +155,7 @@ add_executable(vx_render_vulkan_tests
     render/renderer_test.cpp
     render/shader_test.cpp
     render/swapchain_test.cpp
+    render/tag_test.cpp
     render/texture_table_test.cpp
     render/upload_test.cpp)
 target_link_libraries(vx_render_vulkan_tests PRIVATE vx::render doctest::doctest)
