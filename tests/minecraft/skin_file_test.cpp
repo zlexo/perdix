@@ -1,8 +1,11 @@
 #include "../core/png_bytes.hpp"
+#include "player_minecraft.hpp"
 
 #include <vx/core/archive.hpp>
+#include <vx/core/diagnostic.hpp>
 #include <vx/core/file.hpp>
 #include <vx/core/result.hpp>
+#include <vx/minecraft/install.hpp>
 #include <vx/minecraft/skin_file.hpp>
 #include <vx/world/skin.hpp>
 
@@ -359,4 +362,57 @@ TEST_CASE("the owner's skin in the core pack reads as a 64 by 64 skin") {
     if (!skin.has_value()) {
         FAIL(skin.error().message);
     }
+}
+
+TEST_CASE("the game's default skins read from the player's own Minecraft, when asked") {
+    // A local check against the real game, never in CI: with the variable set,
+    // finding no jar fails the test.
+    if (!vx::test::player_minecraft_asked()) {
+        MESSAGE(vx::test::not_asked);
+        return;
+    }
+    std::vector<vx::Diagnostic> diagnostics;
+    const vx::Result<vx::minecraft::Install> install =
+        vx::minecraft::find_install(vx::test::player_query(), diagnostics);
+    if (!install.has_value()) {
+        FAIL(install.error().message);
+    }
+    const vx::Archive& jar = install.value().jar;
+    for (const std::string_view name : vx::minecraft::default_skin_names) {
+        for (const vx::Arms arms : {vx::Arms::slim, vx::Arms::wide}) {
+            const std::string folder = arms == vx::Arms::slim ? "slim/" : "wide/";
+            INFO(folder, name);
+            const vx::Result<vx::Skin> skin = vx::minecraft::default_skin(jar, name, arms);
+            if (!skin.has_value()) {
+                FAIL_CHECK(skin.error().message);
+                continue;
+            }
+            // As RFC 0012 found them: alpha 0 or 255 only, the hat empty.
+            for (int y = 0; y < 64; ++y) {
+                for (int x = 0; x < 64; ++x) {
+                    const int alpha = texel(skin.value(), x, y)[3];
+                    if ((alpha != 0 && alpha != 255) || (x >= 32 && y < 16 && alpha != 0)) {
+                        FAIL_CHECK("texel (" << x << ", " << y << ") has alpha " << alpha);
+                    }
+                }
+            }
+            // Read as a skin file, only the see-through texels of the base
+            // layer change, made opaque: those are on no face of the model.
+            const vx::Result<std::vector<std::byte>> png = jar.read(
+                "assets/minecraft/textures/entity/player/" + folder + std::string(name) + ".png");
+            REQUIRE(png.has_value());
+            const vx::Skin as_file = read(
+                std::string(reinterpret_cast<const char*>(png.value().data()), png.value().size()),
+                arms);
+            check_texels(as_file, [&](int x, int y) {
+                Texel want = texel(skin.value(), x, y);
+                if (on_base(x, y)) {
+                    want[3] = 255;
+                }
+                return want;
+            });
+        }
+    }
+    MESSAGE("Minecraft ", install.value().version, ": the ",
+            2 * vx::minecraft::default_skin_names.size(), " default skins read");
 }
