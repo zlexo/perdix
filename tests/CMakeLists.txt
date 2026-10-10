@@ -95,6 +95,7 @@ add_executable(vx_mesh_tests
     main.cpp
     mesh/mesh_chunk_test.cpp
     mesh/padded_chunk_test.cpp
+    mesh/player_model_test.cpp
     mesh/quad_test.cpp)
 target_link_libraries(vx_mesh_tests PRIVATE vx::mesh doctest::doctest)
 vx_target_warnings(vx_mesh_tests)
