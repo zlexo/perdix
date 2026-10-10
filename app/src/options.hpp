@@ -37,6 +37,10 @@ struct Options {
     // they pick their QoS class (the sweep compares them).
     std::optional<std::uint32_t> workers;
     WorkerQos worker_qos = WorkerQos::switching;
+    // RFC 0012: the skins you and Perdix wear, by name (perdix, zlex, one of
+    // the game's defaults) or a skin file's path, each with :slim or :wide.
+    std::optional<std::string> skin;
+    std::optional<std::string> perdix_skin;
 };
 
 // The options, from the arguments after the program's name, or why they are

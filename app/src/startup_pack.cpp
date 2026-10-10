@@ -70,6 +70,7 @@ FromGame textures_from_game(const minecraft::Install& install,
 StartupPack load_startup_pack(const std::filesystem::path& root, const MinecraftChoice& choice) {
     minecraft::TextureMapsLoad maps = minecraft::load_texture_maps(root);
     StartupPack startup;
+    startup.root = root;
     std::vector<Diagnostic> diagnostics = std::move(maps.diagnostics);
     const bool named = choice.query.path.has_value() || choice.query.version.has_value();
     FromGame game;
@@ -89,6 +90,7 @@ StartupPack load_startup_pack(const std::filesystem::path& root, const Minecraft
         }
     } else {
         game = textures_from_game(install.value(), maps.maps, diagnostics);
+        startup.game = StartupPack::Game{.version = game.version, .jar = game.jar};
     }
     startup.pack = render::load_block_pack(root, game.made);
     diagnostics.insert(diagnostics.end(), std::make_move_iterator(startup.pack.diagnostics.begin()),

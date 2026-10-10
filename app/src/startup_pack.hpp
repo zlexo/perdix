@@ -20,6 +20,8 @@ struct MinecraftChoice {
 
 // The block pack as the app loads it at startup.
 struct StartupPack {
+    // The folder holding the pack's assets/.
+    std::filesystem::path root;
     // Its diagnostics are every step's: the texture maps', finding the game's,
     // making its textures', loading the blocks and their textures', and
     // checking the maps against them.
@@ -27,6 +29,13 @@ struct StartupPack {
     // The startup report's line on where the textures came from:
     // "Textures: Minecraft 26.2, from <jar>, 11 of 11".
     std::string textures;
+    // The player's Minecraft, when the pack was drawn with it: its version
+    // and its jar, which the skins and the font come from too (RFC 0012).
+    struct Game {
+        std::string version;
+        std::filesystem::path jar;
+    };
+    std::optional<Game> game;
     // A Minecraft named on the command line (a folder, a jar or a version)
     // that cannot be used, and why. The pack is loaded with its own textures
     // all the same, so that its problems are listed too; the app prints this
