@@ -27,7 +27,12 @@ struct BodyMotion {
 // eases 0.4 of the way toward four times the horizontal distance moved, at
 // most 1, and the phase adds the speed, so walking into a wall swings
 // nothing and flying swings the limbs. The head takes the look. The body
-// keeps facing where it faced.
+// turns 0.3 of the way toward a target each tick: the direction it moved,
+// once the move is more than 0.05 blocks across, or the opposite direction
+// when the move went more than 95 degrees from the look either way (walking
+// backward), or where it already faces when it moved less; then it is held
+// within 50 degrees of the look. So a standing body follows the look only
+// past 50 degrees, and a strafing one ends 50 degrees off it.
 void animate(BodyMotion& motion, Vec3d moved, float look_yaw, float look_pitch) noexcept;
 
 // A body between two ticks, as the camera poses it.

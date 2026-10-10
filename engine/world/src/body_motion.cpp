@@ -12,11 +12,27 @@ namespace {
 constexpr double pi = std::numbers::pi;
 constexpr double full_turn = 2.0 * pi;
 
+constexpr double radians(double degrees) noexcept {
+    return degrees * pi / 180.0;
+}
+
 // Minecraft 26.2's numbers for a player's body, from its jar. The walk
 // swing's speed eases this far toward its target each tick, a target of
 // this much per block moved across, at most 1.
 constexpr double swing_easing = 0.4;
 constexpr double swing_per_block = 4.0;
+// A move turns the body only when the square of its distance across is
+// more than this, compared as a float, as the game compares it: a hair over
+// 0.05 squared, so a move of exactly 0.05 blocks does not count.
+constexpr float least_turning_move_squared = 0.0025000002F;
+// A move this far from the look, turning either way, is walking backward:
+// the body faces away from it.
+constexpr double backward_from = radians(95.0);
+constexpr double backward_to = radians(265.0);
+// The body turns this much of the way to its target each tick, and stays
+// within this of the look.
+constexpr double body_easing = 0.3;
+constexpr double most_off_look = radians(50.0);
 
 // `angle` as a turn from above -pi up to pi. The game wraps its angles to
 // [-180, 180) degrees and turns the other way, so a half turn is +pi here:
@@ -32,6 +48,12 @@ double wrapped(double angle) noexcept {
     return turn;
 }
 
+// How far `to` lies from `from` turning left, from 0 up to a full turn.
+double leftward(double from, double to) noexcept {
+    const double turn = std::fmod(to - from, full_turn);
+    return turn < 0.0 ? turn + full_turn : turn;
+}
+
 } // namespace
 
 BodyMotion body_facing(float look_yaw, float look_pitch) noexcept {
@@ -41,8 +63,8 @@ BodyMotion body_facing(float look_yaw, float look_pitch) noexcept {
 }
 
 void animate(BodyMotion& motion, Vec3d moved, float look_yaw, float look_pitch) noexcept {
-    // A NaN would stay in the swing for good: a tick that brings one leaves
-    // the body as it was, as the move's tick does.
+    // A NaN would stay in the swing and the body for good: a tick that
+    // brings one leaves the body as it was, as the move's tick does.
     if (!std::isfinite(moved.x) || !std::isfinite(moved.z) || !std::isfinite(look_yaw) ||
         !std::isfinite(look_pitch)) {
         return;
@@ -56,6 +78,27 @@ void animate(BodyMotion& motion, Vec3d moved, float look_yaw, float look_pitch) 
 
     motion.head_yaw = look_yaw;
     motion.head_pitch = look_pitch;
+
+    // The body aims along a move that went far enough, or against it when it
+    // went backward; otherwise it keeps its facing, and only the look's hold
+    // turns it.
+    const auto look = static_cast<double>(look_yaw);
+    auto body = static_cast<double>(motion.body_yaw);
+    double target = body;
+    if (static_cast<float>((moved.x * moved.x) + (moved.z * moved.z)) >
+        least_turning_move_squared) {
+        // The engine's yaw of the move: forward is (-sin yaw, -cos yaw).
+        const double way = std::atan2(-moved.x, -moved.z);
+        const double off_look = leftward(look, way);
+        const bool backward = off_look > backward_from && off_look < backward_to;
+        target = backward ? way + pi : way;
+    }
+    body += wrapped(target - body) * body_easing;
+    const double from_look = wrapped(look - body);
+    if (std::abs(from_look) > most_off_look) {
+        body += from_look - std::copysign(most_off_look, from_look);
+    }
+    motion.body_yaw = static_cast<float>(wrapped(body));
 }
 
 BodyAt body_at(const BodyMotion& previous, const BodyMotion& current, double between) noexcept {
