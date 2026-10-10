@@ -18,8 +18,9 @@ struct GraphicsPipelineDesc {
     const char* vertex_entry = "vertex_main";
     const char* fragment_entry = "fragment_main";
     VkFormat color_format = VK_FORMAT_UNDEFINED;
-    // With a depth format, the pipeline tests and writes depth, reversed-Z:
-    // a fragment passes where it is nearer, its depth greater.
+    // With a depth format, the pipeline tests and writes depth, reversed-Z,
+    // unless depth_test or depth_write below says not to: a fragment passes
+    // where it is nearer, its depth greater.
     VkFormat depth_format = VK_FORMAT_UNDEFINED;
     // Faces wound counterclockwise, seen from outside, are front faces.
     VkCullModeFlags cull_mode = VK_CULL_MODE_NONE;
@@ -28,6 +29,12 @@ struct GraphicsPipelineDesc {
     VkPolygonMode polygon_mode = VK_POLYGON_MODE_FILL;
     // Set 0: the texture table's layout, or none.
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+    // Blends each fragment over the target by its alpha, as text does.
+    bool blend = false;
+    // With a depth format: whether the pipeline tests depth and whether it
+    // writes it. Text seen through walls does neither.
+    bool depth_test = true;
+    bool depth_write = true;
     // Push constants from offset 0, and the stages that read them.
     std::uint32_t push_constant_size = 0;
     VkShaderStageFlags push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT;

@@ -130,13 +130,17 @@ Result<GraphicsPipeline> GraphicsPipeline::create(const Device& device,
         .alphaToCoverageEnable = VK_FALSE,
         .alphaToOneEnable = VK_FALSE,
     };
+    // Blending, where asked for: the fragment's color by its alpha over the
+    // target's by what is left.
+    const VkBlendFactor over =
+        desc.blend ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ZERO;
     const VkPipelineColorBlendAttachmentState blend_attachment = {
-        .blendEnable = VK_FALSE,
-        .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
-        .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .blendEnable = desc.blend ? VK_TRUE : VK_FALSE,
+        .srcColorBlendFactor = desc.blend ? VK_BLEND_FACTOR_SRC_ALPHA : VK_BLEND_FACTOR_ONE,
+        .dstColorBlendFactor = over,
         .colorBlendOp = VK_BLEND_OP_ADD,
         .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .dstAlphaBlendFactor = over,
         .alphaBlendOp = VK_BLEND_OP_ADD,
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
@@ -158,8 +162,8 @@ Result<GraphicsPipeline> GraphicsPipeline::create(const Device& device,
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .depthTestEnable = VK_TRUE,
-        .depthWriteEnable = VK_TRUE,
+        .depthTestEnable = desc.depth_test ? VK_TRUE : VK_FALSE,
+        .depthWriteEnable = desc.depth_write ? VK_TRUE : VK_FALSE,
         .depthCompareOp = VK_COMPARE_OP_GREATER,
         .depthBoundsTestEnable = VK_FALSE,
         .stencilTestEnable = VK_FALSE,
