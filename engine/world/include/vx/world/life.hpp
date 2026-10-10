@@ -70,6 +70,24 @@ private:
 [[nodiscard]] std::optional<Vec3d> stroll_spot(Vec3d feet, Vec3d leash, LifeRandom& random,
                                                const BlockBoxes& world, std::vector<Box>& scratch);
 
+// Whether Minecraft 26.2's auto-jump jumps on the next tick (RFC 0012; from
+// its jar: LocalPlayer.updateAutoJump and canAutoJump), after a tick that
+// moved `body` by `moved` with `input`, looking `look_pitch` up. It asks
+// that the move ended on the ground with a key held that moves him and
+// Shift up; that he goes not backward: the way he moved, or the way the keys
+// push when he barely moved, against his facing tilted by the pitch, past
+// the game's limit of -0.15; and that no block box reaches into the block
+// holding the top of his head or the one above it. Then two probes 0.51
+// above his feet, half his width either side, reach ahead by the larger of
+// 7 times his speed (the walking acceleration, more sprinting) and the
+// step; the first box either crosses, in the game's order, by its block's
+// z, then y, then x, must rise more than 0.5 and at most 1.2 above his
+// feet, with nothing in the block above it. Each probe meets the boxes as
+// the game's does, as the box its two ends span.
+[[nodiscard]] bool auto_jumps(const Player& body, const TickInput& input, float look_pitch,
+                              Vec3d moved, const BlockBoxes& world, const MovementNumbers& numbers,
+                              std::vector<Box>& scratch);
+
 // Another player as Perdix sees one: where it stands, how high its eyes are
 // over its feet (RFC 0010's eye_height() of its pose), and whether it
 // sneaks, which hides it a little.

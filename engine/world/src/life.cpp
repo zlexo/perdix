@@ -6,6 +6,7 @@
 #include <vx/world/movement.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -56,6 +57,19 @@ constexpr double leash_length = 24.0;
 // distance is 25 times the mob's speed squared, 1 block for a cow; Perdix
 // takes the cow's.
 constexpr double walking_turn = radians(90.0);
+// Auto-jump, from the jar (LocalPlayer.updateAutoJump): a move this short
+// squared, as a float, gives no way to go, and the keys' way is taken; a
+// way this far from the facing is backward; the probes run this far above
+// the feet (the game's 0.51, a float), half his width either side, and
+// reach 7 times his speed ahead; an obstacle must rise more than 0.5 and at
+// most 1.2.
+constexpr float least_way_squared = 0.001F;
+constexpr float backward_limit = -0.15F;
+constexpr double probe_height = 0.5099999904632568;
+constexpr double probe_spread = 0.3;
+constexpr double reach_per_speed = 7.0;
+constexpr float least_rise = 0.5F;
+constexpr float most_rise = 1.2F;
 constexpr double arrival = 1.0;
 constexpr std::uint64_t stuck_ticks = 100;
 constexpr double stuck_distance = 1.0;
@@ -135,6 +149,84 @@ bool solid(BlockPos block, const BlockBoxes& world, std::vector<Box>& scratch) {
     return overlaps_any(cube, scratch);
 }
 
+// The top of the highest block box reaching into `block`, or none.
+std::optional<double> top_in(BlockPos block, const BlockBoxes& world, std::vector<Box>& scratch) {
+    const Box cube = cube_of(block);
+    scratch.clear();
+    world.collect(cube, scratch);
+    std::optional<double> top;
+    for (const Box& box : scratch) {
+        if (overlaps_any(cube, std::span(&box, 1))) {
+            top = std::max(top.value_or(box.max.y), box.max.y);
+        }
+    }
+    return top;
+}
+
+// The way an auto-jump looks: the move across, or, when it was under the
+// game's least, the way the keys push at `speed`; none when that is too
+// short as well.
+std::optional<Vec3d> way_ahead(const MovementKeys& keys, double yaw, double speed,
+                               Vec3d moved) noexcept {
+    const auto squared = [](Vec3d v) { return static_cast<float>((v.x * v.x) + (v.z * v.z)); };
+    const Vec3d move{.x = moved.x, .y = 0.0, .z = moved.z};
+    if (squared(move) > least_way_squared) {
+        return move;
+    }
+    const double forward = (keys.forward ? 1.0 : 0.0) - (keys.back ? 1.0 : 0.0);
+    const double strafe = (keys.left ? 1.0 : 0.0) - (keys.right ? 1.0 : 0.0);
+    const Vec3d facing{.x = -std::sin(yaw), .y = 0.0, .z = -std::cos(yaw)};
+    const Vec3d left{.x = -std::cos(yaw), .y = 0.0, .z = std::sin(yaw)};
+    const Vec3d pushed =
+        ((facing * forward) + (left * strafe)) * (speed / std::hypot(forward, strafe));
+    if (squared(pushed) > least_way_squared) {
+        return pushed;
+    }
+    return std::nullopt;
+}
+
+// The box spanned by the ends of a probe, flat at their height.
+Box spanned(Vec3d a, Vec3d b) noexcept {
+    return {.min = {.x = std::min(a.x, b.x), .y = a.y, .z = std::min(a.z, b.z)},
+            .max = {.x = std::max(a.x, b.x), .y = a.y, .z = std::max(a.z, b.z)}};
+}
+
+// The top of the first block box a probe crosses, in the order the game
+// meets them: by its block, z first, then y, then x, each from the lowest;
+// with a block over it, that block's top. None when no box crosses.
+std::optional<double> obstacle_top(const Box& probe_a, const Box& probe_b, const BlockBoxes& world,
+                                   std::vector<Box>& scratch) {
+    const auto crosses = [](const Box& box, const Box& probe) {
+        return box.min.x < probe.max.x && box.max.x > probe.min.x && box.min.y < probe.max.y &&
+               box.max.y > probe.min.y && box.min.z < probe.max.z && box.max.z > probe.min.z;
+    };
+    scratch.clear();
+    world.collect({.min = {.x = std::min(probe_a.min.x, probe_b.min.x),
+                           .y = probe_a.min.y,
+                           .z = std::min(probe_a.min.z, probe_b.min.z)},
+                   .max = {.x = std::max(probe_a.max.x, probe_b.max.x),
+                           .y = probe_a.max.y,
+                           .z = std::max(probe_a.max.z, probe_b.max.z)}},
+                  scratch);
+    std::optional<double> top;
+    std::optional<BlockPos> first;
+    const auto order = [](const BlockPos& b) { return std::array{b.z, b.y, b.x}; };
+    for (const Box& box : scratch) {
+        const std::optional<BlockPos> block = block_at((box.min + box.max) * 0.5);
+        if (block && (crosses(box, probe_a) || crosses(box, probe_b)) &&
+            (!first || order(*block) < order(*first))) {
+            top = box.max.y;
+            first = block;
+        }
+    }
+    if (!first) {
+        return std::nullopt;
+    }
+    const std::optional<double> over =
+        top_in({.x = first->x, .y = first->y + 1, .z = first->z}, world, scratch);
+    return over ? over : top;
+}
+
 // Whether a standing body fits with its feet at `feet`.
 bool room(Vec3d feet, const BlockBoxes& world, std::vector<Box>& scratch) {
     const Box body = body_box(feet, Pose::standing);
@@ -192,6 +284,52 @@ std::optional<Vec3d> stroll_spot(Vec3d feet, Vec3d leash, LifeRandom& random,
         }
     }
     return std::nullopt;
+}
+
+bool auto_jumps(const Player& body, const TickInput& input, float look_pitch, Vec3d moved,
+                const BlockBoxes& world, const MovementNumbers& numbers,
+                std::vector<Box>& scratch) {
+    const MovementKeys& keys = input.held;
+    const bool moving = keys.forward != keys.back || keys.left != keys.right;
+    if (!body.on_ground || keys.sneak || !moving || !std::isfinite(input.yaw) ||
+        !std::isfinite(look_pitch) || !std::isfinite(moved.x) || !std::isfinite(moved.z)) {
+        return false;
+    }
+    const auto yaw = static_cast<double>(input.yaw);
+    const double speed = numbers.walk_acceleration * (body.sprinting ? numbers.sprint_factor : 1.0);
+    const std::optional<Vec3d> way = way_ahead(keys, yaw, speed, moved);
+    if (!way) {
+        return false;
+    }
+    const double step = std::hypot(way->x, way->z);
+    const Vec3d along = *way * (1.0 / step);
+    const double ahead = std::cos(static_cast<double>(look_pitch)) *
+                         ((-std::sin(yaw) * along.x) + (-std::cos(yaw) * along.z));
+    if (static_cast<float>(ahead) < backward_limit) {
+        return false;
+    }
+
+    // Room over his head: the block holding its top, and the one above.
+    const Vec3d feet = body.position;
+    const std::optional<BlockPos> head =
+        block_at({.x = feet.x, .y = body_box(feet, body.pose).max.y, .z = feet.z});
+    if (!head || top_in(*head, world, scratch) ||
+        top_in({.x = head->x, .y = head->y + 1, .z = head->z}, world, scratch)) {
+        return false;
+    }
+
+    // The two probes, each the box its ends span, 0.51 over the feet.
+    const double reach = std::max(speed * reach_per_speed, step);
+    const Vec3d start = feet + Vec3d{.x = 0.0, .y = probe_height, .z = 0.0};
+    const Vec3d end = start + Vec3d{.x = moved.x, .y = 0.0, .z = moved.z} + (along * reach);
+    const Vec3d side = Vec3d{.x = -along.z, .y = 0.0, .z = along.x} * probe_spread;
+    const std::optional<double> top = obstacle_top(
+        spanned(start - side, end - side), spanned(start + side, end + side), world, scratch);
+    if (!top) {
+        return false;
+    }
+    const auto rise = static_cast<float>(*top - feet.y);
+    return rise > least_rise && rise <= most_rise;
 }
 
 LookControl::LookControl(float yaw) noexcept
