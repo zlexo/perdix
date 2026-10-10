@@ -2,6 +2,7 @@
 
 #include "png.hpp"
 
+#include <vx/core/archive.hpp>
 #include <vx/core/result.hpp>
 #include <vx/world/font.hpp>
 
@@ -10,6 +11,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
+#include <vector>
 
 namespace vx::minecraft {
 namespace {
@@ -95,6 +98,20 @@ Result<Font> read_font(std::span<const std::byte> png) {
             // cell's, 8 over 8 here, and rounds it to the nearest.
             advance = static_cast<std::uint8_t>(ink_width(font, code) + 1);
         }
+    }
+    return font;
+}
+
+Result<Font> default_font(const Archive& jar) {
+    const std::string entry = "assets/minecraft/textures/font/ascii.png";
+    // The archive's own message names it and the entry.
+    const Result<std::vector<std::byte>> bytes = jar.read(entry);
+    if (!bytes) {
+        return bytes.error();
+    }
+    Result<Font> font = read_font(bytes.value());
+    if (!font) {
+        return Error{"'" + entry + "' " + font.error().message};
     }
     return font;
 }

@@ -1,7 +1,11 @@
 #include "../core/png_bytes.hpp"
+#include "player_minecraft.hpp"
 
+#include <vx/core/archive.hpp>
+#include <vx/core/diagnostic.hpp>
 #include <vx/core/result.hpp>
 #include <vx/minecraft/font_file.hpp>
+#include <vx/minecraft/install.hpp>
 #include <vx/world/font.hpp>
 
 #include <doctest/doctest.h>
@@ -13,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -204,4 +209,60 @@ TEST_CASE("a font of another size or not a PNG is refused") {
     const vx::Result<vx::Font> text = vx::minecraft::read_font(bytes_of("not a PNG"));
     REQUIRE_FALSE(text.has_value());
     CHECK(text.error().message.starts_with("is not a PNG file stb_image can read ("));
+}
+
+TEST_CASE("the default font is the jar's ascii.png, or an error that names it") {
+    const auto jar_of = [](std::string png) {
+        const std::vector<vx::test::ZipEntry> entries = {
+            {.name = "assets/minecraft/textures/font/ascii.png",
+             .data = std::move(png),
+             .flags = 8,
+             .deflate = true}};
+        vx::Result<vx::Archive> jar =
+            vx::Archive::from_bytes("26.2.jar", vx::test::make_zip(entries).bytes);
+        REQUIRE(jar.has_value());
+        return std::move(jar).value();
+    };
+    Atlas atlas;
+    atlas.glyph('A', 5);
+    const vx::Result<vx::Font> font = vx::minecraft::default_font(jar_of(atlas.png()));
+    REQUIRE(font.has_value());
+    CHECK(font.value().advances['A'] == 6);
+
+    const vx::Result<vx::Font> tall = vx::minecraft::default_font(jar_of(
+        vx::test::make_png(128, 64, PngColor::gray, std::string(std::size_t{128} * 64, 'x'))));
+    REQUIRE_FALSE(tall.has_value());
+    CHECK(tall.error().message ==
+          "'assets/minecraft/textures/font/ascii.png' is 128 by 64 pixels, not 128 by 128");
+
+    vx::Result<vx::Archive> empty =
+        vx::Archive::from_bytes("26.2.jar", vx::test::make_zip({}).bytes);
+    REQUIRE(empty.has_value());
+    const vx::Result<vx::Font> missing = vx::minecraft::default_font(empty.value());
+    REQUIRE_FALSE(missing.has_value());
+    CHECK(missing.error().message ==
+          "26.2.jar has no entry 'assets/minecraft/textures/font/ascii.png'");
+}
+
+TEST_CASE("the game's own font, when asked") {
+    // A local check against the real game, never in CI: with the variable set,
+    // finding no jar fails the test.
+    if (!vx::test::player_minecraft_asked()) {
+        MESSAGE(vx::test::not_asked);
+        return;
+    }
+    std::vector<vx::Diagnostic> diagnostics;
+    const vx::Result<vx::minecraft::Install> install =
+        vx::minecraft::find_install(vx::test::player_query(), diagnostics);
+    if (!install.has_value()) {
+        FAIL(install.error().message);
+    }
+    const vx::Result<vx::Font> font = vx::minecraft::default_font(install.value().jar);
+    if (!font.has_value()) {
+        FAIL(font.error().message);
+    }
+    // RFC 0012's widths, and the tag over you.
+    CHECK(width_of(font.value(), "Perdix") == 32);
+    CHECK(width_of(font.value(), "Zlex") == 21);
+    CHECK(font.value().advances[' '] == 4);
 }

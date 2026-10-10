@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vx/core/archive.hpp>
 #include <vx/core/result.hpp>
 #include <vx/world/font.hpp>
 
@@ -19,5 +20,12 @@ namespace vx::minecraft {
 // 8 box outline in white, advancing 6. A problem is worded to follow the
 // file's name.
 [[nodiscard]] Result<Font> read_font(std::span<const std::byte> png);
+
+// The game's default font from the player's jar:
+// assets/minecraft/textures/font/ascii.png, read through RFC 0009's archive
+// reader and then as read_font reads it. An entry that is missing, cannot be
+// read, is not a PNG or has another size is an error that names it and says
+// why.
+[[nodiscard]] Result<Font> default_font(const Archive& jar);
 
 } // namespace vx::minecraft
