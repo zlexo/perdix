@@ -1,5 +1,7 @@
 #include <vx/minecraft/made_textures.hpp>
 
+#include "png.hpp"
+
 #include <vx/core/archive.hpp>
 #include <vx/core/diagnostic.hpp>
 #include <vx/core/result.hpp>
@@ -8,18 +10,16 @@
 #include <vx/world/block_file.hpp>
 #include <vx/world/block_registry.hpp>
 
-#include <stb_image.h>
-
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <functional>
 #include <map>
-#include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -28,48 +28,6 @@ namespace {
 
 constexpr int block_texture_side = 16;
 constexpr int color_map_side = 256;
-
-// A PNG's texels as RGBA8, when it is `side` by `side` texels. The size is
-// read from its header first, so a file that claims a huge image is refused
-// before anything is decoded. A problem is worded to follow the entry's
-// name: "is 16 by 32 pixels, not 16 by 16".
-Result<std::vector<std::uint8_t>> decode(std::span<const std::byte> png, int side) {
-    const auto* const data = reinterpret_cast<const stbi_uc*>(png.data());
-    const auto length = static_cast<int>(png.size());
-    int width = 0;
-    int height = 0;
-    int channels = 0;
-    const auto not_png = [] {
-        // stb_image gives no reason when one of its allocations fails.
-        const char* const reason = stbi_failure_reason();
-        return Error{std::string("is not a PNG file stb_image can read (") +
-                     (reason != nullptr ? reason : "no reason given") + ")"};
-    };
-    const auto wrong_size = [&] {
-        return Error{"is " + std::to_string(width) + " by " + std::to_string(height) +
-                     " pixels, not " + std::to_string(side) + " by " + std::to_string(side)};
-    };
-    if (stbi_info_from_memory(data, length, &width, &height, &channels) == 0) {
-        return not_png();
-    }
-    if (width != side || height != side) {
-        return wrong_size();
-    }
-    stbi_uc* const pixels = stbi_load_from_memory(data, length, &width, &height, &channels, 4);
-    if (pixels == nullptr) {
-        return not_png();
-    }
-    // The load reads the header again; the copy below trusts what it says.
-    if (width != side || height != side) {
-        stbi_image_free(pixels);
-        return wrong_size();
-    }
-    const auto count = static_cast<std::size_t>(side) * static_cast<std::size_t>(side) * 4;
-    std::vector<std::uint8_t> rgba(count);
-    std::memcpy(rgba.data(), pixels, count);
-    stbi_image_free(pixels);
-    return rgba;
-}
 
 // What making textures reads from the jar, each entry once however many
 // textures use it. A problem is worded to follow "Minecraft 26.2".
@@ -108,11 +66,12 @@ private:
             return Error{"'s " + kind + " '" + name + "' cannot be read (" + bytes.error().message +
                          ")"};
         }
-        Result<std::vector<std::uint8_t>> rgba = decode(bytes.value(), side);
-        if (!rgba) {
-            return Error{"'s " + kind + " '" + name + "' " + rgba.error().message};
+        const std::array<ImageSize, 1> size = {ImageSize{.width = side, .height = side}};
+        Result<Image> image = decode_png(bytes.value(), size);
+        if (!image) {
+            return Error{"'s " + kind + " '" + name + "' " + image.error().message};
         }
-        return rgba;
+        return std::move(image).value().rgba;
     }
 
     Result<Texels> read_block_texture(const std::string& name) const {

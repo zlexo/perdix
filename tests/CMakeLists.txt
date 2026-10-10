@@ -234,6 +234,7 @@ add_executable(vx_minecraft_tests
     minecraft/made_textures_test.cpp
     minecraft/minecraft_pack_test.cpp
     minecraft/shipped_map_test.cpp
+    minecraft/skin_file_test.cpp
     minecraft/texture_map_test.cpp
     minecraft/texture_maps_test.cpp
     minecraft/version_description_fuzz_test.cpp
