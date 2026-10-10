@@ -139,6 +139,13 @@ public:
     // Distance option. The region is made again around the camera, and
     // chunks join it and leave it as they do on a move, hysteresis included.
     void set_view_distance(std::int32_t chunks);
+    // The view distance and the hysteresis from now on, as RFC 0006's memory
+    // budget lowers and raises them: as set_view_distance, and a smaller
+    // hysteresis lets go of the chunks only the larger one kept.
+    void set_limits(RegionLimits limits);
+    [[nodiscard]] RegionLimits limits() const noexcept {
+        return {.view_distance = settings_.view_distance, .hysteresis = settings_.hysteresis};
+    }
     // Submits the jobs that can start, at most `room` of them: surfaces
     // first, then plans and builds, each lowest score first.
     void feed(std::size_t room = std::numeric_limits<std::size_t>::max());

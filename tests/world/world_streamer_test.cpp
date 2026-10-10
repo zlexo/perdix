@@ -2060,3 +2060,57 @@ TEST_CASE("a nearer view distance while the farther ring's surfaces are on their
     CHECK(streamer.stats().jobs_in_flight == 0);
     CHECK(streamer.stats().waiting == 0);
 }
+
+TEST_CASE("a smaller hysteresis lets go of the chunks only the larger one kept, the farthest "
+          "ring first, and never of an edited chunk") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    // An edit at the disc's west edge, then the camera three chunks east:
+    // the edge is now kept only by the hysteresis, and the edited chunk
+    // lies outside every ring the limits leave, planned ones included.
+    std::optional<vx::BlockPos> edited;
+    for (std::int32_t y = 0; y < 5 && !edited; ++y) {
+        const vx::BlockPos block{.x = 16, .y = (y * vx::chunk_size) + 16, .z = 112};
+        if (streamer.set_block(block, stone)) {
+            edited = block;
+        }
+    }
+    REQUIRE(edited.has_value());
+    const ChunkPos camera{.x = above_hills.x + 3, .y = above_hills.y, .z = above_hills.z};
+    streamer.set_camera(camera);
+    settle(streamer, jobs);
+    const auto kept_by = [&](std::int32_t hysteresis) {
+        vx::RegionSettings settings = small;
+        settings.hysteresis = hysteresis;
+        return vx::Region(camera, settings).grown(hysteresis);
+    };
+    REQUIRE(streamer.records().outside(kept_by(1)) > 1);
+    // Hysteresis 1: the farthest ring goes, the edited chunk stays (the
+    // count of records outside leaves edited ones out).
+    const ChunkPos edited_chunk = vx::chunk_of(*edited);
+    streamer.set_limits({.view_distance = 3, .hysteresis = 1});
+    settle(streamer, jobs);
+    CHECK(streamer.limits() == vx::RegionLimits{.view_distance = 3, .hysteresis = 1});
+    CHECK(streamer.records().outside(kept_by(1)) == 0);
+    CHECK(streamer.records().outside(kept_by(0)) > 0);
+    REQUIRE(streamer.find(edited_chunk) != nullptr);
+    CHECK(streamer.find(edited_chunk)->edited);
+    CHECK(streamer.block(*edited) == stone);
+    // None: only the region's chunks are drawn, as a streamer started there
+    // with no hysteresis draws them.
+    streamer.set_limits({.view_distance = 3, .hysteresis = 0});
+    settle(streamer, jobs);
+    CHECK(streamer.records().outside(kept_by(0)) == 0);
+    REQUIRE(streamer.find(edited_chunk) != nullptr);
+    CHECK(streamer.block(*edited) == stone);
+    vx::RegionSettings none = small;
+    none.hysteresis = 0;
+    WorldStreamer fresh(generator, jobs, wake, none);
+    fresh.set_camera(camera);
+    settle(fresh, jobs);
+    CHECK(drawn_chunks(streamer) == drawn_chunks(fresh));
+}

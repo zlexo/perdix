@@ -201,10 +201,15 @@ bool WorldStreamer::set_viewer(const Viewer& viewer) {
 }
 
 void WorldStreamer::set_view_distance(std::int32_t chunks) {
-    if (chunks == settings_.view_distance) {
+    set_limits({.view_distance = chunks, .hysteresis = settings_.hysteresis});
+}
+
+void WorldStreamer::set_limits(RegionLimits limits) {
+    if (limits == this->limits()) {
         return;
     }
-    settings_.view_distance = chunks;
+    settings_.view_distance = limits.view_distance;
+    settings_.hysteresis = limits.hysteresis;
     if (region_) {
         move_region(region_->camera());
         // Plans parked until their column's surface came are tried again:
