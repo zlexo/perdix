@@ -1,5 +1,7 @@
 #pragma once
 
+#include "world_report.hpp"
+
 #include <vx/render/camera.hpp>
 #include <vx/render/chunk_arena.hpp>
 #include <vx/render/renderer.hpp>
@@ -95,6 +97,8 @@ public:
     // The meshes and unloads waiting on the main thread for the next frames'
     // uploads (RFC 0007's backlog).
     void set_chunk_backlog(std::size_t waiting) noexcept { chunk_backlog_ = waiting; }
+    // Streaming's last report from the world thread (RFC 0006).
+    void set_world_report(const WorldReport& report) noexcept { world_ = report; }
 
 private:
     // A measure's last samples, in milliseconds, for its graph.
@@ -127,12 +131,14 @@ private:
     static void draw_camera(const render::Camera& camera);
     static void draw_movement(const MovementReport& movement);
     void draw_render_distance(RenderDistance& distance);
+    void draw_streaming() const;
 
     void draw_validation(const render::Context& context) const;
 
     ImGuiContext* context_;
     MovementReport movement_;
     std::size_t chunk_backlog_ = 0;
+    WorldReport world_;
     // The Render Distance slider's value while it is dragged, 0 otherwise:
     // the distance changes once it is let go.
     std::int32_t dragged_distance_ = 0;

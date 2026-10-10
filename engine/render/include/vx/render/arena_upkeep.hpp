@@ -38,6 +38,10 @@ struct UpkeepStats {
     std::uint32_t moved = 0;       // quads compaction moved this frame
     std::uint64_t moved_total = 0; // quads compaction moved so far
     std::uint32_t repacks = 0;
+    // Frames that ended with the arena full, so far: RFC 0006's signal. A
+    // frame not drawn runs no upkeep and adds nothing, so a full flag left
+    // from before a minimized window does not count again and again.
+    std::uint64_t full_frames = 0;
 };
 
 // RFC 0007's answers to a full arena, decided once a frame, after the frame
@@ -91,6 +95,7 @@ public:
 private:
     enum class State : std::uint8_t { idle, compacting, settling };
 
+    [[nodiscard]] UpkeepStep decide(const ArenaSpace& space, std::uint32_t wanted);
     [[nodiscard]] UpkeepStep grow(const ArenaSpace& space, std::uint32_t wanted);
     void settle() noexcept;
     void set_state(State state) noexcept;
