@@ -31,6 +31,7 @@ add_library(vx_world STATIC
     src/block_data_pool.cpp
     src/block_file.cpp
     src/block_registry.cpp
+    src/body_motion.cpp
     src/chunk_boxes.cpp
     src/chunk_map.cpp
     src/chunk_records.cpp
