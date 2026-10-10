@@ -52,6 +52,7 @@ int main(int argc, char* argv[]) {
     vx::bench::mesh(bench);
     vx::bench::player_model(bench);
     vx::bench::movement(bench);
+    vx::bench::life(bench);
     vx::bench::draw_lists(bench);
     // No results means no benchmark ran, which --quick must not pass as a
     // run: the test "the benchmarks run" would stay green with none.

@@ -27,6 +27,7 @@ add_executable(vx_bench
     world/block_registry_bench.cpp
     world/chunk_map_bench.cpp
     world/chunk_storage_bench.cpp
+    world/life_bench.cpp
     world/movement_bench.cpp
     world/packed_array_bench.cpp)
 target_link_libraries(vx_bench PRIVATE vx::world vx::mesh vx::render vx_nanobench)
