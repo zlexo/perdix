@@ -73,6 +73,7 @@ add_executable(vx_world_tests
     world/jump_test.cpp
     world/life_climb_test.cpp
     world/life_look_test.cpp
+    world/life_modes_test.cpp
     world/life_stroll_test.cpp
     world/life_test.cpp
     world/look_control_test.cpp
