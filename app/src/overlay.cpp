@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <numeric>
 #include <string>
 #include <string_view>
@@ -51,6 +52,45 @@ bool same_report(const render::SwapchainChoice& a, const render::SwapchainChoice
 // label, instead of flattening the rest for as long as it is in the graph.
 constexpr float budget_ms = 0.5F;
 constexpr float lowest_top_ms = 2.0F;
+
+// Perdix's mode, as the RFC names them, and bringing him to you.
+void draw_perdix(GodPanel& god) {
+    if (!god.perdix) {
+        ImGui::TextDisabled("No Perdix in this run");
+        return;
+    }
+    ImGui::Text("Perdix, %.1f blocks away", god.perdix_distance);
+    const auto mode = [&](const char* label, LifeMode value) {
+        if (ImGui::RadioButton(label, god.perdix_mode == value)) {
+            god.perdix_mode = value;
+        }
+    };
+    mode("His own life", LifeMode::life);
+    ImGui::SameLine();
+    mode("Following you", LifeMode::follow);
+    ImGui::SameLine();
+    mode("Standing still", LifeMode::still);
+    if (ImGui::Button("Bring him here")) {
+        god.bring_perdix = true;
+    }
+}
+
+// A skin's name, or what is drawn past the last skin.
+const char* skin_name(const GodPanel& god, std::uint32_t skin) {
+    return skin < god.skins.size() ? god.skins[skin].c_str() : "none: the missing texture";
+}
+
+// The skin a player wears, chosen from the list by its name.
+void skin_choice(const char* label, const GodPanel& god, std::uint32_t& skin) {
+    if (ImGui::BeginCombo(label, skin_name(god, skin))) {
+        for (std::uint32_t index = 0; index < god.skins.size(); ++index) {
+            if (ImGui::Selectable(god.skins[index].c_str(), index == skin)) {
+                skin = index;
+            }
+        }
+        ImGui::EndCombo();
+    }
+}
 
 } // namespace
 
@@ -390,28 +430,8 @@ void Overlay::draw_streaming() const {
                 why);
 }
 
-ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& camera,
-                           bool mouse_captured, ChunkMeshing& meshing, bool& bobbing,
-                           RenderDistance& distance) {
-    if (!shown_) {
-        return nullptr;
-    }
-    ZoneScopedN("Overlay");
-    ImGui::SetCurrentContext(context_);
-    ImGuiIO& io = ImGui::GetIO();
-    // Captured, the mouse turns the camera: the overlay neither reads it nor
-    // shows the cursor, which ImGui's backend would otherwise do every frame.
-    constexpr ImGuiConfigFlags flying =
-        ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange;
-    if (mouse_captured) {
-        io.ConfigFlags |= flying;
-    } else {
-        io.ConfigFlags &= ~flying;
-    }
-    update_reports(renderer);
-
-    ImGui_ImplSDL3_NewFrame();
-    ImGui::NewFrame();
+void Overlay::draw_overlay(render::Renderer& renderer, const render::Camera& camera,
+                           ChunkMeshing& meshing, bool& bobbing, RenderDistance& distance) {
     // In the top left corner, over the frame: no title bar, no moving, sized
     // to what it shows.
     constexpr float margin = 10.0F;
@@ -450,6 +470,55 @@ ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& cam
         draw_validation(renderer.context());
     }
     ImGui::End();
+}
+
+void Overlay::draw_god_panel() {
+    // In the middle of the frame, as the game's inventory is, sized to what
+    // it shows.
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
+                            ImVec2(0.5F, 0.5F));
+    constexpr ImGuiWindowFlags window_flags =
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoNav;
+    if (ImGui::Begin("God panel", nullptr, window_flags)) {
+        draw_perdix(god_);
+        ImGui::Separator();
+        if (god_.perdix) {
+            skin_choice("Perdix's skin", god_, god_.perdix_skin);
+        }
+        skin_choice("Your skin", god_, god_.your_skin);
+    }
+    ImGui::End();
+}
+
+ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& camera,
+                           bool mouse_captured, ChunkMeshing& meshing, bool& bobbing,
+                           RenderDistance& distance) {
+    if (!shown_ && !panel_open_) {
+        return nullptr;
+    }
+    ZoneScopedN("Overlay");
+    ImGui::SetCurrentContext(context_);
+    ImGuiIO& io = ImGui::GetIO();
+    // Captured, the mouse turns the camera: the overlay neither reads it nor
+    // shows the cursor, which ImGui's backend would otherwise do every frame.
+    constexpr ImGuiConfigFlags flying =
+        ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange;
+    if (mouse_captured) {
+        io.ConfigFlags |= flying;
+    } else {
+        io.ConfigFlags &= ~flying;
+    }
+    update_reports(renderer);
+
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+    if (shown_) {
+        draw_overlay(renderer, camera, meshing, bobbing, distance);
+    }
+    if (panel_open_) {
+        draw_god_panel();
+    }
     ImGui::Render();
     return ImGui::GetDrawData();
 }

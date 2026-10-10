@@ -8,6 +8,7 @@
 #include <vx/render/context.hpp>
 #include <vx/render/instance.hpp>
 #include <vx/render/renderer.hpp>
+#include <vx/world/life.hpp>
 
 #include <SDL3/SDL.h>
 #include <doctest/doctest.h>
@@ -376,4 +377,129 @@ TEST_CASE("the render distance slider sets the distance once let go, and nothing
     send(motion(window.id(), ImVec2(slider.x + 100.0F, slider.y)));
     send(left_button(window.id(), false, ImVec2(slider.x + 100.0F, slider.y)));
     CHECK(distance.chunks == set);
+}
+
+TEST_CASE("the god panel's clicks set Perdix's mode, bring him and choose skins, and are taken") {
+    const DummyWindow window;
+    INFO(std::string(SDL_GetError()));
+    REQUIRE(window.get() != nullptr);
+    // The overlay hidden: the panel alone.
+    vx::app::Overlay overlay(window.get(), true, false);
+    vx::Result<vx::render::Renderer> created =
+        vx::render::Renderer::create({.surface = std::nullopt,
+                                      .framebuffer = window_size,
+                                      .validation = true,
+                                      .present_mode = vx::render::PresentMode::fifo,
+                                      .overlay = overlay.context(),
+                                      .block_textures = {}});
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    vx::app::ChunkMeshing meshing;
+    bool bobbing = true;
+    vx::app::RenderDistance distance;
+    const vx::render::Camera camera;
+    vx::app::GodPanel& god = overlay.god_panel();
+    god.perdix = true;
+    god.skins = {"perdix", "zlex", "alex (slim)"};
+    god.perdix_skin = 0;
+    god.your_skin = 1;
+    const auto frame = [&] {
+        ImDrawData* const drawn =
+            overlay.build(renderer, camera, false, meshing, bobbing, distance);
+        REQUIRE(renderer
+                    .render({.sky = {.r = 0.0F, .g = 0.0F, .b = 0.0F, .a = 1.0F},
+                             .camera = camera,
+                             .cubes = {},
+                             .overlay = drawn})
+                    .has_value());
+    };
+    // Closed, it draws nothing and takes no click.
+    frame();
+    CHECK(ImGui::FindWindowByName("God panel") == nullptr);
+    CHECK_FALSE(overlay.take_event(left_button(window.id(), true, ImVec2(640.0F, 360.0F)), false));
+    overlay.take_event(left_button(window.id(), false, ImVec2(640.0F, 360.0F)), false);
+
+    overlay.set_panel_open(true);
+    frame();
+    frame();
+    const ImGuiWindow* const panel = ImGui::FindWindowByName("God panel");
+    REQUIRE(panel != nullptr);
+    const auto hover = [&](ImVec2 at) {
+        overlay.take_event(motion(window.id(), at), false);
+        frame();
+    };
+    const auto click = [&](ImVec2 at) {
+        hover(at);
+        const bool took = overlay.take_event(left_button(window.id(), true, at), false);
+        frame();
+        overlay.take_event(left_button(window.id(), false, at), false);
+        frame();
+        return took;
+    };
+    // An item of `window`, found down its first column, then along the row.
+    const auto find = [&](const ImGuiWindow* in, const char* label) {
+        const ImGuiID id = ImHashStr(label, 0, in->ID);
+        const float left = in->Pos.x + 12.0F;
+        for (float y = in->Pos.y; y < in->Pos.y + in->Size.y; y += 3.0F) {
+            hover(ImVec2(left, y));
+            if (GImGui->HoveredId == id) {
+                return ImVec2(left, y);
+            }
+        }
+        for (float y = in->Pos.y; y < in->Pos.y + in->Size.y; y += 6.0F) {
+            for (float x = left; x < in->Pos.x + in->Size.x; x += 12.0F) {
+                hover(ImVec2(x, y));
+                if (GImGui->HoveredId == id) {
+                    return ImVec2(x, y);
+                }
+            }
+        }
+        return ImVec2(-1.0F, -1.0F);
+    };
+
+    const ImVec2 follow = find(panel, "Following you");
+    REQUIRE(follow.x >= 0.0F);
+    CHECK(click(follow));
+    CHECK(god.perdix_mode == vx::LifeMode::follow);
+    const ImVec2 still = find(panel, "Standing still");
+    REQUIRE(still.x >= 0.0F);
+    CHECK(click(still));
+    CHECK(god.perdix_mode == vx::LifeMode::still);
+
+    const ImVec2 bring = find(panel, "Bring him here");
+    REQUIRE(bring.x >= 0.0F);
+    CHECK_FALSE(god.bring_perdix);
+    CHECK(click(bring));
+    CHECK(god.bring_perdix);
+
+    // Your skin's list opens below it; a name in it is chosen.
+    const ImVec2 yours = find(panel, "Your skin");
+    REQUIRE(yours.x >= 0.0F);
+    CHECK(click(yours));
+    const ImGuiWindow* const list = ImGui::FindWindowByName("##Combo_00");
+    REQUIRE(list != nullptr);
+    REQUIRE(list->Active);
+    const ImVec2 alex = find(list, "alex (slim)");
+    REQUIRE(alex.x >= 0.0F);
+    CHECK(click(alex));
+    CHECK(god.your_skin == 2);
+    CHECK(god.perdix_skin == 0);
+    // And Perdix's from his own list, yours as it was.
+    const ImVec2 his = find(panel, "Perdix's skin");
+    REQUIRE(his.x >= 0.0F);
+    CHECK(click(his));
+    const ImGuiWindow* const his_list = ImGui::FindWindowByName("##Combo_00");
+    REQUIRE(his_list != nullptr);
+    REQUIRE(his_list->Active);
+    const ImVec2 zlex = find(his_list, "zlex");
+    REQUIRE(zlex.x >= 0.0F);
+    CHECK(click(zlex));
+    CHECK(god.perdix_skin == 1);
+    CHECK(god.your_skin == 2);
+
+    // Off the panel, a click is the world's.
+    CHECK_FALSE(click(ImVec2(40.0F, 680.0F)));
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }
