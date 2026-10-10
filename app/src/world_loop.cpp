@@ -113,7 +113,12 @@ WorldLoop::WorldLoop(const Generator& generator, std::span<const BlockVisual> vi
       from_main_(64, wake_), mesh_results_(std::size_t{2} * jobs.slot_count(), wake_),
       scratch_(std::max<std::uint32_t>(1, jobs.worker_count())),
       context_{.visuals = visuals, .pool = &pool, .results = &mesh_results_, .scratch = nullptr},
-      to_main_(1'024, main_wake_), boxes_(streamer_, settings.physics) {
+      to_main_(1'024, main_wake_), boxes_(streamer_, settings.physics),
+      budget_(settings.memory_budget,
+              {.view_distance = settings.region.view_distance,
+               .hysteresis = settings.region.hysteresis},
+              settings.region.near_distance),
+      chosen_hysteresis_(settings.region.hysteresis) {
     context_.scratch = scratch_.data();
     if (settings.clock != nullptr) {
         streamer_.set_clock(*settings.clock);
@@ -156,6 +161,7 @@ bool WorldLoop::pass() {
     mesh_results_.drain([this](MeshResult&& result) { integrate_mesh(result); });
     send_ready_batches();
     feed();
+    keep_memory(start);
     // RFC 0006's flythrough reports the longest pass with the longest step:
     // a step is budgeted, and the rest of a pass is not.
     longest_pass_ = std::max(longest_pass_, time() - start - answering_);
@@ -285,12 +291,24 @@ void WorldLoop::handle(ToWorld& message) {
         remesh(message.meshing);
         break;
     case ToWorld::Kind::view_distance:
-        // The checks recompute the region from the loop's copy of the
-        // settings: it follows too.
-        settings_.region.view_distance = message.view_distance;
-        streamer_.set_view_distance(message.view_distance);
-        follow_events();
+        budget_.choose({.view_distance = message.view_distance, .hysteresis = chosen_hysteresis_});
+        apply_limits();
         break;
+    case ToWorld::Kind::arena:
+        arena_full_frames_ = std::max(arena_full_frames_, message.arena_full_frames);
+        arena_full_ = message.arena_full;
+        arena_share_ = message.arena_share;
+        break;
+    case ToWorld::Kind::report: {
+        // Like a sample's answer, left out of the longest pass.
+        const std::chrono::steady_clock::time_point start = time();
+        ToMain answer;
+        answer.kind = ToMain::Kind::report;
+        answer.report = report();
+        to_main_.push(std::move(answer));
+        answering_ += time() - start;
+        break;
+    }
     case ToWorld::Kind::sample: {
         // What the loop would do later in this pass, done first: the halves
         // agree once the streamer's events are followed.
@@ -308,6 +326,49 @@ void WorldLoop::handle(ToWorld& message) {
         stopping_ = true;
         break;
     }
+}
+
+void WorldLoop::keep_memory(std::chrono::steady_clock::time_point now) {
+    if (next_memory_check_ && now < *next_memory_check_) {
+        return;
+    }
+    next_memory_check_ = now + memory_check_interval;
+    chunk_bytes_ = streamer_.chunk_bytes();
+    TracyPlot("Chunk data (MiB)", static_cast<double>(chunk_bytes_) / (1024.0 * 1024.0));
+    // Full in a frame since the last check: a count, so a flag left from
+    // frames no longer drawn, such as a minimized window's, adds nothing; and
+    // still full, as last reported: the frames after a lowering go on ending
+    // full until its unloads apply, which is the same fill, not a new one.
+    const bool arena_full = arena_full_ && arena_full_frames_ > checked_full_frames_;
+    checked_full_frames_ = arena_full_frames_;
+    if (budget_.check(
+            {.chunk_bytes = chunk_bytes_, .arena_full = arena_full, .arena_share = arena_share_},
+            now)) {
+        apply_limits();
+    }
+}
+
+void WorldLoop::apply_limits() {
+    streamer_.set_limits(budget_.limits());
+    follow_events();
+}
+
+RegionSettings WorldLoop::region_settings() const noexcept {
+    RegionSettings region = settings_.region;
+    region.view_distance = budget_.limits().view_distance;
+    region.hysteresis = budget_.limits().hysteresis;
+    return region;
+}
+
+WorldReport WorldLoop::report() const {
+    const StreamingStats stats = streamer_.stats();
+    return {.chunks = stats.chunks,
+            .waiting = stats.waiting,
+            .chunk_bytes = chunk_bytes_,
+            .budget = budget_.bytes(),
+            .limits = budget_.limits(),
+            .chosen = budget_.chosen(),
+            .limited_by = budget_.limited_by()};
 }
 
 void WorldLoop::remesh(MeshOptions options) {
@@ -701,8 +762,8 @@ std::uint32_t WorldLoop::broken_invariants(const StreamingStats& stats) {
     // The region grown by the hysteresis, recomputed from the camera rather
     // than taken from the streamer: no record stays outside it.
     if (camera_) {
-        broken +=
-            records.outside(Region(*camera_, settings_.region).grown(settings_.region.hysteresis));
+        broken += records.outside(
+            Region(*camera_, region_settings()).grown(region_settings().hysteresis));
     }
     return broken;
 }
