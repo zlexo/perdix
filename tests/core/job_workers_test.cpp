@@ -257,6 +257,33 @@ TEST_CASE("workers run at utility, an urgent job at user-initiated, and all at u
 #endif
 }
 
+TEST_CASE("a fixed QoS mode keeps workers at its class whether streaming catches up or not, an "
+          "urgent job at user-initiated") {
+#ifdef __APPLE__
+    for (const vx::WorkerQos mode : {vx::WorkerQos::utility, vx::WorkerQos::user_initiated}) {
+        INFO("user-initiated: ", mode == vx::WorkerQos::user_initiated);
+        JobSystem jobs({.workers = 1, .qos = mode});
+        const auto run = [&jobs](JobLevel level) {
+            qos_class_t read = QOS_CLASS_UNSPECIFIED;
+            REQUIRE(jobs.submit({.level = level}, ReadQos{&read}));
+            jobs.wait_until_idle();
+            return read;
+        };
+        const qos_class_t fixed =
+            mode == vx::WorkerQos::utility ? QOS_CLASS_UTILITY : QOS_CLASS_USER_INITIATED;
+        CHECK(run(JobLevel::normal) == fixed);
+        jobs.set_catching_up(true);
+        CHECK(run(JobLevel::normal) == fixed);
+        CHECK(run(JobLevel::background) == fixed);
+        CHECK(run(JobLevel::urgent) == QOS_CLASS_USER_INITIATED);
+        jobs.set_catching_up(false);
+        CHECK(run(JobLevel::normal) == fixed);
+    }
+#else
+    MESSAGE("skipped: quality of service is macOS's");
+#endif
+}
+
 #ifdef __APPLE__
 namespace {
 
