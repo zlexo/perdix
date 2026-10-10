@@ -40,9 +40,10 @@ public:
     // Handles every pending event. False once the window should close. A
     // click into the window captures the mouse and Escape releases it, so a
     // run that is never clicked, such as a smoke run, never grabs it. O
-    // shows and hides the overlay, which has the events while it shows and
-    // the mouse is free; a click it takes captures nothing. V is kept for
-    // take_noclip_toggle (keys.hpp).
+    // shows and hides the overlay and G opens and closes the god panel,
+    // which have the events while they show and the mouse is free; a click
+    // they take captures nothing. V is kept for take_noclip_toggle. The
+    // rules are control()'s (keys.hpp).
     [[nodiscard]] bool handle_events(Overlay& overlay);
 
     [[nodiscard]] bool mouse_captured() const;
@@ -74,6 +75,7 @@ private:
     SDL_Window* window_ = nullptr;
     MouseMotion motion_; // gathered while the mouse is captured
     bool noclip_toggle_ = false;
+    bool give_back_ = false; // the god panel took the mouse from the camera
 };
 
 } // namespace vx::app
