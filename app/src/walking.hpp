@@ -85,7 +85,11 @@ public:
     // crouches.
     void advance(std::chrono::nanoseconds elapsed, const TickInput& input, const BlockBoxes& world);
     // One tick, with the keys held now: the world thread's, on its clock.
+    // The head looks along the keys' yaw and pitch.
     void tick(const TickInput& input, const BlockBoxes& world);
+    // The same, the head looking along `look_yaw` and `look_pitch` instead,
+    // as Perdix's does while he walks one way and looks another (RFC 0012).
+    void tick(const TickInput& input, const BlockBoxes& world, float look_yaw, float look_pitch);
     // A tick the player waits through instead, keys and all, while its move
     // could touch a chunk not loaded yet (RFC 0010): it stays where it is,
     // keeping its speed, and the frame shows it still.
@@ -103,6 +107,14 @@ public:
     // The game's View Bobbing option, on by default; the overlay switches it.
     bool bobbing = true;
 
+    // Whether Space pressed twice toggles creative flight (RFC 0010), as it
+    // does for you. Perdix's auto-jump presses Space, and the game never
+    // counts those toward a double tap, so he may not fly (RFC 0012).
+    void set_may_fly(bool may_fly) noexcept;
+    // Turns the body and its look to `yaw` and `pitch` at once, the swing at
+    // rest: a body as it appears.
+    void face(float yaw, float pitch) noexcept;
+
     [[nodiscard]] const Player& player() const noexcept { return player_; }
     [[nodiscard]] std::uint64_t ticks() const noexcept { return frame_.ticks; }
 
@@ -118,6 +130,7 @@ private:
     void report() noexcept;
 
     Player player_;
+    bool may_fly_ = true;
     WalkingFrame frame_;
     Vec3d spawn_;
     double respawn_below_;

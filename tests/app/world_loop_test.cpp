@@ -12,6 +12,7 @@
 #include <vx/world/chunk_records.hpp>
 #include <vx/world/chunk_storage.hpp>
 #include <vx/world/coordinates.hpp>
+#include <vx/world/life.hpp>
 #include <vx/world/placeholder_generator.hpp>
 #include <vx/world/region.hpp>
 #include <vx/world/world_streamer.hpp>
@@ -21,10 +22,12 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <set>
 #include <span>
@@ -157,6 +160,10 @@ public:
                 player = message.player;
                 tick_times.push_back(message.tick_at);
                 break;
+            case ToMain::Kind::perdix:
+                perdix = message.player;
+                ++perdix_frames;
+                break;
             case ToMain::Kind::landed:
                 landings.push_back(message.landed);
                 break;
@@ -194,6 +201,8 @@ public:
     std::size_t unloads = 0;
     std::vector<Chunk> last_batch;
     vx::app::WalkingFrame player;
+    vx::app::WalkingFrame perdix{};
+    std::size_t perdix_frames = 0;
     std::vector<std::chrono::steady_clock::time_point> tick_times;
     std::vector<bool> landings;
     std::vector<vx::app::WorldSample> samples;
@@ -921,7 +930,8 @@ namespace {
 
 // A loop with a player standing over block column (100, 100), streamed in
 // around it unless `streamed` is false, and the main thread's view of what it
-// sends.
+// sends. With a `perdix` mode, Perdix too, as far over column (100, 95), 5
+// blocks north of the player, facing `perdix_facing`: the player.
 struct Walker {
     vx::PlaceholderGenerator generator{0x5EED, blocks};
     std::vector<vx::BlockVisual> table = visuals();
@@ -932,10 +942,18 @@ struct Walker {
     MainThread main;
     std::chrono::steady_clock::time_point now{};
 
-    explicit Walker(double above, bool streamed = true) {
+    explicit Walker(double above, bool streamed = true,
+                    std::optional<vx::LifeMode> perdix = std::nullopt,
+                    float perdix_facing = south) {
         vx::app::WorldLoopSettings settings{.region = small};
         settings.player = vx::app::WorldLoopSettings::PlayerStart{
             .spawn = {.x = 100.5, .y = ground + above, .z = 100.5}, .lowest = -64.0};
+        if (perdix) {
+            settings.perdix = vx::app::WorldLoopSettings::PerdixStart{.spawn = perdix_spawn(above),
+                                                                      .facing = perdix_facing,
+                                                                      .mode = *perdix,
+                                                                      .seed = 0x5EED};
+        }
         loop.emplace(generator, table, jobs, pool, settings);
         if (streamed) {
             stream_in();
@@ -970,12 +988,24 @@ struct Walker {
         ToWorld message;
         message.kind = ToWorld::Kind::land;
         message.feet = feet;
+        handle(std::move(message));
+    }
+
+    // A message handled between ticks, and what it sends back.
+    void handle(ToWorld message) {
         loop->to_world().push(std::move(message));
         loop->pass();
         std::vector<ToMain> messages;
         loop->take(messages);
         main.receive(messages);
     }
+
+    // Where Perdix starts, `above` the ground over column (100, 95).
+    [[nodiscard]] vx::Vec3d perdix_spawn(double above) const {
+        return {.x = 100.5, .y = generator.height(100, 95) + above, .z = 95.5};
+    }
+
+    static constexpr float south = std::numbers::pi_v<float>;
 };
 
 } // namespace
@@ -1092,6 +1122,159 @@ TEST_CASE("the noclip camera lands the player only where a standing player fits"
     walker.ticks(40);
     CHECK(walker.main.player.on_ground);
     CHECK(walker.main.player.position.y == doctest::Approx(walker.generator.height(101, 98)));
+}
+
+TEST_CASE("Perdix ticks beside the player, falls onto the ground and sends every tick's frame") {
+    Walker walker(3.0, true, vx::LifeMode::still);
+    walker.ticks(41);
+    CHECK(walker.main.perdix_frames == 40);
+    CHECK(walker.main.perdix.ticks == 40);
+    CHECK(walker.main.perdix.on_ground);
+    CHECK(walker.main.perdix.position.x == 100.5);
+    CHECK(walker.main.perdix.position.z == 95.5);
+    CHECK(walker.main.perdix.position.y == doctest::Approx(walker.generator.height(100, 95)));
+    // Facing the player, as he appeared; his auto-jump's presses never make
+    // him fly.
+    CHECK(std::abs(walker.main.perdix.motion.body_yaw) ==
+          doctest::Approx(Walker::south).epsilon(1e-4));
+    REQUIRE(walker.loop->perdix() != nullptr);
+    CHECK_FALSE(walker.loop->perdix()->player().may_fly);
+    REQUIRE(walker.loop->walking() != nullptr);
+    CHECK(walker.loop->walking()->player().may_fly);
+}
+
+TEST_CASE("Perdix stands in still, and in his life strolls off on his own") {
+    Walker walker(0.0, true, vx::LifeMode::still);
+    const vx::Vec3d spawn = walker.perdix_spawn(0.0);
+    const auto away = [&] {
+        const vx::Vec3d at = walker.main.perdix.position;
+        return std::hypot(at.x - spawn.x, at.z - spawn.z);
+    };
+    walker.ticks(401);
+    REQUIRE(walker.loop->perdix_life() != nullptr);
+    CHECK(walker.loop->perdix_life()->mode() == vx::LifeMode::still);
+    CHECK(away() == 0.0);
+    CHECK(walker.loop->perdix_life()->starts(vx::LifeGoal::stroll) == 0);
+
+    ToWorld message;
+    message.kind = ToWorld::Kind::perdix_mode;
+    message.perdix_mode = vx::LifeMode::life;
+    walker.handle(std::move(message));
+    CHECK(walker.loop->perdix_life()->mode() == vx::LifeMode::life);
+    // A minute of his life, looked at each second.
+    double farthest = 0.0;
+    for (int second = 0; second < 60; ++second) {
+        walker.ticks(20);
+        farthest = std::max(farthest, away());
+    }
+    CHECK(walker.loop->perdix_life()->starts(vx::LifeGoal::stroll) > 0);
+    CHECK(farthest > 2.0);
+    CHECK(walker.main.perdix_frames == 1600);
+}
+
+TEST_CASE("Perdix turns his head to look at you, on the life's look, and stands") {
+    // Facing north, away from the player 5 blocks south of him.
+    Walker walker(0.0, true, vx::LifeMode::still, 0.0F);
+    bool looked_back = false;
+    for (int second = 0; second < 120 && !looked_back; ++second) {
+        walker.ticks(20);
+        looked_back = std::abs(walker.main.perdix.motion.head_yaw) > 2.5F;
+    }
+    CHECK(looked_back);
+    REQUIRE(walker.loop->perdix_life() != nullptr);
+    CHECK(walker.loop->perdix_life()->starts(vx::LifeGoal::look_at_player) > 0);
+    CHECK(walker.main.perdix.position.x == 100.5);
+    CHECK(walker.main.perdix.position.z == 95.5);
+}
+
+TEST_CASE("following you up the hill, Perdix climbs its steps on the auto-jump") {
+    Walker walker(0.0, true, vx::LifeMode::follow);
+    walker.ticks(21);
+    // The player 14 blocks east and 8 up the hill, whose steps there are a
+    // block each: too far, so he follows.
+    const vx::Vec3d you{.x = 114.5, .y = walker.generator.height(114, 95) + 0.5, .z = 95.5};
+    walker.land(you);
+    REQUIRE(walker.main.landings.back());
+    double closest = 100.0;
+    double highest = 0.0;
+    for (int second = 0; second < 15; ++second) {
+        walker.ticks(20);
+        const vx::Vec3d at = walker.main.perdix.position;
+        closest = std::min(closest, std::hypot(at.x - you.x, at.z - you.z));
+        highest = std::max(highest, at.y);
+    }
+    CHECK(closest < 3.0);
+    CHECK(highest > walker.perdix_spawn(0.0).y + 6.0);
+    REQUIRE(walker.loop->perdix_life() != nullptr);
+    CHECK(walker.loop->perdix_life()->starts(vx::LifeGoal::follow) > 0);
+}
+
+TEST_CASE("Perdix in a chunk not ready yet waits, as the player does") {
+    Walker walker(3.0, false, vx::LifeMode::still);
+    walker.ticks(41);
+    CHECK(walker.main.perdix_frames == 40);
+    CHECK(walker.main.perdix.ticks == 0);
+    CHECK(walker.main.perdix.position == walker.perdix_spawn(3.0));
+    CHECK(walker.main.perdix.previous == walker.perdix_spawn(3.0));
+    walker.stream_in();
+    walker.ticks(20);
+    CHECK(walker.main.perdix.ticks == 20);
+    CHECK(walker.main.perdix.on_ground);
+    CHECK(walker.main.perdix.position.y == doctest::Approx(walker.generator.height(100, 95)));
+}
+
+TEST_CASE("brought to you, Perdix stands on the ground 5 blocks ahead, facing you") {
+    Walker walker(0.0, true, vx::LifeMode::still);
+    walker.ticks(41);
+    const std::size_t frames = walker.main.perdix_frames;
+    constexpr float east = -1.5707964F;
+    ToWorld bring;
+    bring.kind = ToWorld::Kind::bring_perdix;
+    bring.feet = walker.main.player.position;
+    bring.input.yaw = east;
+    walker.handle(bring);
+    // Sent at once, before any tick: 5 blocks east, standing, facing west.
+    CHECK(walker.main.perdix_frames == frames + 1);
+    CHECK(walker.main.perdix.position.x == doctest::Approx(105.5));
+    CHECK(walker.main.perdix.position.z == doctest::Approx(100.5));
+    CHECK(walker.main.perdix.position.y == doctest::Approx(walker.generator.height(105, 100)));
+    CHECK(walker.main.perdix.previous == walker.main.perdix.position);
+    CHECK(walker.main.perdix.motion.body_yaw == doctest::Approx(-east).epsilon(1e-4));
+    // A new body there, which still may not fly, and his life starts over
+    // there: on the next tick his head turns from where he now faces.
+    REQUIRE(walker.loop->perdix() != nullptr);
+    CHECK_FALSE(walker.loop->perdix()->player().may_fly);
+    walker.ticks(1);
+    CHECK(std::abs(walker.main.perdix.motion.head_yaw + east) <= 0.1746F);
+    walker.ticks(19);
+    CHECK(walker.main.perdix.on_ground);
+    CHECK(walker.main.perdix.position.x == doctest::Approx(105.5));
+
+    // From a free camera 40 blocks up, looking north, down to the ground.
+    bring.feet = {.x = 100.5, .y = walker.ground + 40.0, .z = 100.5};
+    bring.input.yaw = 0.0F;
+    walker.handle(bring);
+    CHECK(walker.main.perdix.position.x == doctest::Approx(100.5));
+    CHECK(walker.main.perdix.position.z == doctest::Approx(95.5));
+    CHECK(walker.main.perdix.position.y == doctest::Approx(walker.generator.height(100, 95)));
+
+    // Ahead of feet in a chunk still loading, nowhere fits: he stays.
+    const vx::Vec3d before = walker.main.perdix.position;
+    bring.feet = {.x = 400.5, .y = walker.ground + 5.0, .z = 100.5};
+    walker.handle(bring);
+    CHECK(walker.main.perdix.position == before);
+}
+
+TEST_CASE("Perdix comes only with a player") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    vx::app::WorldLoopSettings settings{.region = small};
+    settings.perdix = vx::app::WorldLoopSettings::PerdixStart{.spawn = {}};
+    const WorldLoop loop(generator, table, jobs, pool, settings);
+    CHECK(loop.perdix() == nullptr);
+    CHECK(loop.perdix_life() == nullptr);
 }
 
 TEST_CASE("switching merging off meshes every chunk shown again, unmerged") {

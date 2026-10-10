@@ -93,6 +93,7 @@ void StreamedMeshes::take(std::vector<ToMain>& messages,
             take_unload(message.pos);
             break;
         case ToMain::Kind::player:
+        case ToMain::Kind::perdix:
         case ToMain::Kind::landed:
         case ToMain::Kind::sample:
         case ToMain::Kind::report:

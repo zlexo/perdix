@@ -17,6 +17,7 @@
 #include <vx/world/coordinates.hpp>
 #include <vx/world/generator.hpp>
 #include <vx/world/job_record.hpp>
+#include <vx/world/life.hpp>
 #include <vx/world/memory_budget.hpp>
 #include <vx/world/movement.hpp>
 #include <vx/world/region.hpp>
@@ -110,6 +111,7 @@ struct ToMain {
         batch,  // an edit's remeshes, uploaded whole in one frame
         unload, // the chunk's mesh goes
         player, // the player after a tick, or after landing
+        perdix, // Perdix after a tick, in `player` (RFC 0012)
         landed, // whether the noclip camera's landing worked
         sample, // what the main thread asked for with ToWorld::Kind::sample
         report, // what it asked for with ToWorld::Kind::report
@@ -141,6 +143,8 @@ struct ToWorld {
         view_distance, // RFC 0006's Render Distance option, in chunks
         arena,         // RFC 0007's mesh arena: full, and its share of its limit
         report,        // a WorldReport, for the overlay
+        perdix_mode,   // what Perdix does: his life, following you, standing still
+        bring_perdix,  // Perdix to `feet` ahead of you, along the input's yaw
         stop,
     };
     Kind kind = Kind::camera;
@@ -153,6 +157,7 @@ struct ToWorld {
     std::uint32_t sample_id = 0; // echoed in the WorldSample
     SampleKind sample_kind = SampleKind::full;
     std::int32_t view_distance = 0;
+    LifeMode perdix_mode = LifeMode::life;
     // Of the meshes sent alone (ToMain::Kind::mesh, never a batch's), how
     // many the main thread is done with so far: uploaded, or dropped without
     // an upload (empty, older than the one it holds, or its chunk's unload
@@ -188,6 +193,16 @@ struct WorldLoopSettings {
         double lowest = 0.0;
     };
     std::optional<PlayerStart> player = std::nullopt;
+    // Perdix (RFC 0012): a second player beside the first, where he
+    // appears, which way he faces, what he does and the seed of his life.
+    // None without a player.
+    struct PerdixStart {
+        Vec3d spawn{};
+        float facing = 0.0F;
+        LifeMode mode = LifeMode::life;
+        std::uint64_t seed = 0;
+    };
+    std::optional<PerdixStart> perdix = std::nullopt;
     // The block registry's physics (RFC 0010), indexed by state, which the
     // player collides with. Its {} lets designated initializers leave it out
     // (Linux Clang's -Wmissing-designated-field-initializers).
@@ -255,6 +270,13 @@ public:
     // The player, when the loop has one.
     [[nodiscard]] const Walking* walking() const noexcept {
         return walking_.has_value() ? &*walking_ : nullptr;
+    }
+    // Perdix's body and his life, when the loop has him.
+    [[nodiscard]] const Walking* perdix() const noexcept {
+        return perdix_.has_value() ? &perdix_->walking : nullptr;
+    }
+    [[nodiscard]] const Life* perdix_life() const noexcept {
+        return perdix_.has_value() ? &perdix_->life : nullptr;
     }
 
     static constexpr std::chrono::milliseconds tick_length{50};
@@ -355,6 +377,15 @@ private:
     // thread whether it did.
     void land(Vec3d feet);
     void send_player(std::chrono::steady_clock::time_point at);
+    // Perdix's tick (RFC 0012): his life chooses, his body moves, his
+    // auto-jump looks ahead and his body animates, unless his move could
+    // touch a chunk not ready yet: then he waits, as the player does.
+    void tick_perdix(std::chrono::steady_clock::time_point due);
+    // Perdix on the ground 5 blocks ahead of `feet` along `yaw`, facing
+    // back: the first place from 4 above to 64 below where he stands, or
+    // nowhere, and he stays.
+    void bring_perdix(Vec3d feet, float yaw);
+    void send_perdix(std::chrono::steady_clock::time_point at);
     [[nodiscard]] bool missing_near_camera();
     // RFC 0006's memory check, when one is due at `now`: the chunk data held
     // and the arena's state, against the budget.
@@ -388,6 +419,13 @@ private:
     std::optional<Viewer> viewer_; // where the camera looks, for the holes in view
     StreamedBoxes boxes_;          // the player's world: the streamer's chunks
     std::optional<Walking> walking_;
+    // Perdix: his body, his life and the boxes his ticks gather.
+    struct Perdix {
+        Walking walking;
+        Life life;
+        std::vector<Box> scratch;
+    };
+    std::optional<Perdix> perdix_;
     TickInput input_;
     MeshOptions meshing_;
     std::chrono::steady_clock::time_point last_tick_;
