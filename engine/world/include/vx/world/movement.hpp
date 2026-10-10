@@ -52,6 +52,9 @@ struct MovementKeys {
 struct TickInput {
     MovementKeys held;
     float yaw = 0.0F;
+    // How far up the look points, in radians, positive up: where the body's
+    // head looks (RFC 0012). The move itself ignores it.
+    float pitch = 0.0F;
 };
 
 enum class Pose : std::uint8_t { standing, crouching };

@@ -112,10 +112,13 @@ void Walking::tick(const TickInput& input, const BlockBoxes& world) {
     frame_.position = player_.position;
     frame_.previous_eye = frame_.eye;
     frame_.eye += (eye_height(player_.pose) - frame_.eye) * 0.5;
-    // Every move, on the ground or not, walks the bob's steps on.
+    // Every move, on the ground or not, walks the bob's steps on, and the
+    // body's swing follows it (RFC 0012), as its head follows the look.
     const Vec3d moved = player_.position - frame_.previous;
     frame_.previous_walked = frame_.walked;
     frame_.walked += walk_per_block * std::hypot(moved.x, moved.z);
+    frame_.previous_motion = frame_.motion;
+    animate(frame_.motion, moved, input.yaw, input.pitch);
     frame_.previous_fov = frame_.fov;
     const double target =
         (player_.flying ? flying_fov : 1.0) * (player_.sprinting ? sprinting_fov : 1.0);
@@ -130,6 +133,7 @@ void Walking::hold() noexcept {
     frame_.previous_fov = frame_.fov;
     frame_.previous_bob = frame_.bob;
     frame_.previous_walked = frame_.walked;
+    frame_.previous_motion = frame_.motion;
 }
 
 double Walking::between() const noexcept {
@@ -157,6 +161,9 @@ void Walking::place(Vec3d feet) noexcept {
     frame_.bob = 0.0;
     frame_.previous_bob = 0.0;
     frame_.previous_walked = frame_.walked;
+    // Standing: the swing at rest, the body and the look as they were.
+    frame_.motion.limb_speed = 0.0;
+    frame_.previous_motion = frame_.motion;
     report();
 }
 
