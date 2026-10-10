@@ -10,7 +10,9 @@
 #include <vx/render/draw_lists.hpp>
 #include <vx/render/instance.hpp>
 #include <vx/render/swapchain.hpp>
+#include <vx/world/chunk_records.hpp>
 #include <vx/world/coordinates.hpp>
+#include <vx/world/memory_budget.hpp>
 
 #include <SDL3/SDL.h>
 #include <glm/trigonometric.hpp>
@@ -353,6 +355,33 @@ void Overlay::draw_render_distance(RenderDistance& distance) {
     ImGui::EndDisabled();
 }
 
+void Overlay::draw_streaming() const {
+    // RFC 0006's counters: chunks by how far along they are, what waits for
+    // a job, and the memory budget with what it holds back.
+    const auto state = [this](ChunkState of) {
+        return world_.chunks.at(static_cast<std::size_t>(of));
+    };
+    std::size_t total = 0;
+    for (const std::size_t count : world_.chunks) {
+        total += count;
+    }
+    const std::size_t complete = state(ChunkState::complete);
+    const std::size_t ready = state(ChunkState::ready);
+    ImGui::Text("Streaming: %zu chunks, %zu complete, %zu ready, %zu on their way; %zu waiting",
+                total, complete, ready, total - complete - ready, world_.waiting);
+    const char* why = "";
+    if (world_.limited_by == LimitedBy::chunk_memory) {
+        why = " (chunk memory)";
+    } else if (world_.limited_by == LimitedBy::mesh_memory) {
+        why = " (GPU memory)";
+    }
+    ImGui::Text("Chunk data %.1f of %.0f MiB; view distance %d of %d, hysteresis %d of %d%s",
+                static_cast<double>(world_.chunk_bytes) / mebibyte,
+                static_cast<double>(world_.budget) / mebibyte, world_.limits.view_distance,
+                world_.chosen.view_distance, world_.limits.hysteresis, world_.chosen.hysteresis,
+                why);
+}
+
 ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& camera,
                            bool mouse_captured, ChunkMeshing& meshing, bool& bobbing,
                            RenderDistance& distance) {
@@ -405,8 +434,9 @@ ImDrawData* Overlay::build(render::Renderer& renderer, const render::Camera& cam
         draw_camera(camera);
         draw_movement(movement_);
         // The game's Render Distance and View Bobbing options (RFC 0006,
-        // RFC 0010).
+        // RFC 0010), and what streaming made of the distance.
         draw_render_distance(distance);
+        draw_streaming();
         ImGui::Checkbox("View bobbing", &bobbing);
         ImGui::Separator();
         draw_validation(renderer.context());

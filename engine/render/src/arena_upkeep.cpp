@@ -9,6 +9,14 @@
 namespace vx::render {
 
 UpkeepStep ArenaUpkeep::step(const ArenaSpace& space, std::uint32_t wanted) {
+    const UpkeepStep step = decide(space, wanted);
+    if (stats_.full) {
+        ++stats_.full_frames;
+    }
+    return step;
+}
+
+UpkeepStep ArenaUpkeep::decide(const ArenaSpace& space, std::uint32_t wanted) {
     stats_.moved = 0;
     if (state_ == State::settling && settle_frames_ > 0) {
         --settle_frames_;

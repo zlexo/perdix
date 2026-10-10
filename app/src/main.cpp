@@ -187,9 +187,10 @@ void move_player(Mover& mover, vx::app::Window& window, vx::render::Camera& came
 }
 
 // The world thread's messages: the player's frames and landings for the
-// mover, the meshes and unloads for the uploads.
+// mover, the meshes and unloads for the uploads, and streaming's reports for
+// the overlay.
 void take_from_world(vx::app::WorldLoop& loop, vx::app::StreamedMeshes& meshes, Mover& mover,
-                     std::vector<vx::app::ToMain>& messages) {
+                     vx::app::Overlay& overlay, std::vector<vx::app::ToMain>& messages) {
     loop.take(messages);
     meshes.receive(messages);
     for (const vx::app::ToMain& message : messages) {
@@ -199,6 +200,8 @@ void take_from_world(vx::app::WorldLoop& loop, vx::app::StreamedMeshes& meshes, 
         } else if (message.kind == vx::app::ToMain::Kind::landed) {
             mover.landing = false;
             mover.noclip = !message.landed;
+        } else if (message.kind == vx::app::ToMain::Kind::report) {
+            overlay.set_world_report(message.report);
         }
     }
     messages.clear();
@@ -230,16 +233,44 @@ float aspect_of(vx::render::Extent size) {
 
 // What the world thread was last told: how far the uploads are, for its
 // backpressure; whether to merge, which the overlay switches and which
-// meshes everything again; and the render distance, which the overlay's
-// slider sets (RFC 0006).
+// meshes everything again; the render distance, which the overlay's slider
+// sets (RFC 0006); and the mesh arena's state, for the memory budget, a few
+// times a second and at once when it fills or empties, with a request for
+// streaming's report.
 struct WorldReports {
+    static constexpr std::chrono::milliseconds report_interval{250};
+
     std::uint64_t uploaded = 0;
     bool merge = vx::app::ChunkMeshing{}.merge;
     std::int32_t view_distance = 0;
+    std::uint64_t arena_full_frames = 0;
+    bool arena_was_full = false;
+    std::optional<std::chrono::steady_clock::time_point> reported;
 
     void send_changes(vx::app::WorldLoop& loop, const vx::app::StreamedMeshes& meshes,
-                      const vx::app::ChunkMeshing& meshing,
-                      const vx::app::RenderDistance& distance) {
+                      const vx::app::ChunkMeshing& meshing, const vx::app::RenderDistance& distance,
+                      const vx::render::ChunkRenderer& chunks,
+                      std::chrono::steady_clock::time_point now) {
+        const bool due = !reported || now - *reported >= report_interval;
+        // At once when the arena fills, otherwise a few times a second.
+        const bool filled = chunks.upkeep().full && !arena_was_full;
+        if (due || filled) {
+            arena_full_frames = chunks.upkeep().full_frames;
+            arena_was_full = chunks.upkeep().full;
+            vx::app::ToWorld arena;
+            arena.kind = vx::app::ToWorld::Kind::arena;
+            arena.arena_full_frames = arena_full_frames;
+            arena.arena_full = arena_was_full;
+            arena.arena_share = static_cast<double>(chunks.arena().space().live()) /
+                                static_cast<double>(std::max(chunks.arena_limit(), 1U));
+            send(loop, arena);
+        }
+        if (due) {
+            reported = now;
+            vx::app::ToWorld ask;
+            ask.kind = vx::app::ToWorld::Kind::report;
+            send(loop, ask);
+        }
         if (meshes.done() != uploaded) {
             uploaded = meshes.done();
             vx::app::ToWorld done;
@@ -403,11 +434,17 @@ struct FlythroughSamples {
     }
 
     void take(vx::app::WorldLoop& loop, vx::app::StreamedMeshes& meshes,
-              vx::app::FlythroughRun& run, const vx::render::Renderer& renderer) {
+              vx::app::FlythroughRun& run, const vx::render::Renderer& renderer,
+              vx::app::Overlay& overlay) {
         loop.take(messages);
         meshes.receive(messages, [&](const vx::app::WorldSample& world) {
             run.add(flythrough_sample(world, renderer, meshes, asked));
         });
+        for (const vx::app::ToMain& message : messages) {
+            if (message.kind == vx::app::ToMain::Kind::report) {
+                overlay.set_world_report(message.report);
+            }
+        }
         messages.clear();
     }
 };
@@ -488,14 +525,14 @@ int fly(const vx::app::FlythroughPlan& plan, vx::app::Window& window,
         camera.pitch = pose->pitch;
         samples.send_camera(loop, run, meshes,
                             vx::app::camera_viewer(camera, aspect_of(window.framebuffer_size())));
-        samples.take(loop, meshes, run, renderer);
+        samples.take(loop, meshes, run, renderer, overlay);
         const vx::Result<vx::render::Frame> rendered =
             draw_frame(renderer, overlay, window, camera, meshes, meshing, bobbing, distance);
         if (!rendered.has_value()) {
             std::cerr << "error: " << rendered.error().message << '\n';
             return 1;
         }
-        reports.send_changes(loop, meshes, meshing, distance);
+        reports.send_changes(loop, meshes, meshing, distance, renderer.chunks(), now);
         FrameMark;
     }
     std::cerr << "error: the window closed before the flythrough's end\n";
@@ -698,7 +735,7 @@ int main(int argc, char* argv[]) {
         const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - last);
         const float seconds = std::min(std::chrono::duration<float>(elapsed).count(), 0.1F);
         last = now;
-        take_from_world(loop, meshes, mover, messages);
+        take_from_world(loop, meshes, mover, overlay, messages);
         move_player(mover, window.value(), camera, loop, seconds, now);
         send_viewer(loop, camera, aspect_of(window.value().framebuffer_size()));
         overlay.set_movement({.noclip = mover.noclip,
@@ -718,7 +755,7 @@ int main(int argc, char* argv[]) {
             std::cerr << "error: " << rendered.error().message << '\n';
             return 1;
         }
-        reports.send_changes(loop, meshes, meshing, distance);
+        reports.send_changes(loop, meshes, meshing, distance, renderer.value().chunks(), now);
         last_drawn = rendered.value() == vx::render::Frame::drawn;
         if (!last_drawn) {
             // Presenting paces the loop; with nothing to present, a 60 Hz wait does.

@@ -147,12 +147,18 @@ TEST_CASE("repacks stop at the maximum capacity, where the arena is full until a
     CHECK(upkeep.step(space, 400) == UpkeepStep::repack);
     CHECK(upkeep.repack_capacity() == 1'200);
     CHECK(upkeep.stats().full);
-    // At the maximum already: nothing to do but say so.
+    // At the maximum already: nothing to do but say so, and count the frame.
     ArenaUpkeep capped = make_upkeep(1'000);
     CHECK(capped.step(space, 200) == UpkeepStep::none);
     CHECK(capped.stats().full);
+    CHECK(capped.stats().full_frames == 1);
+    for (int frame = 0; frame < 4; ++frame) {
+        static_cast<void>(capped.step(space, 200));
+    }
+    CHECK(capped.stats().full_frames == 5);
     CHECK(capped.step(space, 0) == UpkeepStep::none);
     CHECK_FALSE(capped.stats().full);
+    CHECK(capped.stats().full_frames == 5);
 }
 
 TEST_CASE("a repack the device could not make leaves the arena as it is, full") {
