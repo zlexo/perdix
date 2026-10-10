@@ -38,6 +38,35 @@ private:
     int hold_ = 0; // ticks the point still holds
 };
 
+// The life's random numbers (RFC 0012): SplitMix64 from a seed, small and
+// fast; the same seed gives the same numbers.
+class LifeRandom {
+public:
+    explicit LifeRandom(std::uint64_t seed) noexcept : state_(seed) {}
+
+    [[nodiscard]] std::uint64_t next() noexcept;
+    // One of 0 up to `bound`, which is more than 0.
+    [[nodiscard]] int below(int bound) noexcept;
+    // From 0 up to 1.
+    [[nodiscard]] float unit() noexcept;
+    [[nodiscard]] double unit_double() noexcept;
+
+private:
+    std::uint64_t state_;
+};
+
+// A spot for Perdix to stroll to from `feet` (RFC 0012), picked as
+// Minecraft 26.2 picks a cow's (from its jar: WaterAvoidingRandomStrollGoal,
+// LandRandomPos, RandomPos): up to 10 tries at the block holding a point a
+// whole number of blocks away, up to 10 across each way and 7 up or down,
+// standing on a full block; all but 1 pick in 1,000 lift a block inside the
+// ground to the top of it, at most 16 blocks. The first try whose block has
+// room for his standing body and lies within 24 blocks of `leash` gives the
+// spot, the middle of its block's floor. Room for his body stands in for
+// the game's pathfinder, which Perdix does not have; the leash is our rule.
+[[nodiscard]] std::optional<Vec3d> stroll_spot(Vec3d feet, Vec3d leash, LifeRandom& random,
+                                               const BlockBoxes& world, std::vector<Box>& scratch);
+
 // Another player as Perdix sees one: where it stands, how high its eyes are
 // over its feet (RFC 0010's eye_height() of its pose), and whether it
 // sneaks, which hides it a little.
@@ -107,10 +136,8 @@ private:
     void tick_goal(LifeGoal goal, const Player& body, const Onlooker& you);
     void choose(const Player& body, const Onlooker& you, const BlockBoxes& world,
                 std::vector<Box>& scratch);
-    // A random number from the life's seed.
-    [[nodiscard]] std::uint64_t next() noexcept;
 
-    std::uint64_t random_;
+    LifeRandom random_;
     std::uint64_t ticks_ = 0;
     std::array<bool, goal_count> running_{};
     std::array<std::uint64_t, goal_count> starts_{};

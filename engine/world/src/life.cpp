@@ -33,6 +33,19 @@ constexpr double most_pitch = radians(40.0);
 constexpr int point_hold = 2;
 constexpr double least_offset = 9.999999747378752e-6;
 
+// A stroll's spot, from the jar (WaterAvoidingRandomStrollGoal,
+// LandRandomPos, RandomPos): up to 10 tries at a spot up to 10 blocks away
+// across and 7 up or down. All but 1 pick in 1,000 lift a spot inside the
+// ground to its top, as a cow's stroll does; lifting gives up after 16
+// blocks, our bound in place of the game's world height.
+constexpr int stroll_tries = 10;
+constexpr int stroll_across = 10;
+constexpr int stroll_up_down = 7;
+constexpr float unlifted_chance = 0.001F;
+constexpr int most_lift = 16;
+// The leash, our rule: no spot farther than this from you.
+constexpr double leash_length = 24.0;
+
 // Looking at a player, from the jar: the chance at each choice; how far a
 // player is seen, sneaking hiding one to 0.8 of that but never under 2;
 // and 40 ticks and up to 39 more, counted in choices, two ticks each, so
@@ -69,6 +82,53 @@ Vec3d eyes(const Onlooker& someone) noexcept {
     return someone.feet + Vec3d{.x = 0.0, .y = someone.eye_height, .z = 0.0};
 }
 
+// The block holding `point`, while its coordinates are far from the ends of
+// a block coordinate's range; a NaN holds none.
+std::optional<BlockPos> block_at(Vec3d point) noexcept {
+    constexpr double far = 1e9;
+    const auto fits = [](double value) { return value > -far && value < far; };
+    if (!fits(point.x) || !fits(point.y) || !fits(point.z)) {
+        return std::nullopt;
+    }
+    return BlockPos{.x = static_cast<std::int32_t>(std::floor(point.x)),
+                    .y = static_cast<std::int32_t>(std::floor(point.y)),
+                    .z = static_cast<std::int32_t>(std::floor(point.z))};
+}
+
+Box cube_of(BlockPos block) noexcept {
+    const Vec3d low{.x = static_cast<double>(block.x),
+                    .y = static_cast<double>(block.y),
+                    .z = static_cast<double>(block.z)};
+    return {.min = low, .max = low + Vec3d{.x = 1.0, .y = 1.0, .z = 1.0}};
+}
+
+// Whether a block box fills `block` whole: a full block, to stand on.
+bool full(BlockPos block, const BlockBoxes& world, std::vector<Box>& scratch) {
+    const Box cube = cube_of(block);
+    scratch.clear();
+    world.collect(cube, scratch);
+    return std::ranges::any_of(scratch, [&](const Box& box) {
+        return box.min.x <= cube.min.x && box.min.y <= cube.min.y && box.min.z <= cube.min.z &&
+               box.max.x >= cube.max.x && box.max.y >= cube.max.y && box.max.z >= cube.max.z;
+    });
+}
+
+// Whether any block box reaches into `block`: solid, to be lifted out of.
+bool solid(BlockPos block, const BlockBoxes& world, std::vector<Box>& scratch) {
+    const Box cube = cube_of(block);
+    scratch.clear();
+    world.collect(cube, scratch);
+    return overlaps_any(cube, scratch);
+}
+
+// Whether a standing body fits with its feet at `feet`.
+bool room(Vec3d feet, const BlockBoxes& world, std::vector<Box>& scratch) {
+    const Box body = body_box(feet, Pose::standing);
+    scratch.clear();
+    world.collect(body, scratch);
+    return !overlaps_any(body, scratch);
+}
+
 // Whether the blocks leave a clear line from `from` to `to`: no block box
 // the segment passes through.
 bool clear_line(Vec3d from, Vec3d to, const BlockBoxes& world, std::vector<Box>& scratch) {
@@ -85,6 +145,40 @@ bool clear_line(Vec3d from, Vec3d to, const BlockBoxes& world, std::vector<Box>&
 }
 
 } // namespace
+
+std::optional<Vec3d> stroll_spot(Vec3d feet, Vec3d leash, LifeRandom& random,
+                                 const BlockBoxes& world, std::vector<Box>& scratch) {
+    // A spot in the game's sense of pathfindable, without a path: its block
+    // on a full block, as the game asks, and then room for his standing
+    // body there, where the game would ask its pathfinder.
+    const bool lifts = random.unit() >= unlifted_chance;
+    for (int i = 0; i < stroll_tries; ++i) {
+        const int across_x = random.below((2 * stroll_across) + 1) - stroll_across;
+        const int up = random.below((2 * stroll_up_down) + 1) - stroll_up_down;
+        const int across_z = random.below((2 * stroll_across) + 1) - stroll_across;
+        const std::optional<BlockPos> found =
+            block_at(feet + Vec3d{.x = static_cast<double>(across_x),
+                                  .y = static_cast<double>(up),
+                                  .z = static_cast<double>(across_z)});
+        if (!found || !full({.x = found->x, .y = found->y - 1, .z = found->z}, world, scratch)) {
+            continue;
+        }
+        BlockPos block = *found;
+        int lifted = 0;
+        while (lifts && lifted <= most_lift && solid(block, world, scratch)) {
+            ++block.y;
+            ++lifted;
+        }
+        const Vec3d spot{.x = static_cast<double>(block.x) + 0.5,
+                         .y = static_cast<double>(block.y),
+                         .z = static_cast<double>(block.z) + 0.5};
+        if (lifted <= most_lift && room(spot, world, scratch) &&
+            squared_distance(spot, leash) <= leash_length * leash_length) {
+            return spot;
+        }
+    }
+    return std::nullopt;
+}
 
 LookControl::LookControl(float yaw) noexcept
     : yaw_(static_cast<float>(wrap_turn(static_cast<double>(yaw)))) {}
@@ -195,10 +289,9 @@ void Life::choose(const Player& body, const Onlooker& you, const BlockBoxes& wor
 
 bool Life::can_use(LifeGoal goal, const Player& body, const Onlooker& you, const BlockBoxes& world,
                    std::vector<Box>& scratch) {
-    const auto chance = static_cast<float>(next() >> 40U) * 0x1p-24F;
     switch (goal) {
     case LifeGoal::look_at_player: {
-        if (chance >= look_chance) {
+        if (random_.unit() >= look_chance) {
             return false;
         }
         const double reach =
@@ -207,7 +300,7 @@ bool Life::can_use(LifeGoal goal, const Player& body, const Onlooker& you, const
                clear_line(eyes(body), eyes(you), world, scratch);
     }
     case LifeGoal::look_around:
-        return chance < around_chance;
+        return random_.unit() < around_chance;
     }
     return false;
 }
@@ -230,12 +323,12 @@ void Life::start(LifeGoal goal) {
     ++starts_[static_cast<std::size_t>(goal)];
     switch (goal) {
     case LifeGoal::look_at_player:
-        look_time_ = (look_least + static_cast<int>(next() % look_spread) + 1) / 2;
+        look_time_ = (look_least + random_.below(look_spread) + 1) / 2;
         return;
     case LifeGoal::look_around: {
-        const double angle = 2.0 * pi * (static_cast<double>(next() >> 11U) * 0x1p-53);
+        const double angle = 2.0 * pi * random_.unit_double();
         around_ = {.x = std::cos(angle), .y = 0.0, .z = std::sin(angle)};
-        around_time_ = around_least + static_cast<int>(next() % around_spread);
+        around_time_ = around_least + random_.below(around_spread);
         return;
     }
     }
@@ -258,13 +351,24 @@ void Life::tick_goal(LifeGoal goal, const Player& body, const Onlooker& you) {
     }
 }
 
-std::uint64_t Life::next() noexcept {
-    // SplitMix64: small, fast, and good enough for a creature's whims.
-    random_ += 0x9E37'79B9'7F4A'7C15U;
-    std::uint64_t mixed = random_;
+std::uint64_t LifeRandom::next() noexcept {
+    state_ += 0x9E37'79B9'7F4A'7C15U;
+    std::uint64_t mixed = state_;
     mixed = (mixed ^ (mixed >> 30U)) * 0xBF58'476D'1CE4'E5B9U;
     mixed = (mixed ^ (mixed >> 27U)) * 0x94D0'49BB'1331'11EBU;
     return mixed ^ (mixed >> 31U);
+}
+
+int LifeRandom::below(int bound) noexcept {
+    return static_cast<int>(next() % static_cast<std::uint64_t>(bound));
+}
+
+float LifeRandom::unit() noexcept {
+    return static_cast<float>(next() >> 40U) * 0x1p-24F;
+}
+
+double LifeRandom::unit_double() noexcept {
+    return static_cast<double>(next() >> 11U) * 0x1p-53;
 }
 
 } // namespace vx
