@@ -179,6 +179,34 @@ bool overlaps_any(const Box& box, std::span<const Box> obstacles) noexcept {
     });
 }
 
+bool segment_enters(const Box& box, Vec3d from, Vec3d to) noexcept {
+    // The stretch of the segment, from 0 at `from` to 1 at `to`, between the
+    // box's two faces on each axis: the segment is inside the box where the
+    // three stretches overlap.
+    double enter = 0.0;
+    double leave = 1.0;
+    for (const Axis axis : {Axis::x, Axis::y, Axis::z}) {
+        const double start = along(from, axis);
+        const double delta = along(to, axis) - start;
+        const double low = along(box.min, axis);
+        const double high = along(box.max, axis);
+        if (!std::isfinite(start) || !std::isfinite(delta)) {
+            return false;
+        }
+        if (delta == 0.0) {
+            if (start <= low || start >= high) {
+                return false;
+            }
+            continue;
+        }
+        const double at_low = (low - start) / delta;
+        const double at_high = (high - start) / delta;
+        enter = std::max(enter, std::min(at_low, at_high));
+        leave = std::min(leave, std::max(at_low, at_high));
+    }
+    return enter < leave;
+}
+
 Vec3d guard_edge(const Box& box, Vec3d wanted, double max_drop,
                  std::span<const Box> obstacles) noexcept {
     // The space under the moved box's bottom, down by the drop and a little

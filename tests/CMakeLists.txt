@@ -78,6 +78,7 @@ add_executable(vx_world_tests
     world/packed_array_test.cpp
     world/placeholder_generator_test.cpp
     world/region_test.cpp
+    world/segment_test.cpp
     world/slipperiness_test.cpp
     world/sprint_test.cpp
     world/step_up_test.cpp

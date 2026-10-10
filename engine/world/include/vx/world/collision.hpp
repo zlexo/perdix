@@ -92,6 +92,13 @@ struct Move {
 // every axis: whether it would be inside a block there.
 [[nodiscard]] bool overlaps_any(const Box& box, std::span<const Box> obstacles) noexcept;
 
+// Whether the segment from `from` to `to` passes through the inside of
+// `box`: some point of it lies inside the box, not on a face or an edge. A
+// segment that starts inside the box passes through it, as a line of sight
+// from inside a block is blocked; one with a coordinate that is not finite
+// passes through nothing.
+[[nodiscard]] bool segment_enters(const Box& box, Vec3d from, Vec3d to) noexcept;
+
 // The sneaking edge guard (RFC 0010). While the box is within `max_drop` of
 // the ground and not moving up, `wanted`'s horizontal motion is cut back in
 // steps of 0.05 blocks (to 0 once under 0.05) until the box, moved by it,
