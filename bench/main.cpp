@@ -50,6 +50,7 @@ int main(int argc, char* argv[]) {
     vx::bench::block_pack(bench);
     vx::bench::padded_chunk(bench);
     vx::bench::mesh(bench);
+    vx::bench::player_model(bench);
     vx::bench::movement(bench);
     vx::bench::draw_lists(bench);
     // No results means no benchmark ran, which --quick must not pass as a

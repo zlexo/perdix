@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 #include <span>
 
 namespace vx {
@@ -123,7 +124,8 @@ Rotation part_rotation(const PartPose& part) noexcept {
             .z = {.x = -sy, .y = cy * sx, .z = cy * cx}};
 }
 
-// Every part from rest, then the head's turn (RFC 0012).
+// The game's poses, in its order: every part from rest, then the head, the
+// walk swing, the leg splay, the crouch and the idle sway (RFC 0012).
 std::array<PartPose, part_count> pose_parts(const PlayerPose& pose, const Model& model) noexcept {
     std::array<PartPose, part_count> parts{};
     for (std::size_t part = 0; part < part_count; ++part) {
@@ -137,6 +139,41 @@ std::array<PartPose, part_count> pose_parts(const PlayerPose& pose, const Model&
     parts[head].yaw = static_cast<double>(pose.body_yaw) - static_cast<double>(pose.head_yaw);
     parts[head].pitch = -static_cast<double>(pose.head_pitch);
 
+    // Each arm swings with the opposite leg, the legs 1.4 times as far.
+    const double phase = 0.6662 * pose.limb_position;
+    const double amount = pose.limb_amount;
+    parts[right_arm].pitch = std::cos(phase + std::numbers::pi) * amount;
+    parts[left_arm].pitch = std::cos(phase) * amount;
+    parts[right_leg].pitch = std::cos(phase) * 1.4 * amount;
+    parts[left_leg].pitch = std::cos(phase + std::numbers::pi) * 1.4 * amount;
+
+    // The feet always point a little outward.
+    parts[right_leg].yaw = 0.005;
+    parts[right_leg].roll = 0.005;
+    parts[left_leg].yaw = -0.005;
+    parts[left_leg].roll = -0.005;
+
+    if (pose.crouching) {
+        parts[body].pitch = 0.5;
+        parts[body].pivot.y += 3.2;
+        for (const std::size_t arm : {right_arm, left_arm}) {
+            parts[arm].pitch += 0.4;
+            parts[arm].pivot.y += 3.2;
+        }
+        for (const std::size_t leg : {right_leg, left_leg}) {
+            parts[leg].pivot.z += 4.0;
+        }
+        parts[head].pivot.y += 4.2;
+    }
+
+    // Both arms drift outward and back again, never in, over about 70 and
+    // 94 ticks.
+    const double sway_roll = (0.05 * std::cos(0.09 * pose.age)) + 0.05;
+    const double sway_pitch = 0.05 * std::sin(0.067 * pose.age);
+    parts[right_arm].roll += sway_roll;
+    parts[right_arm].pitch += sway_pitch;
+    parts[left_arm].roll -= sway_roll;
+    parts[left_arm].pitch -= sway_pitch;
     return parts;
 }
 
@@ -267,8 +304,10 @@ void pose_player(const PlayerPose& pose, BlockPos origin,
     const Model& model = pose.arms == Arms::slim ? slim_model : wide_model;
     const std::array<PartPose, part_count> parts = pose_parts(pose, model);
 
+    // The whole body sits 2/16 block lower while crouching.
+    const double crouch = pose.crouching ? -2.0 / 16.0 : 0.0;
     const Placement placement{.feet = {.x = pose.feet.x - origin.x,
-                                       .y = pose.feet.y - origin.y,
+                                       .y = pose.feet.y - origin.y + crouch,
                                        .z = pose.feet.z - origin.z},
                               .cos_yaw = std::cos(static_cast<double>(pose.body_yaw)),
                               .sin_yaw = std::sin(static_cast<double>(pose.body_yaw))};
