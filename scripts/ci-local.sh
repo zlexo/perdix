@@ -123,22 +123,9 @@ check_format() {
 }
 
 # The tests that need a GPU find the Vulkan loader through the SDK's
-# environment on macOS.
-vulkan_environment() {
-    [ "$(uname -s)" = Darwin ] || return 0
-    [ -n "${VULKAN_SDK:-}" ] && return 0
-    local setup
-    setup=$(ls -d "$HOME"/VulkanSDK/*/setup-env.sh 2>/dev/null | sort -V | tail -n 1)
-    if [ -z "$setup" ]; then
-        fail "no Vulkan SDK in ~/VulkanSDK, so the GPU tests have no loader"
-        return 1
-    fi
-    # The SDK's script reads variables that may be unset.
-    set +u
-    # shellcheck disable=SC1090 # the SDK's own script
-    source "$setup" >/dev/null
-    set -u
-}
+# environment on macOS, set up or put back by vulkan_environment.
+# shellcheck source=scripts/vulkan-environment.sh
+source "$root/scripts/vulkan-environment.sh"
 
 build_and_test() {
     local name=$1
