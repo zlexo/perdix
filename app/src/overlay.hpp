@@ -69,15 +69,20 @@ public:
 
     [[nodiscard]] ImGuiContext* context() const noexcept { return context_; }
     [[nodiscard]] bool shown() const noexcept { return shown_; }
-    // Whether the overlay is taking text, as into a slider's value: the
-    // app's keys then type, and do nothing else.
+    // Whether the overlay or the panel is taking text, as into a slider's
+    // value: the app's keys then type, and do nothing else.
     [[nodiscard]] bool wants_text() const;
     void toggle() noexcept { shown_ = !shown_; }
+    void set_shown(bool shown) noexcept { shown_ = shown; }
 
-    // Passes `event` to ImGui while the overlay shows and the mouse is free.
-    // True when the overlay takes it from the app: a click on the overlay's
-    // window. A mouse button's release reaches ImGui always, hidden or
-    // captured: a press it saw that never ends stays held there for good.
+    // The god panel (RFC 0012), open or not.
+    [[nodiscard]] bool panel_open() const noexcept { return panel_open_; }
+    void set_panel_open(bool open) noexcept { panel_open_ = open; }
+
+    // Passes `event` to ImGui while the overlay or the panel shows and the
+    // mouse is free. True when they take it from the app: a click on one of
+    // their windows. A mouse button's release reaches ImGui always, hidden
+    // or captured: a press it saw that never ends stays held there for good.
     bool take_event(const SDL_Event& event, bool mouse_captured);
 
     // Records a frame for the graphs, shown or not: `interval`, the time
@@ -147,6 +152,7 @@ private:
     std::int32_t dragged_distance_ = 0;
     bool validation_;
     bool shown_;
+    bool panel_open_ = false;
     History frame_;
     History cpu_;
     History gpu_;

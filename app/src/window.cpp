@@ -37,7 +37,8 @@ Result<Window> Window::create(const char* title, int width, int height,
 
 Window::Window(Window&& other) noexcept
     : window_(std::exchange(other.window_, nullptr)), motion_(std::exchange(other.motion_, {})),
-      noclip_toggle_(std::exchange(other.noclip_toggle_, false)) {}
+      noclip_toggle_(std::exchange(other.noclip_toggle_, false)),
+      give_back_(std::exchange(other.give_back_, false)) {}
 
 Window& Window::operator=(Window&& other) noexcept {
     if (this != &other) {
@@ -45,6 +46,7 @@ Window& Window::operator=(Window&& other) noexcept {
         window_ = std::exchange(other.window_, nullptr);
         motion_ = std::exchange(other.motion_, {});
         noclip_toggle_ = std::exchange(other.noclip_toggle_, false);
+        give_back_ = std::exchange(other.give_back_, false);
     }
     return *this;
 }
@@ -66,28 +68,20 @@ bool Window::handle_events(Overlay& overlay) {
         }
         // The overlay decides what reaches it: while the mouse flies the
         // camera, only releases (Overlay::take_event).
-        const bool overlay_took = overlay.take_event(event, mouse_captured());
-        // A letter typed into the overlay, as into a slider's value, is not
-        // a key's action.
-        if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && !overlay.wants_text()) {
-            switch (key_action(event.key.key)) {
-            case KeyAction::overlay:
-                overlay.toggle();
-                break;
-            case KeyAction::free_camera:
-                noclip_toggle_ = !noclip_toggle_;
-                break;
-            case KeyAction::none:
-                break;
-            }
+        const bool taken = overlay.take_event(event, mouse_captured());
+        Controls controls{.overlay = overlay.shown(),
+                          .panel = overlay.panel_open(),
+                          .captured = mouse_captured(),
+                          .give_back = give_back_,
+                          .free_camera = noclip_toggle_};
+        control(controls, event, id, taken, overlay.wants_text());
+        overlay.set_shown(controls.overlay);
+        overlay.set_panel_open(controls.panel);
+        if (controls.captured != mouse_captured()) {
+            SDL_SetWindowRelativeMouseMode(window_, controls.captured);
         }
-        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.windowID == id &&
-            !overlay_took) {
-            SDL_SetWindowRelativeMouseMode(window_, true);
-        }
-        if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE) {
-            SDL_SetWindowRelativeMouseMode(window_, false);
-        }
+        give_back_ = controls.give_back;
+        noclip_toggle_ = controls.free_camera;
         if (event.type == SDL_EVENT_MOUSE_MOTION && event.motion.windowID == id &&
             mouse_captured()) {
             motion_.x += event.motion.xrel;

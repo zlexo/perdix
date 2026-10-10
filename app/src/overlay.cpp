@@ -101,7 +101,7 @@ Overlay::~Overlay() {
 bool Overlay::wants_text() const {
     ImGuiContext* const current = ImGui::GetCurrentContext();
     ImGui::SetCurrentContext(context_);
-    const bool typing = shown_ && ImGui::GetIO().WantTextInput;
+    const bool typing = (shown_ || panel_open_) && ImGui::GetIO().WantTextInput;
     ImGui::SetCurrentContext(current);
     return typing;
 }
@@ -115,7 +115,7 @@ bool Overlay::take_event(const SDL_Event& event, bool mouse_captured) {
     // every key event carries the modifiers, so the Escape that frees the
     // mouse also lets go of a Ctrl held to fly faster.
     const bool released = event.type == SDL_EVENT_MOUSE_BUTTON_UP;
-    if ((!shown_ || mouse_captured) && !released) {
+    if (((!shown_ && !panel_open_) || mouse_captured) && !released) {
         return false;
     }
     ImGui::SetCurrentContext(context_);
