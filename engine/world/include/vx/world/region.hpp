@@ -44,6 +44,15 @@ struct RegionSettings {
     std::int32_t hysteresis = 2;     // how much larger the region a loaded chunk must leave
 };
 
+// The settings RFC 0006's memory budget lowers and raises while streaming:
+// the terrain disc's radius and the hysteresis.
+struct RegionLimits {
+    std::int32_t view_distance = 32;
+    std::int32_t hysteresis = 2;
+
+    friend constexpr bool operator==(const RegionLimits&, const RegionLimits&) = default;
+};
+
 // The terrain band of a column (RFC 0006): its surface range, the chunks
 // where anything solid can meet the sky, reaching down to the lowest surface
 // of its four side neighbors, so that a cliff along a column's border is
