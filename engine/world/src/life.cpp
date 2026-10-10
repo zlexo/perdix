@@ -32,12 +32,16 @@ constexpr double head_turn = radians(10.0);
 constexpr double most_pitch = radians(40.0);
 constexpr int point_hold = 2;
 constexpr double least_offset = 9.999999747378752e-6;
+// While the mob walks a path, its head is held within this of its body.
+constexpr double most_off_body = radians(75.0);
 
-// A stroll's spot, from the jar (WaterAvoidingRandomStrollGoal,
-// LandRandomPos, RandomPos): up to 10 tries at a spot up to 10 blocks away
+// Strolling, from the jar (RandomStrollGoal, WaterAvoidingRandomStrollGoal,
+// LandRandomPos, RandomPos): a chance of 1 in 60 at each choice, its 120
+// ticks counted in choices; up to 10 tries at a spot up to 10 blocks away
 // across and 7 up or down. All but 1 pick in 1,000 lift a spot inside the
 // ground to its top, as a cow's stroll does; lifting gives up after 16
 // blocks, our bound in place of the game's world height.
+constexpr int stroll_one_in = 60;
 constexpr int stroll_tries = 10;
 constexpr int stroll_across = 10;
 constexpr int stroll_up_down = 7;
@@ -45,6 +49,16 @@ constexpr float unlifted_chance = 0.001F;
 constexpr int most_lift = 16;
 // The leash, our rule: no spot farther than this from you.
 constexpr double leash_length = 24.0;
+// Walking at a target, as the game's move control and navigation do it:
+// the walking yaw turns at most this much a tick, and the walk ends within
+// this of the target, or once it covered less than this between two
+// checks for being stuck, more than 100 ticks apart. The game's stuck
+// distance is 25 times the mob's speed squared, 1 block for a cow; Perdix
+// takes the cow's.
+constexpr double walking_turn = radians(90.0);
+constexpr double arrival = 1.0;
+constexpr std::uint64_t stuck_ticks = 100;
+constexpr double stuck_distance = 1.0;
 
 // Looking at a player, from the jar: the chance at each choice; how far a
 // player is seen, sneaking hiding one to 0.8 of that but never under 2;
@@ -62,7 +76,7 @@ constexpr float around_chance = 0.02F;
 constexpr int around_least = 20;
 constexpr int around_spread = 20;
 
-constexpr std::array goals = {LifeGoal::look_at_player, LifeGoal::look_around};
+constexpr std::array goals = {LifeGoal::stroll, LifeGoal::look_at_player, LifeGoal::look_around};
 
 // `from` turned toward `to` by at most `most`, the shorter way round.
 double turned_toward(double from, double to, double most) noexcept {
@@ -188,24 +202,30 @@ void LookControl::look_at(Vec3d point) noexcept {
     hold_ = point_hold;
 }
 
-void LookControl::tick(Vec3d eye, float body_yaw) noexcept {
+void LookControl::tick(Vec3d eye, float body_yaw, bool walking) noexcept {
     // Level unless a point holds, as the game resets a mob's pitch each tick.
     pitch_ = 0.0F;
-    if (hold_ <= 0) {
-        yaw_ = static_cast<float>(
-            turned_toward(static_cast<double>(yaw_), static_cast<double>(body_yaw), head_turn));
-        return;
+    const auto body = static_cast<double>(body_yaw);
+    if (hold_ > 0) {
+        --hold_;
+        const Vec3d to = point_ - eye;
+        const double across = std::hypot(to.x, to.z);
+        if (std::abs(to.x) > least_offset || std::abs(to.z) > least_offset) {
+            // The engine's yaw of the way to the point: forward is (-sin, -cos).
+            const double toward = std::atan2(-to.x, -to.z);
+            yaw_ = static_cast<float>(turned_toward(static_cast<double>(yaw_), toward, head_turn));
+        }
+        if (std::abs(to.y) > least_offset || across > least_offset) {
+            pitch_ =
+                static_cast<float>(std::clamp(std::atan2(to.y, across), -most_pitch, most_pitch));
+        }
+    } else {
+        yaw_ = static_cast<float>(turned_toward(static_cast<double>(yaw_), body, head_turn));
     }
-    --hold_;
-    const Vec3d to = point_ - eye;
-    const double across = std::hypot(to.x, to.z);
-    if (std::abs(to.x) > least_offset || std::abs(to.z) > least_offset) {
-        // The engine's yaw of the way to the point: forward is (-sin, -cos).
-        const double toward = std::atan2(-to.x, -to.z);
-        yaw_ = static_cast<float>(turned_toward(static_cast<double>(yaw_), toward, head_turn));
-    }
-    if (std::abs(to.y) > least_offset || across > least_offset) {
-        pitch_ = static_cast<float>(std::clamp(std::atan2(to.y, across), -most_pitch, most_pitch));
+    if (walking) {
+        const double off =
+            std::clamp(wrap_turn(static_cast<double>(yaw_) - body), -most_off_body, most_off_body);
+        yaw_ = static_cast<float>(wrap_turn(body + off));
     }
 }
 
@@ -227,9 +247,11 @@ LifeTick Life::tick(const Player& body, float body_yaw, const Onlooker& you,
     } else if (running(LifeGoal::look_around)) {
         tick_goal(LifeGoal::look_around, body, you);
     }
-    look_.tick(eyes(body), body_yaw);
+    // Then, as the game's mob does, the walk at a target, then the head.
+    const MovementKeys held = walk(body);
+    look_.tick(eyes(body), body_yaw, target_.has_value());
     ++ticks_;
-    return {.input = {.held = {}, .yaw = walking_yaw_},
+    return {.input = {.held = held, .yaw = walking_yaw_},
             .look_yaw = look_.yaw(),
             .look_pitch = look_.pitch()};
 }
@@ -245,10 +267,18 @@ std::uint64_t Life::starts(LifeGoal goal) const noexcept {
 void Life::choose(const Player& body, const Onlooker& you, const BlockBoxes& world,
                   std::vector<Box>& scratch) {
     const auto claims = [](LifeGoal goal) -> std::span<const Claim> {
-        static constexpr std::array eyes_only = {Claim::eyes};
+        static constexpr std::array legs = {Claim::legs};
+        static constexpr std::array eyes = {Claim::eyes};
         static constexpr std::array legs_and_eyes = {Claim::legs, Claim::eyes};
-        return goal == LifeGoal::look_around ? std::span<const Claim>(legs_and_eyes)
-                                             : std::span<const Claim>(eyes_only);
+        switch (goal) {
+        case LifeGoal::stroll:
+            return legs;
+        case LifeGoal::look_at_player:
+            return eyes;
+        case LifeGoal::look_around:
+            return legs_and_eyes;
+        }
+        return {};
     };
     // First the running goals that can no longer go on stop, and what the
     // stopped goals held is free.
@@ -283,13 +313,24 @@ void Life::choose(const Player& body, const Onlooker& you, const BlockBoxes& wor
             }
             holder = goal;
         }
-        start(goal);
+        start(goal, body);
     }
 }
 
 bool Life::can_use(LifeGoal goal, const Player& body, const Onlooker& you, const BlockBoxes& world,
                    std::vector<Box>& scratch) {
     switch (goal) {
+    case LifeGoal::stroll: {
+        if (random_.below(stroll_one_in) != 0) {
+            return false;
+        }
+        const std::optional<Vec3d> spot =
+            stroll_spot(body.position, you.feet, random_, world, scratch);
+        if (spot) {
+            spot_ = *spot;
+        }
+        return spot.has_value();
+    }
     case LifeGoal::look_at_player: {
         if (random_.unit() >= look_chance) {
             return false;
@@ -307,6 +348,8 @@ bool Life::can_use(LifeGoal goal, const Player& body, const Onlooker& you, const
 
 bool Life::can_go_on(LifeGoal goal, const Player& body, const Onlooker& you) const {
     switch (goal) {
+    case LifeGoal::stroll:
+        return target_.has_value();
     case LifeGoal::look_at_player:
         // Within the plain reach, sneaking or not, and with no look at
         // the line of sight: a look once begun lasts through a wall.
@@ -318,10 +361,15 @@ bool Life::can_go_on(LifeGoal goal, const Player& body, const Onlooker& you) con
     return false;
 }
 
-void Life::start(LifeGoal goal) {
+void Life::start(LifeGoal goal, const Player& body) {
     running_[static_cast<std::size_t>(goal)] = true;
     ++starts_[static_cast<std::size_t>(goal)];
     switch (goal) {
+    case LifeGoal::stroll:
+        target_ = spot_;
+        stuck_from_ = body.position;
+        stuck_checked_ = ticks_;
+        return;
     case LifeGoal::look_at_player:
         look_time_ = (look_least + random_.below(look_spread) + 1) / 2;
         return;
@@ -336,10 +384,15 @@ void Life::start(LifeGoal goal) {
 
 void Life::stop(LifeGoal goal) {
     running_[static_cast<std::size_t>(goal)] = false;
+    if (goal == LifeGoal::stroll) {
+        target_.reset();
+    }
 }
 
 void Life::tick_goal(LifeGoal goal, const Player& body, const Onlooker& you) {
     switch (goal) {
+    case LifeGoal::stroll:
+        return; // the walk does it
     case LifeGoal::look_at_player:
         look_.look_at(eyes(you));
         --look_time_;
@@ -349,6 +402,33 @@ void Life::tick_goal(LifeGoal goal, const Player& body, const Onlooker& you) {
         look_.look_at(eyes(body) + around_);
         return;
     }
+}
+
+MovementKeys Life::walk(const Player& body) {
+    if (!target_) {
+        return {};
+    }
+    // The game's navigation is done at its last node; here, within a block
+    // of the target. And it is stuck when it covered too little between two
+    // checks, as it walks straight into a wall too high to climb.
+    if (squared_distance(body.position, *target_) <= arrival * arrival) {
+        target_.reset();
+        return {};
+    }
+    if (ticks_ - stuck_checked_ > stuck_ticks) {
+        if (squared_distance(body.position, stuck_from_) < stuck_distance * stuck_distance) {
+            target_.reset();
+            return {};
+        }
+        stuck_from_ = body.position;
+        stuck_checked_ = ticks_;
+    }
+    // The move control: the walking yaw turns toward the target by at most
+    // 90 degrees, and he walks on.
+    const Vec3d to = *target_ - body.position;
+    walking_yaw_ = static_cast<float>(
+        turned_toward(static_cast<double>(walking_yaw_), std::atan2(-to.x, -to.z), walking_turn));
+    return {.forward = true};
 }
 
 std::uint64_t LifeRandom::next() noexcept {

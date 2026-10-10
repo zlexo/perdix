@@ -17,16 +17,19 @@ namespace vx {
 // by at most 10 degrees a tick and its pitch goes straight to the point's,
 // held within 40 degrees up or down; the point holds for the tick it is
 // given and the next. With none, the pitch is level and the yaw turns back
-// toward the body's by at most 10 degrees a tick. Yaws are the engine's (RFC
-// 0010), in radians, from -pi to pi; the pitch is positive looking up.
+// toward the body's by at most 10 degrees a tick. While walking at a target
+// the head is then held within 75 degrees of the body. Yaws are the
+// engine's (RFC 0010), in radians, from -pi to pi; the pitch is positive
+// looking up.
 class LookControl {
 public:
     explicit LookControl(float yaw = 0.0F) noexcept;
 
     // Looks at `point` from this tick to the next.
     void look_at(Vec3d point) noexcept;
-    // Turns the head for one tick, its eyes at `eye`.
-    void tick(Vec3d eye, float body_yaw) noexcept;
+    // Turns the head for one tick, its eyes at `eye`, `walking` at a target
+    // or not.
+    void tick(Vec3d eye, float body_yaw, bool walking = false) noexcept;
 
     [[nodiscard]] float yaw() const noexcept { return yaw_; }
     [[nodiscard]] float pitch() const noexcept { return pitch_; }
@@ -77,7 +80,7 @@ struct Onlooker {
 };
 
 // The goals of Perdix's life (RFC 0012), for whatever shows what he does.
-enum class LifeGoal : std::uint8_t { look_at_player, look_around };
+enum class LifeGoal : std::uint8_t { stroll, look_at_player, look_around };
 
 // One tick of Perdix's life: what RFC 0010's tick moves his body with, the
 // keys and the walking yaw, and where his head looks, for RFC 0012's
@@ -93,7 +96,14 @@ struct LifeTick {
 // chosen again every second tick in their order: a goal that is not running
 // starts when its chance comes and what it claims is free or held by a goal
 // after it, which stops; a running one stops once it can no longer go on.
-// Looking at you claims the eyes: a chance of 2 in 100 at each choice while
+// Strolling claims the legs: a chance of 1 in 60 at each choice, about every
+// 6 seconds, to pick a spot within 10 blocks across and 7 up or down that
+// stands on a full block with room for him, and no farther than 24 blocks
+// from you (the leash), then to walk straight at it, the walking yaw turning
+// by at most 90 degrees a tick, until he is within a block of it or has
+// covered less than a block in 100 ticks: stuck, as against a wall too high
+// to climb. Looking at you claims the eyes: a chance of 2 in 100 at each
+// choice while
 // you are within 6 blocks (4.8 while you sneak) and in his line of sight
 // from eye to eye, then your eyes for 40 to 80 ticks, while you stay within
 // 6, wall or no wall. Looking around claims both: 2 in 100 at each choice,
@@ -121,9 +131,11 @@ public:
     [[nodiscard]] bool running(LifeGoal goal) const noexcept;
     // How many times `goal` has started.
     [[nodiscard]] std::uint64_t starts(LifeGoal goal) const noexcept;
+    // Where he walks, while he walks at a target.
+    [[nodiscard]] std::optional<Vec3d> walk_target() const noexcept { return target_; }
 
 private:
-    static constexpr std::size_t goal_count = 2;
+    static constexpr std::size_t goal_count = 3;
     // What a goal claims: his legs, his eyes.
     enum class Claim : std::uint8_t { legs, eyes };
     static constexpr std::size_t claim_count = 2;
@@ -131,11 +143,14 @@ private:
     [[nodiscard]] bool can_use(LifeGoal goal, const Player& body, const Onlooker& you,
                                const BlockBoxes& world, std::vector<Box>& scratch);
     [[nodiscard]] bool can_go_on(LifeGoal goal, const Player& body, const Onlooker& you) const;
-    void start(LifeGoal goal);
+    void start(LifeGoal goal, const Player& body);
     void stop(LifeGoal goal);
     void tick_goal(LifeGoal goal, const Player& body, const Onlooker& you);
     void choose(const Player& body, const Onlooker& you, const BlockBoxes& world,
                 std::vector<Box>& scratch);
+    // The tick's walk at the target, if there is one: the keys, and the
+    // walking yaw turned toward it.
+    [[nodiscard]] MovementKeys walk(const Player& body);
 
     LifeRandom random_;
     std::uint64_t ticks_ = 0;
@@ -148,6 +163,12 @@ private:
     int look_time_ = 0;   // choices left looking at you
     int around_time_ = 0; // ticks left looking around
     Vec3d around_;        // where looking around looks, from him
+    Vec3d spot_;          // the stroll's spot, between its choice and its start
+    // The walk at a target, and the place and tick it was last checked for
+    // being stuck.
+    std::optional<Vec3d> target_;
+    Vec3d stuck_from_;
+    std::uint64_t stuck_checked_ = 0;
 };
 
 } // namespace vx

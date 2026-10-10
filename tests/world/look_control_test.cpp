@@ -117,3 +117,19 @@ TEST_CASE("a point straight above or below moves the pitch and leaves the yaw") 
     CHECK(yaw_degrees(look) == doctest::Approx(30.0).epsilon(1e-5));
     CHECK(pitch_degrees(look) == doctest::Approx(-40.0).epsilon(1e-5));
 }
+
+TEST_CASE("walking at a target the head is held within 75 degrees of the body") {
+    // 100 degrees off the body with nothing to look at: back 10 degrees,
+    // then held at 75; standing, it only turns back its 10 a tick.
+    vx::LookControl walking(static_cast<float>(radians(100.0)));
+    walking.tick(eye, 0.0F, true);
+    CHECK(yaw_degrees(walking) == doctest::Approx(75.0).epsilon(1e-5));
+    vx::LookControl standing(static_cast<float>(radians(100.0)));
+    standing.tick(eye, 0.0F, false);
+    CHECK(yaw_degrees(standing) == doctest::Approx(90.0).epsilon(1e-5));
+    // Looking at a point 120 degrees the other side of the body, the same.
+    vx::LookControl looking(static_cast<float>(radians(-70.0)));
+    looking.look_at(point_at(-120.0, 0.0));
+    looking.tick(eye, 0.0F, true);
+    CHECK(yaw_degrees(looking) == doctest::Approx(-75.0).epsilon(1e-5));
+}

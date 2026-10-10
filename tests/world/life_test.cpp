@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 // RFC 0012's life, seeded and deterministic, in Minecraft 26.2's rhythm:
@@ -27,8 +28,12 @@ using vx::test::Scene;
 using vx::test::Spell;
 using vx::test::Watch;
 
-// You, far enough away that he never looks at you.
-constexpr Vec3d far_away{.x = 0.0, .y = 0.0, .z = -30.0};
+// You, far enough away that he never looks at you, and that no spot within
+// his reach is inside the leash: he never strolls.
+constexpr Vec3d far_away{.x = 0.0, .y = 0.0, .z = -40.0};
+// You, 7 blocks over where he starts: never seen, and every spot near him
+// inside the leash.
+constexpr Vec3d overhead{.x = 0.0, .y = 7.0, .z = 0.0};
 
 } // namespace
 
@@ -72,23 +77,28 @@ TEST_CASE("he looks around at 2 in 100 a choice at a level point a block off for
 TEST_CASE("the same seed lives the same life and another seed another") {
     const auto run = [](std::uint64_t seed) {
         Scene scene(seed);
-        scene.you.feet = far_away;
-        std::vector<vx::LifeTick> ticks;
+        scene.you.feet = overhead;
+        std::vector<std::pair<vx::LifeTick, Vec3d>> ticks;
         for (int i = 0; i < 4'000; ++i) {
-            ticks.push_back(scene.step());
+            const vx::LifeTick ticked = scene.step();
+            ticks.emplace_back(ticked, scene.perdix.position);
         }
+        CHECK(scene.life.starts(LifeGoal::stroll) > 10);
         return ticks;
     };
-    const std::vector<vx::LifeTick> first = run(7);
-    const std::vector<vx::LifeTick> again = run(7);
-    const std::vector<vx::LifeTick> other = run(8);
+    const auto first = run(7);
+    const auto again = run(7);
+    const auto other = run(8);
     bool same = true;
     bool differs = false;
     for (std::size_t i = 0; i < first.size(); ++i) {
-        same = same && first[i].look_yaw == again[i].look_yaw &&
-               first[i].look_pitch == again[i].look_pitch &&
-               first[i].input.yaw == again[i].input.yaw;
-        differs = differs || first[i].look_yaw != other[i].look_yaw;
+        const auto& [ticked, position] = first[i];
+        same = same && ticked.look_yaw == again[i].first.look_yaw &&
+               ticked.look_pitch == again[i].first.look_pitch &&
+               ticked.input.yaw == again[i].first.input.yaw &&
+               ticked.input.held.forward == again[i].first.input.held.forward &&
+               position == again[i].second;
+        differs = differs || position != other[i].second;
     }
     CHECK(same);
     CHECK(differs);
