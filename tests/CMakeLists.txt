@@ -177,6 +177,7 @@ add_executable(vx_app_tests
     app/footprint_test.cpp
     app/keys_test.cpp
     app/options_test.cpp
+    app/startup_figures_test.cpp
     app/startup_pack_test.cpp
     app/streamed_meshes_test.cpp
     app/view_test.cpp

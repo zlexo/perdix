@@ -35,7 +35,7 @@ vx_target_engine_options(vx_app_overlay)
 # The command line, and loading the block pack at startup drawn with the
 # player's Minecraft (RFC 0009): a library of its own so that tests can parse
 # options and load packs without a window.
-add_library(vx_app_startup STATIC src/options.cpp src/startup_pack.cpp)
+add_library(vx_app_startup STATIC src/options.cpp src/startup_figures.cpp src/startup_pack.cpp)
 target_include_directories(vx_app_startup PUBLIC src)
 target_link_libraries(vx_app_startup PUBLIC vx::render vx::minecraft)
 vx_target_warnings(vx_app_startup)

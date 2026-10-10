@@ -6,6 +6,7 @@
 #include "options.hpp"
 #include "overlay.hpp"
 #include "pack.hpp"
+#include "startup_figures.hpp"
 #include "startup_pack.hpp"
 #include "streamed_meshes.hpp"
 #include "view.hpp"
@@ -594,6 +595,22 @@ std::optional<vx::app::StartupPack> load_pack(const vx::app::Options& options) {
     return startup;
 }
 
+// The skins and the font players and their name tags are drawn with (RFC
+// 0012): the pack's own skins, and the game's skins and font from its jar,
+// each skin chosen on the command line, with what could not be honored and
+// the startup report's lines printed.
+vx::app::StartupFigures load_figures(const vx::app::StartupPack& startup,
+                                     const vx::app::Options& options) {
+    vx::app::StartupFigures figures = vx::app::load_startup_figures(
+        startup.root, startup.game, vx::app::parse_skin_choice(options.skin.value_or("zlex")),
+        vx::app::parse_skin_choice(options.perdix_skin.value_or("perdix")));
+    for (const vx::Diagnostic& diagnostic : figures.diagnostics) {
+        std::cerr << vx::format(diagnostic) << '\n';
+    }
+    std::cout << figures.skins_line << '\n' << figures.font_line << '\n';
+    return figures;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -620,6 +637,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     const vx::render::BlockPack& pack = startup->pack;
+
+    const vx::app::StartupFigures figures = load_figures(*startup, options.value());
 
     // SDL loads a Vulkan library for the window's surface, and it must be the
     // engine's loader: a driver's library does not understand the loader's
@@ -673,6 +692,8 @@ int main(int argc, char* argv[]) {
          .present_mode = plan ? vx::render::PresentMode::immediate : vx::render::PresentMode::fifo,
          .overlay = overlay.context(),
          .block_textures = pack.textures,
+         .skins = figures.skins,
+         .font = figures.font.has_value() ? &figures.font.value() : nullptr,
          .chunk_arena_quads = arena_quads(settings.region.view_distance),
          .stage_chunk_uploads = false,
          .draw_call_limit = 0});

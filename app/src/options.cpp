@@ -98,6 +98,26 @@ Result<bool> parse_run_option(std::string_view arg, Options& options) {
     return true;
 }
 
+// The options that dress the players (RFC 0012): --skin= and --perdix-skin=.
+// True when `arg` was one of them, an error when its value is empty, false
+// when it is another option.
+Result<bool> parse_figure_option(std::string_view arg, Options& options) {
+    constexpr std::string_view skin_flag = "--skin=";
+    constexpr std::string_view perdix_skin_flag = "--perdix-skin=";
+    for (const auto& [flag, value] :
+         {std::pair{skin_flag, &options.skin}, std::pair{perdix_skin_flag, &options.perdix_skin}}) {
+        if (arg.starts_with(flag)) {
+            if (arg.size() == flag.size()) {
+                return Error{std::string(flag) +
+                             " needs a skin: perdix, zlex, one of the game's, or a file"};
+            }
+            *value = std::string(arg.substr(flag.size()));
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 Result<Options> parse_options(std::span<const std::string_view> args) {
@@ -126,11 +146,17 @@ Result<Options> parse_options(std::span<const std::string_view> args) {
             options.no_minecraft = true;
         } else if (const Result<bool> run = parse_run_option(arg, options); !run.has_value()) {
             return run.error();
-        } else if (!run.value()) {
+        } else if (run.value()) {
+            continue;
+        } else if (const Result<bool> figure = parse_figure_option(arg, options);
+                   !figure.has_value()) {
+            return figure.error();
+        } else if (!figure.value()) {
             return Error{"unknown option \"" + std::string(arg) +
                          "\": try --frames=N, --overlay, --pack=DIR, --minecraft=PATH, "
                          "--minecraft-version=ID, --no-minecraft, --flythrough[=quick|long], "
-                         "--workers=N or --worker-qos=switching|utility|user-initiated"};
+                         "--workers=N, --worker-qos=switching|utility|user-initiated, "
+                         "--skin=NAME[:slim] or --perdix-skin=NAME[:slim]"};
         }
     }
     if (options.no_minecraft && (options.minecraft || options.minecraft_version)) {

@@ -115,3 +115,17 @@ TEST_CASE("a relative --minecraft path is made absolute, so messages name its fi
     CHECK(choice.query.path->is_absolute());
     CHECK(*choice.query.path == std::filesystem::current_path() / "games" / "mc");
 }
+
+TEST_CASE("--skin and --perdix-skin name the skins the players wear") {
+    const vx::Result<vx::app::Options> none = parse({});
+    REQUIRE(none.has_value());
+    CHECK_FALSE(none.value().skin.has_value());
+    CHECK_FALSE(none.value().perdix_skin.has_value());
+
+    const vx::Result<vx::app::Options> both = parse({"--skin=steve:slim", "--perdix-skin=zlex"});
+    REQUIRE(both.has_value());
+    CHECK(both.value().skin == "steve:slim");
+    CHECK(both.value().perdix_skin == "zlex");
+    CHECK(error_of({"--skin="}).starts_with("--skin= needs a skin"));
+    CHECK(error_of({"--perdix-skin="}).starts_with("--perdix-skin= needs a skin"));
+}
