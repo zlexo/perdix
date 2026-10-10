@@ -20,6 +20,7 @@ add_executable(vx_bench
     core/job_system_bench.cpp
     mesh/mesh_bench.cpp
     mesh/padded_chunk_bench.cpp
+    mesh/player_model_bench.cpp
     render/block_pack_bench.cpp
     render/block_textures_bench.cpp
     render/draw_lists_bench.cpp
