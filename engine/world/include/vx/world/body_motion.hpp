@@ -4,6 +4,12 @@
 
 namespace vx {
 
+// `angle`, in radians, as a turn from above -pi up to pi. Minecraft 26.2
+// wraps its angles to [-180, 180) degrees and turns the other way round
+// from the engine's yaw, so a half turn comes out +pi here: left, the way
+// the game turns it.
+[[nodiscard]] double wrap_turn(double angle) noexcept;
+
 // The body's state a tick leaves (RFC 0012): what the camera needs to pose
 // it between ticks. Yaws are the engine's (RFC 0010: 0 looks down -z, and
 // positive turns left, seen from above), in radians; the pitch is positive

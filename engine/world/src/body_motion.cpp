@@ -34,10 +34,15 @@ constexpr double backward_to = radians(265.0);
 constexpr double body_easing = 0.3;
 constexpr double most_off_look = radians(50.0);
 
-// `angle` as a turn from above -pi up to pi. The game wraps its angles to
-// [-180, 180) degrees and turns the other way, so a half turn is +pi here:
-// left, as the game turns it.
-double wrapped(double angle) noexcept {
+// How far `to` lies from `from` turning left, from 0 up to a full turn.
+double leftward(double from, double to) noexcept {
+    const double turn = std::fmod(to - from, full_turn);
+    return turn < 0.0 ? turn + full_turn : turn;
+}
+
+} // namespace
+
+double wrap_turn(double angle) noexcept {
     const double turn = std::fmod(angle, full_turn);
     if (turn <= -pi) {
         return turn + full_turn;
@@ -48,16 +53,8 @@ double wrapped(double angle) noexcept {
     return turn;
 }
 
-// How far `to` lies from `from` turning left, from 0 up to a full turn.
-double leftward(double from, double to) noexcept {
-    const double turn = std::fmod(to - from, full_turn);
-    return turn < 0.0 ? turn + full_turn : turn;
-}
-
-} // namespace
-
 BodyMotion body_facing(float look_yaw, float look_pitch) noexcept {
-    return {.body_yaw = static_cast<float>(wrapped(static_cast<double>(look_yaw))),
+    return {.body_yaw = static_cast<float>(wrap_turn(static_cast<double>(look_yaw))),
             .head_yaw = look_yaw,
             .head_pitch = look_pitch};
 }
@@ -93,19 +90,19 @@ void animate(BodyMotion& motion, Vec3d moved, float look_yaw, float look_pitch) 
         const bool backward = off_look > backward_from && off_look < backward_to;
         target = backward ? way + pi : way;
     }
-    body += wrapped(target - body) * body_easing;
-    const double from_look = wrapped(look - body);
+    body += wrap_turn(target - body) * body_easing;
+    const double from_look = wrap_turn(look - body);
     if (std::abs(from_look) > most_off_look) {
         body += from_look - std::copysign(most_off_look, from_look);
     }
-    motion.body_yaw = static_cast<float>(wrapped(body));
+    motion.body_yaw = static_cast<float>(wrap_turn(body));
 }
 
 BodyAt body_at(const BodyMotion& previous, const BodyMotion& current, double between) noexcept {
     const auto turned = [between](float from, float to) {
         const auto start = static_cast<double>(from);
         return static_cast<float>(
-            wrapped(start + (wrapped(static_cast<double>(to) - start) * between)));
+            wrap_turn(start + (wrap_turn(static_cast<double>(to) - start) * between)));
     };
     const double speed =
         previous.limb_speed + ((current.limb_speed - previous.limb_speed) * between);
