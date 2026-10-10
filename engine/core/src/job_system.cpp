@@ -90,11 +90,14 @@ struct JobSystem::State {
     };
 
     explicit State(const JobSystemDesc& desc)
-        : slots(desc.slots), clock(desc.clock != nullptr ? desc.clock : &steady) {
+        : slots(desc.slots), clock(desc.clock != nullptr ? desc.clock : &steady), qos(desc.qos) {
         free.reserve(desc.slots);
         sleepers.reserve(desc.workers);
         for (std::uint32_t index = 0; index < desc.workers; ++index) {
             workers.push_back(std::make_unique<Worker>());
+            if (desc.qos == WorkerQos::user_initiated) {
+                workers.back()->qos = ThreadQos::user_initiated;
+            }
         }
         // Slot 0 first, for tests that read handles.
         for (std::uint32_t at = desc.slots; at > 0; --at) {
@@ -276,12 +279,22 @@ struct JobSystem::State {
         worker.wake.notify_one();
     }
 
+    // The class a worker runs a job of `level` at: user-initiated for an
+    // urgent one, and as the mode says otherwise.
+    [[nodiscard]] ThreadQos class_for(JobLevel level) const noexcept {
+        const bool raised = level == JobLevel::urgent || qos == WorkerQos::user_initiated ||
+                            (qos == WorkerQos::switching && catching_up);
+        return raised ? ThreadQos::user_initiated : ThreadQos::utility;
+    }
+
     // A worker's life: take the next job, or sleep until one is queued or the
     // job system stops. A worker sets its own QoS between jobs: user-initiated
-    // for an urgent job and while streaming catches up, utility otherwise.
+    // for an urgent job and while streaming catches up, utility otherwise,
+    // unless the mode fixes one class.
     void work(std::uint32_t index) {
         set_thread_name(("Worker " + std::to_string(index)).c_str());
-        set_thread_qos(ThreadQos::utility);
+        set_thread_qos(qos == WorkerQos::user_initiated ? ThreadQos::user_initiated
+                                                        : ThreadQos::utility);
         Worker& self = *workers[index];
         JobContext context(index);
         std::unique_lock guard(lock);
@@ -311,9 +324,7 @@ struct JobSystem::State {
             Slot& slot = slots[at];
             slot.state = SlotState::running;
             ++running;
-            const ThreadQos wanted = slot.level == JobLevel::urgent || catching_up
-                                         ? ThreadQos::user_initiated
-                                         : ThreadQos::utility;
+            const ThreadQos wanted = class_for(slot.level);
             const ThreadQos had = std::exchange(self.qos, wanted);
 #ifdef __APPLE__
             pthread_override_t raised = std::exchange(self.raised, nullptr);
@@ -345,6 +356,7 @@ struct JobSystem::State {
     std::uint64_t next_sequence = 0;
     SteadyClock steady;
     const JobClock* clock;
+    WorkerQos qos;
     std::vector<std::unique_ptr<Worker>> workers;
     std::vector<std::uint32_t> sleepers; // a stack of the workers waiting for a job
     Condition idle;

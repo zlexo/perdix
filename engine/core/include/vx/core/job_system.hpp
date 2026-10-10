@@ -125,12 +125,18 @@ public:
     [[nodiscard]] virtual std::chrono::steady_clock::time_point now() const noexcept = 0;
 };
 
+// How workers pick their QoS class (RFC 0005): utility, and user-initiated
+// while streaming catches up; or one class all the time, which the sweep
+// compares. An urgent job runs at user-initiated whatever the mode.
+enum class WorkerQos : std::uint8_t { switching, utility, user_initiated };
+
 struct JobSystemDesc {
     // Threads that run jobs: RFC 0005's default is the core count less two,
     // 6 on the reference machine. 0 is the deterministic mode: nothing runs
     // until the owner calls run_until_idle, which runs the jobs on its own
     // thread.
     std::uint32_t workers = 0;
+    WorkerQos qos = WorkerQos::switching;
     // Jobs queued or running at once.
     std::uint32_t slots = 1'024;
     // What background jobs age by; null for the steady clock.
