@@ -4,7 +4,21 @@ A Minecraft-like voxel engine in C++20 and Vulkan, built for speed and view dist
 
 Named after Perdix, who in Greek myth invented the saw and the compass: tools for cutting and measuring precisely.
 
-It renders one chunk of blocks you can fly around, meshed from the core pack's blocks, with a debug overlay. With Minecraft installed, the blocks are drawn with the game's own textures: milestone 2.5, Minecraft Look. The project is built in the open, one reviewed pull request at a time.
+It streams in an endless world of placeholder hills, which you walk through as in Minecraft or fly over with a free camera, with a debug overlay. Perdix, a second player, lives in it on his own, with a body, a skin and a name tag: milestone 3.5, Body. With Minecraft installed, the blocks are drawn with the game's own textures. The project is built in the open, one reviewed pull request at a time.
+
+## Playing
+
+Click the window to walk: W A S D, Space to jump, Ctrl with W or W twice to sprint, Shift to sneak, Space twice to fly, the mouse to look. Escape releases the mouse. Nothing is on the F row:
+
+- **V** switches to a camera that flies through everything and back, leaving your body standing where it was, in your skin, with your name over it.
+- **O** shows the debug overlay.
+- **G** opens the god panel, which frees the mouse: what Perdix does (his own life, following you, standing still), bringing him 5 blocks in front of the camera, and the skin each of you wears. A click in the world closes it.
+
+```
+--perdix=life|follow|still   what Perdix does from the start; his own life by default
+--skin=NAME[:slim]           your skin: perdix, zlex, one of the game's, or a skin file
+--perdix-skin=NAME[:slim]    his
+```
 
 ## Minecraft's textures
 
@@ -16,7 +30,7 @@ If Minecraft: Java Edition is installed, Perdix draws its blocks with the game's
 --no-minecraft            Perdix's own textures, whatever is installed
 ```
 
-The startup report says which it drew: `Textures: Minecraft 26.2, from <the jar>, 11 of 11`.
+The startup report says which it drew: `Textures: Minecraft 26.2, from <the jar>, 11 of 11`. The same copy gives the game's 18 default skins, and its font for the name tags; without the game, no name tag is drawn until Perdix has a font of his own.
 
 Perdix is not an official Minecraft product. It is not approved by or associated with Mojang or Microsoft.
 

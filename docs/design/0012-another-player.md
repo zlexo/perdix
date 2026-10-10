@@ -409,4 +409,52 @@ All settled on 2026-10-10 with the owner, as recommended unless noted:
 
 ## As built
 
-Filled in after implementation.
+Every item landed on 2026-10-10 and 2026-10-11, merged on the local CI (`scripts/ci-local.sh`) and a release build of each stack's top while GitHub's runners were unavailable. Minecraft 26.2's jar was read for numbers and behavior only, never for code.
+
+Item 1, the model, landed as two pull requests: the model at rest (#360); the walk swing, the idle sway and the crouch (#361).
+
+- **Posing a walking body takes 0.87 µs** in a release build on the reference machine, against the budget's 5.
+- **The head turns and pitches by exact trigonometry**, as open question 5 settled.
+
+Item 2, the animation, landed as two pull requests: the walk swing and the body between two ticks (#371); the body's turn (#372).
+
+Item 3, the skins, landed as four pull requests: `vx::Skin` and `vx::Arms` (#359); the game's defaults from the player's jar (#363); skin files and the owner's skin (#364); Perdix's own skin (#366).
+
+- **`read_skin` is in `vx::minecraft`**, beside `default_skin`, not in `vx`: `world` has no image decoder.
+- **The owner's skin was fetched once** from Mojang's texture server with the owner's permission (open question 2): 64 by 64, 552 bytes, its SHA-256 the hash in its texture URL. Nothing downloads a skin at run time.
+- **Perdix's own skin is a placeholder** made by code on the Resurrect 64 palette, with the texture studio's `generate-skin.js`, the way the core pack's textures were: chestnut hair, a slate tunic barred like a partridge's flanks, a rust scarf on the jacket layer, a gold compass pendant. The owner may repaint it.
+
+Item 4, drawing bodies, landed as one pull request (#362).
+
+- **The entity light is the game's** (its entity shader): two lights fixed in the world, 0.6 of each one's cosine plus 0.4, at most 1. A face seen from inside its box, through an outer layer's clear texels, is lit as if it faced the other way, as the game's per-face lighting does it.
+- **A skin that was not given draws the missing texture**, magenta and black in squares of 4 texels on the base layer, its outer layer clear.
+
+Item 5, your body, landed as three pull requests: the overlay on O and the free camera on V (#367); skins and the font at startup (#370); your body in the free camera (#383).
+
+- **The options are `--skin=NAME` and `--perdix-skin=NAME`**, with `=` like every other option the app takes.
+- **The startup report** reads `Skins: perdix (Perdix), zlex (you), 18 of Minecraft 26.2's` and `Font: Minecraft 26.2, from <the jar>`; without the game, `Font: none, so no name tags without the player's Minecraft`, since Perdix's own font is not made yet (open question 10).
+
+Item 6, a second player, landed as five pull requests: Perdix starts over where he is put (#384); Perdix on the world thread (#385); Perdix in the app (#386); G opens the god panel (#387); the god panel (#388).
+
+- **Bring him here puts Perdix 5 blocks ahead of the camera**, which in the free camera is not where your body stands: the first spot from 4 blocks above that point to 64 below where his standing body fits on something, so a camera high over the ground brings him down to it; with no such spot he stays. His life starts over there (`Life::start_over`): run in the app, his head first turned back for a tick to where his life still looked.
+- **G closing the panel gives the mouse back only when the panel took it**, so a run never clicked never grabs the mouse; a click in the world captures it and closes the panel; Escape frees it and closes the panel. The rules are `control()`'s, tested without a window.
+- **Perdix may not fly**: his auto-jump presses Space, and the game never counts those toward a double tap.
+- **He walks through you**: nothing pushes two players apart yet (interacting with Perdix is a non-goal), so a stroll can end inside your body.
+
+Item 7, Perdix's life, landed as eight pull requests: the look control (#373); the goals and looking around (#374); looking at you (#375); where he strolls to (#376); strolling (#377); the game's auto-jump (#378); climbing steps (#379); follow, still and the leash (#380).
+
+- **Looking around lasts 22 to 40 ticks, and looking at you 40 to 80**: the game counts down every tick, or in choices, but ends a goal only at a choice, so the RFC's 20 to 39 and 40 to 79 come out so in its jar.
+- **The stuck check takes the cow's one block in 100 ticks.** The jar's rule scales with the mob's speed, which for a player's 0.1 would be a quarter block.
+- **Auto-jump keeps the game's quirks:** strafing climbs; walking backward climbs while looking down past 81.4 degrees; a diagonal probe meets everything in the rectangle its ends span; a farther wall two blocks high vetoes a nearer step walking toward -z, not toward +z.
+- **Follow's distances are the jar's 10 and 2**, as the RFC guessed. The wolf aims again every 10 ticks, which Perdix does, and teleports from 12 blocks, which Perdix replaces with the sprint beyond 16; RFC 0010's sprint lasts while forward is held, so once sprinting he sprints until he stops.
+- **A tick of Perdix** (his life, the move, the look ahead, the animation) is benched in `bench/world/life_bench.cpp`.
+
+Item 8, text, landed as three pull requests: the game's font from the player's jar (#365); the name tag's layout (#368); name tags drawn as the game draws them (#369).
+
+- **`Font` is an owning plain type in `world`**, beside `Skin`, not a span in `render`, so the `minecraft` module makes one and Perdix's own font will be the same type. Its atlas is fixed at 128 by 128, so its scale is always 1, where the game would scale a larger pack's.
+- **Code points 0 to 31 and 127 draw the missing glyph**, as the game draws them from its jar's fonts.
+- **A tag's anchor is the text's top edge, already lifted**: 2.3 above a standing player's feet, 1.875 above a crouching one's.
+- **The 0.1 discard changes no pixel today**: tags are drawn last, the farthest first, so nothing lies behind a discarded texel. It is kept to match the game's text pipeline.
+- **The box blends in linear light**, between the sRGB swapchain's conversions: over the sky it comes out (105, 147, 225) where the game's would be about (90, 126, 192). It is RFC 0009's note on shading again, and lighting (M6) owns it.
+
+Item 9, name tags and skins in the panel: the tags over Perdix and over your body in the free camera came with items 5 and 6, both skins in the god panel with item 6, and the font's line with the startup report. Perdix's own 8 by 8 font, to be made in the owner's texture tool, is still to come; until it exists no tag is drawn without the game (open question 10).
