@@ -2,8 +2,10 @@
 // An executable of its own, since it replaces the global operator new to count
 // heap allocations, which would count every other test's too.
 
+#include <vx/mesh/player_model.hpp>
 #include <vx/render/camera.hpp>
 #include <vx/render/renderer.hpp>
+#include <vx/world/skin.hpp>
 
 #include <dlfcn.h>
 #include <doctest/doctest.h>
@@ -111,6 +113,52 @@ TEST_CASE("after its first frames, a frame allocates nothing on the heap") {
 
     MESSAGE("60 frames: " << counted << " allocations by Perdix, " << by_drivers
                           << " by the driver");
+    CHECK(drawn);
+    CHECK(counted == 0);
+}
+
+TEST_CASE("with bodies to draw, a frame allocates nothing on the heap either") {
+    // RFC 0012's budget: bodies are posed into the frame slot's buffers,
+    // which are made with the renderer.
+    const std::array<vx::Skin, 1> skins{};
+    vx::Result<vx::render::Renderer> created =
+        vx::render::Renderer::create({.surface = std::nullopt,
+                                      .framebuffer = {.width = 64, .height = 32},
+                                      .validation = false,
+                                      .present_mode = vx::render::PresentMode::fifo,
+                                      .overlay = nullptr,
+                                      .block_textures = {},
+                                      .skins = skins});
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+
+    vx::render::Camera camera;
+    camera.position = {0.5, 1.0, 4.0};
+    std::array<vx::PlayerPose, 3> players{};
+    for (std::size_t body = 0; body < players.size(); ++body) {
+        players.at(body).feet = {.x = static_cast<double>(body), .y = 0.0, .z = 0.5};
+        players.at(body).skin = static_cast<std::uint32_t>(body); // the last has none: missing
+    }
+    const vx::render::FrameInputs inputs = {.sky = {.r = 0.2F, .g = 0.4F, .b = 1.0F, .a = 1.0F},
+                                            .camera = camera,
+                                            .cubes = {},
+                                            .players = players};
+    for (int frame = 0; frame < 3; ++frame) {
+        REQUIRE(renderer.render(inputs).has_value());
+    }
+    ours = 0;
+    drivers = 0;
+    bool drawn = true;
+    for (int frame = 0; frame < 60 && drawn; ++frame) {
+        players.at(0).limb_position += 0.5; // a pose that changes every frame
+        drawn = renderer.render(inputs).has_value();
+    }
+    const std::size_t counted = ours;
+    const std::size_t by_drivers = drivers;
+
+    MESSAGE("60 frames with 3 bodies: " << counted << " allocations by Perdix, " << by_drivers
+                                        << " by the driver");
     CHECK(drawn);
     CHECK(counted == 0);
 }
