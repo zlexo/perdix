@@ -21,7 +21,7 @@ enum class Flythrough : std::uint8_t { none, full, quick, endurance };
 struct Options {
     // Quit after this many frames, for smoke tests; 0 runs until the window closes.
     std::uint64_t frames = 0;
-    // Show the overlay from the first frame, not only once F3 is pressed.
+    // Show the overlay from the first frame, not only once O is pressed.
     bool overlay = false;
     // The folder holding the block pack's assets/; unset, it is found from
     // where the executable is.

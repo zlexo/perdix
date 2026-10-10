@@ -1,5 +1,6 @@
 #include "window.hpp"
 
+#include "keys.hpp"
 #include "overlay.hpp"
 
 #include <SDL3/SDL.h>
@@ -66,11 +67,19 @@ bool Window::handle_events(Overlay& overlay) {
         // The overlay decides what reaches it: while the mouse flies the
         // camera, only releases (Overlay::take_event).
         const bool overlay_took = overlay.take_event(event, mouse_captured());
-        if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F3 && !event.key.repeat) {
-            overlay.toggle();
-        }
-        if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F4 && !event.key.repeat) {
-            noclip_toggle_ = !noclip_toggle_;
+        // A letter typed into the overlay, as into a slider's value, is not
+        // a key's action.
+        if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && !overlay.wants_text()) {
+            switch (key_action(event.key.key)) {
+            case KeyAction::overlay:
+                overlay.toggle();
+                break;
+            case KeyAction::free_camera:
+                noclip_toggle_ = !noclip_toggle_;
+                break;
+            case KeyAction::none:
+                break;
+            }
         }
         if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.windowID == id &&
             !overlay_took) {

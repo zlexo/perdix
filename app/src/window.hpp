@@ -39,16 +39,16 @@ public:
 
     // Handles every pending event. False once the window should close. A
     // click into the window captures the mouse and Escape releases it, so a
-    // run that is never clicked, such as a smoke run, never grabs it. F3
+    // run that is never clicked, such as a smoke run, never grabs it. O
     // shows and hides the overlay, which has the events while it shows and
-    // the mouse is free; a click it takes captures nothing. F4 is kept for
-    // take_noclip_toggle.
+    // the mouse is free; a click it takes captures nothing. V is kept for
+    // take_noclip_toggle (keys.hpp).
     [[nodiscard]] bool handle_events(Overlay& overlay);
 
     [[nodiscard]] bool mouse_captured() const;
     // The captured mouse's motion since the last call.
     [[nodiscard]] MouseMotion take_mouse_motion() noexcept;
-    // Whether F4, which switches between walking and the noclip camera, was
+    // Whether V, which switches between walking and the noclip camera, was
     // pressed an odd number of times since the last call: two presses switch
     // there and back.
     [[nodiscard]] bool take_noclip_toggle() noexcept;
