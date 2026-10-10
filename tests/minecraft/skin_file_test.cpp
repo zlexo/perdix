@@ -1,6 +1,7 @@
 #include "../core/png_bytes.hpp"
 
 #include <vx/core/archive.hpp>
+#include <vx/core/file.hpp>
 #include <vx/core/result.hpp>
 #include <vx/minecraft/skin_file.hpp>
 #include <vx/world/skin.hpp>
@@ -10,6 +11,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -333,4 +336,27 @@ TEST_CASE("a default skin the jar cannot give is an error that says which and wh
     CHECK(message("zuri", vx::Arms::wide) ==
           "26.2.jar: 'assets/minecraft/textures/entity/player/wide/zuri.png' fails its CRC-32 "
           "check");
+}
+
+TEST_CASE("the owner's skin in the core pack reads as a 64 by 64 skin") {
+    const std::filesystem::path path =
+        std::filesystem::path(VX_SHIPPED_PACK_DIR) / "assets/core/textures/entity/player/zlex.png";
+    const std::optional<std::string> png = vx::read_file(path);
+    REQUIRE(png.has_value());
+    // Its header's width and height, big-endian after the signature and the
+    // header's length and type: not a legacy skin made square.
+    REQUIRE(png->size() > 24);
+    const auto field = [&](std::size_t at) {
+        std::uint32_t value = 0;
+        for (std::size_t index = 0; index < 4; ++index) {
+            value = (value << 8U) | static_cast<std::uint8_t>((*png)[at + index]);
+        }
+        return value;
+    };
+    CHECK(field(16) == 64);
+    CHECK(field(20) == 64);
+    const vx::Result<vx::Skin> skin = vx::minecraft::read_skin(bytes_of(*png), vx::Arms::slim);
+    if (!skin.has_value()) {
+        FAIL(skin.error().message);
+    }
 }
