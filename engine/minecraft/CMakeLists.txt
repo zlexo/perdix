@@ -34,6 +34,7 @@ add_library(vx_minecraft STATIC
     src/json.cpp
     src/made_textures.cpp
     src/png.cpp
+    src/skin_file.cpp
     src/texture_map.cpp
     src/version_description.cpp)
 add_library(vx::minecraft ALIAS vx_minecraft)
