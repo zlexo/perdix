@@ -2,6 +2,7 @@
 
 #include <vx/core/result.hpp>
 #include <vx/mesh/mesh_chunk.hpp>
+#include <vx/mesh/name_tag.hpp>
 #include <vx/mesh/player_model.hpp>
 #include <vx/render/buffer.hpp>
 #include <vx/render/camera.hpp>
@@ -15,6 +16,7 @@
 #include <vx/render/swapchain_choice.hpp>
 #include <vx/render/texture_table.hpp>
 #include <vx/world/coordinates.hpp>
+#include <vx/world/font.hpp>
 #include <vx/world/skin.hpp>
 
 #include <glm/ext/vector_int3_sized.hpp>
@@ -54,8 +56,11 @@ struct RendererDesc {
     // Player skins (RFC 0012), uploaded at startup: a pose's `skin` picks one
     // of them. A body whose skin is not among them shows the missing
     // texture's magenta and black, as a block does.
-    std::span<const Skin>
-        skins{}; // NOLINT(readability-redundant-member-init): partial designated init
+    // NOLINTNEXTLINE(readability-redundant-member-init): partial designated init
+    std::span<const Skin> skins{};
+    // The font name tags are drawn in (RFC 0012), uploaded at startup. None
+    // draws no tags.
+    const Font* font = nullptr;
     // The chunk arena's room, in quads (RFC 0007): 32 MiB, until the app
     // sizes it from its view distance.
     std::uint32_t chunk_arena_quads = std::uint32_t{1} << 22U;
@@ -88,8 +93,13 @@ struct FrameInputs {
     std::span<const glm::i64vec3> cubes;
     // The bodies the frame draws (RFC 0012), each posed between its ticks.
     // At most Renderer::max_players.
-    std::span<const PlayerPose>
-        players{}; // NOLINT(readability-redundant-member-init): partial designated init
+    // NOLINTNEXTLINE(readability-redundant-member-init): partial designated init
+    std::span<const PlayerPose> players{};
+    // The name tags the frame draws (RFC 0012), at most Renderer::max_tags.
+    // One farther from the camera than 64 blocks, or 32 for a discreet one,
+    // is not drawn, as the game hides them.
+    // NOLINTNEXTLINE(readability-redundant-member-init): partial designated init
+    std::span<const Tag> tags{};
     // The overlay's draw lists, from ImGui::GetDrawData(), drawn over the
     // frame; null draws none. Not const: drawing updates its textures' state.
     ImDrawData* overlay = nullptr;
@@ -108,6 +118,20 @@ enum class BlockFilter : std::uint8_t {
     sharpened_isotropic,
     // The classic look: crisp up close, shimmering far away.
     nearest,
+};
+
+// How many bodies and name tags a frame drew.
+struct FigureCounts {
+    std::uint32_t bodies = 0;
+    std::uint32_t tags = 0;
+};
+
+// One name tag a frame draws: where its quads start in the frame's tag
+// buffer, how many vertices they are, and whether it is a sneaking player's.
+struct TagRun {
+    std::uint32_t first = 0;
+    std::uint32_t count = 0;
+    bool discreet = false;
 };
 
 enum class Frame : std::uint8_t {
@@ -163,12 +187,14 @@ public:
     static constexpr std::size_t max_cubes = 256;
     // How many bodies one frame can draw (RFC 0012).
     static constexpr std::size_t max_players = 64;
+    // How many name tags one frame can draw (RFC 0012).
+    static constexpr std::size_t max_tags = 64;
 
     // Clears the target to the sky, makes the frame's chunk changes, draws
-    // the cubes, the arena's chunks and the bodies as the camera sees them, and presents
-    // the target when it is a window's. An error from the chunk changes or
-    // the draw lists leaves staged copies that never ran: the renderer is
-    // not drawn with again.
+    // the cubes, the arena's chunks, the bodies and their name tags as the
+    // camera sees them, and presents the target when it is a window's. An
+    // error from the chunk changes or the draw lists leaves staged copies
+    // that never ran: the renderer is not drawn with again.
     [[nodiscard]] Result<Frame> render(const FrameInputs& inputs);
 
     // Headless only: the last frame's pixels, 8-bit RGBA, row after row.
@@ -254,6 +280,17 @@ private:
         std::vector<std::uint32_t> slots;
     };
 
+    // What draws name tags (RFC 0012): a pipeline for the pass seen through
+    // walls and one for the normal pass, and the font, when there is one:
+    // its atlas, its slot of the texture table and its advances.
+    struct TextDrawing {
+        GraphicsPipeline see_through;
+        GraphicsPipeline normal;
+        std::optional<Image> font;
+        std::uint32_t slot = 0;
+        std::array<std::uint8_t, 128> advances{};
+    };
+
     // What draws chunks (RFC 0003, RFC 0007): a pipeline for each pass,
     // from one shader, and the index buffer every command shares, 0, 1, 2,
     // 2, 3, 0 for each quad, as many as a chunk can have.
@@ -266,18 +303,30 @@ private:
 
     Renderer(Context context, std::optional<Swapchain> swapchain, std::optional<Image> offscreen,
              Image depth, TextureTable textures, Image block_textures, Cube cube,
-             BodyDrawing body_drawing, ChunkDrawing chunk_drawing, ChunkRenderer chunks,
-             Extent framebuffer, PresentMode present_mode);
+             BodyDrawing body_drawing, TextDrawing text_drawing, ChunkDrawing chunk_drawing,
+             ChunkRenderer chunks, Extent framebuffer, PresentMode present_mode);
     [[nodiscard]] Result<void> create_frame_objects();
     [[nodiscard]] Result<void> upload_at_startup(std::span<const std::byte> block_textures,
-                                                 std::span<const Skin> skins);
+                                                 std::span<const Skin> skins, const Font* font);
     // Poses the frame's bodies into frame slot `slot`'s buffers; how many.
     [[nodiscard]] Result<std::uint32_t> write_bodies(std::span<const PlayerPose> players,
                                                      const glm::i64vec3& camera_block,
                                                      std::size_t slot,
                                                      std::span<std::uint32_t> skins);
+    // Both of these for the frame: how many bodies and tags it draws.
+    [[nodiscard]] Result<FigureCounts>
+    write_figures(const FrameInputs& inputs, const glm::i64vec3& camera_block, std::size_t slot,
+                  std::span<std::uint32_t> skins, std::span<TagRun> runs);
+    // Lays out the frame's name tags into frame slot `slot`'s buffers, the
+    // farthest first, leaving out those too far to show; how many it laid
+    // out, each one's run in `runs`.
+    [[nodiscard]] Result<std::uint32_t> write_tags(std::span<const Tag> tags, const Camera& camera,
+                                                   const glm::i64vec3& camera_block,
+                                                   std::size_t slot, std::span<TagRun> runs);
     [[nodiscard]] Result<void> add_rendered_semaphores();
     [[nodiscard]] Result<void> recreate_target();
+    // Every pipeline again, for a target of `format`.
+    [[nodiscard]] Result<void> rebuild_pipelines(VkFormat format);
     // Makes the target again where the swapchain is stale or the framebuffer
     // changed size since it was made.
     [[nodiscard]] Result<void> refresh_target();
@@ -294,6 +343,7 @@ private:
     Image block_textures_;
     Cube cube_;
     BodyDrawing body_drawing_;
+    TextDrawing text_drawing_;
     ChunkDrawing chunk_drawing_;
     ChunkRenderer chunks_;
     // Where set_chunk's chunk is, and the generation its next mesh takes.
@@ -327,6 +377,14 @@ private:
     std::vector<Buffer> body_origins_;
     // Where a body is posed before it is copied into its slot's buffer.
     std::array<BodyVertex, player_vertices> posed_{};
+    // Each slot's name tags, rewritten every frame: up to max_tags tags'
+    // quads, and each tag's block relative to the camera's.
+    std::vector<Buffer> tag_vertices_;
+    std::vector<Buffer> tag_origins_;
+    // Where a tag is laid out before it is copied, and the order tags are
+    // drawn in, the farthest first.
+    std::array<TagVertex, max_tag_vertices> laid_{};
+    std::array<std::size_t, max_tags> tag_order_{};
     // One per swapchain image, not per frame: the presentation engine may hold
     // one after the frame that signaled it is done (RFC 0001).
     std::vector<VkSemaphore> image_rendered_;
