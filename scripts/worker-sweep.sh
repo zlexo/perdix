@@ -120,11 +120,14 @@ fi
 out=build/sweep/$(date +%Y-%m-%d-%H%M)
 mkdir -p "$out"
 
-for mode in "${modes[@]}"; do
+# Run by run, each a pass over every configuration, so the machine's
+# warming over the sweep (the reference machine has no fan) falls on every
+# configuration alike instead of on the last ones.
+for run in $(seq 1 "$runs"); do
     for count in "${workers[@]}"; do
-        for run in $(seq 1 "$runs"); do
+        for mode in "${modes[@]}"; do
             report="$out/$mode-$count-$run.md"
-            echo "$mode, $count workers, run $run of $runs" >&2
+            echo "run $run of $runs: $mode, $count workers" >&2
             if ! "$perdix" --flythrough --workers="$count" --worker-qos="$mode" >"$report"; then
                 echo "error: the flythrough failed: $report" >&2
                 exit 1
