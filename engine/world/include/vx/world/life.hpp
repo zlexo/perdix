@@ -97,8 +97,13 @@ struct Onlooker {
     bool sneaking = false;
 };
 
-// The goals of Perdix's life (RFC 0012), for whatever shows what he does.
-enum class LifeGoal : std::uint8_t { stroll, look_at_player, look_around };
+// What Perdix does with himself (RFC 0012), settable at any time: his own
+// life; following you, as a tamed wolf follows its owner; standing still.
+enum class LifeMode : std::uint8_t { life, follow, still };
+
+// The goals of Perdix's life (RFC 0012), in their order, for whatever shows
+// what he does.
+enum class LifeGoal : std::uint8_t { go_back, follow, stroll, look_at_player, look_around };
 
 // One tick of Perdix's life: what RFC 0010's tick moves his body with, the
 // keys and the walking yaw, and where his head looks, for RFC 0012's
@@ -131,6 +136,17 @@ struct LifeTick {
 // positions give the same life, and a tick allocates nothing beyond what
 // the world's boxes take in `scratch`.
 //
+// In follow, as a tamed wolf (26.2's FollowOwnerGoal, numbers from the
+// jar), a goal before all of these claims his legs and eyes once you are
+// 10 blocks away or more, and walks him at you, looking at you, aiming
+// again at where you are every 10 ticks, until he is within 2; beyond 16
+// blocks he sprints, where the wolf would teleport at 12: our choice, and
+// he never teleports. The rest of his life goes on around it, as a wolf's
+// does. In still he stands: of his goals only looking at you runs, as a
+// sitting wolf's eyes do. In life, beyond 48 blocks from you, a goal
+// before all the others walks him back as following does, until he is
+// within 24: the leash, our rule.
+//
 // He climbs steps as the game's auto-jump climbs them (auto_jumps()): after
 // a move that finds one, he holds Space on the next tick, and RFC 0010's
 // tick jumps. A Player that may fly would take two such presses within 6
@@ -157,6 +173,11 @@ public:
     void after_move(const Player& body, Vec3d moved, const BlockBoxes& world,
                     std::vector<Box>& scratch);
 
+    // Changes what he does from the next tick: goals the new mode does not
+    // run stop now.
+    void set_mode(LifeMode mode) noexcept;
+    [[nodiscard]] LifeMode mode() const noexcept { return mode_; }
+
     [[nodiscard]] bool running(LifeGoal goal) const noexcept;
     // How many times `goal` has started.
     [[nodiscard]] std::uint64_t starts(LifeGoal goal) const noexcept;
@@ -164,7 +185,7 @@ public:
     [[nodiscard]] std::optional<Vec3d> walk_target() const noexcept { return target_; }
 
 private:
-    static constexpr std::size_t goal_count = 3;
+    static constexpr std::size_t goal_count = 5;
     // What a goal claims: his legs, his eyes.
     enum class Claim : std::uint8_t { legs, eyes };
     static constexpr std::size_t claim_count = 2;
@@ -177,11 +198,14 @@ private:
     void tick_goal(LifeGoal goal, const Player& body, const Onlooker& you);
     void choose(const Player& body, const Onlooker& you, const BlockBoxes& world,
                 std::vector<Box>& scratch);
+    // Whether the mode runs `goal`.
+    [[nodiscard]] bool in_mode(LifeGoal goal) const noexcept;
     // The tick's walk at the target, if there is one: the keys, and the
     // walking yaw turned toward it.
-    [[nodiscard]] MovementKeys walk(const Player& body);
+    [[nodiscard]] MovementKeys walk(const Player& body, const Onlooker& you);
 
     LifeRandom random_;
+    LifeMode mode_ = LifeMode::life;
     std::uint64_t ticks_ = 0;
     std::array<bool, goal_count> running_{};
     std::array<std::uint64_t, goal_count> starts_{};
@@ -198,6 +222,7 @@ private:
     std::optional<Vec3d> target_;
     Vec3d stuck_from_;
     std::uint64_t stuck_checked_ = 0;
+    int retarget_ = 0; // choices before following aims at you again
     // The last tick's choices, which auto-jump reads after the move, and
     // whether the next tick jumps.
     LifeTick last_;

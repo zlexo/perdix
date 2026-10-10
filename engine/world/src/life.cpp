@@ -90,7 +90,20 @@ constexpr float around_chance = 0.02F;
 constexpr int around_least = 20;
 constexpr int around_spread = 20;
 
-constexpr std::array goals = {LifeGoal::stroll, LifeGoal::look_at_player, LifeGoal::look_around};
+// Following, from the jar (FollowOwnerGoal, with the wolf's numbers): it
+// starts 10 blocks away or more and ends within 2, and aims again at where
+// you are every 10 ticks, 5 choices. Beyond 16 blocks Perdix sprints, our
+// rule where the wolf teleports. Beyond 48 blocks in his own life he goes
+// back to you, as following goes, until within 24.
+constexpr double follow_from = 10.0;
+constexpr double follow_to = 2.0;
+constexpr int retarget_choices = 5;
+constexpr double sprint_beyond = 16.0;
+constexpr double back_from = 48.0;
+constexpr double back_to = 24.0;
+
+constexpr std::array goals = {LifeGoal::go_back, LifeGoal::follow, LifeGoal::stroll,
+                              LifeGoal::look_at_player, LifeGoal::look_around};
 
 // `from` turned toward `to` by at most `most`, the shorter way round.
 double turned_toward(double from, double to, double most) noexcept {
@@ -387,7 +400,7 @@ LifeTick Life::tick(const Player& body, float body_yaw, const Onlooker& you,
     }
     // Then, as the game's mob does, the walk at a target, then the head;
     // and the jump the last move's auto-jump found.
-    MovementKeys held = walk(body);
+    MovementKeys held = walk(body, you);
     look_.tick(eyes(body), body_yaw, target_.has_value());
     held.jump = jump_next_;
     jump_next_ = false;
@@ -401,6 +414,27 @@ LifeTick Life::tick(const Player& body, float body_yaw, const Onlooker& you,
 void Life::after_move(const Player& body, Vec3d moved, const BlockBoxes& world,
                       std::vector<Box>& scratch) {
     jump_next_ = auto_jumps(body, last_.input, last_.look_pitch, moved, world, numbers_, scratch);
+}
+
+void Life::set_mode(LifeMode mode) noexcept {
+    mode_ = mode;
+    for (const LifeGoal goal : goals) {
+        if (running(goal) && !in_mode(goal)) {
+            stop(goal);
+        }
+    }
+}
+
+bool Life::in_mode(LifeGoal goal) const noexcept {
+    switch (mode_) {
+    case LifeMode::life:
+        return goal != LifeGoal::follow;
+    case LifeMode::follow:
+        return goal != LifeGoal::go_back;
+    case LifeMode::still:
+        return goal == LifeGoal::look_at_player;
+    }
+    return false;
 }
 
 bool Life::running(LifeGoal goal) const noexcept {
@@ -418,6 +452,9 @@ void Life::choose(const Player& body, const Onlooker& you, const BlockBoxes& wor
         static constexpr std::array eyes = {Claim::eyes};
         static constexpr std::array legs_and_eyes = {Claim::legs, Claim::eyes};
         switch (goal) {
+        case LifeGoal::go_back:
+        case LifeGoal::follow:
+            return legs_and_eyes;
         case LifeGoal::stroll:
             return legs;
         case LifeGoal::look_at_player:
@@ -443,7 +480,7 @@ void Life::choose(const Player& body, const Onlooker& you, const BlockBoxes& wor
     // everything they claim is free or held by a goal after them, and their
     // chance comes; those holders stop.
     for (const LifeGoal goal : goals) {
-        if (running(goal)) {
+        if (running(goal) || !in_mode(goal)) {
             continue;
         }
         const bool claimable = std::ranges::all_of(claims(goal), [&](Claim claim) {
@@ -467,6 +504,10 @@ void Life::choose(const Player& body, const Onlooker& you, const BlockBoxes& wor
 bool Life::can_use(LifeGoal goal, const Player& body, const Onlooker& you, const BlockBoxes& world,
                    std::vector<Box>& scratch) {
     switch (goal) {
+    case LifeGoal::go_back:
+        return squared_distance(body.position, you.feet) > back_from * back_from;
+    case LifeGoal::follow:
+        return squared_distance(body.position, you.feet) >= follow_from * follow_from;
     case LifeGoal::stroll: {
         if (random_.below(stroll_one_in) != 0) {
             return false;
@@ -495,6 +536,11 @@ bool Life::can_use(LifeGoal goal, const Player& body, const Onlooker& you, const
 
 bool Life::can_go_on(LifeGoal goal, const Player& body, const Onlooker& you) const {
     switch (goal) {
+    case LifeGoal::go_back:
+        return target_.has_value() && squared_distance(body.position, you.feet) > back_to * back_to;
+    case LifeGoal::follow:
+        return target_.has_value() &&
+               squared_distance(body.position, you.feet) > follow_to * follow_to;
     case LifeGoal::stroll:
         return target_.has_value();
     case LifeGoal::look_at_player:
@@ -512,6 +558,11 @@ void Life::start(LifeGoal goal, const Player& body) {
     running_[static_cast<std::size_t>(goal)] = true;
     ++starts_[static_cast<std::size_t>(goal)];
     switch (goal) {
+    case LifeGoal::go_back:
+    case LifeGoal::follow:
+        // The first tick aims at you.
+        retarget_ = 0;
+        return;
     case LifeGoal::stroll:
         target_ = spot_;
         stuck_from_ = body.position;
@@ -531,13 +582,25 @@ void Life::start(LifeGoal goal, const Player& body) {
 
 void Life::stop(LifeGoal goal) {
     running_[static_cast<std::size_t>(goal)] = false;
-    if (goal == LifeGoal::stroll) {
+    if (goal == LifeGoal::go_back || goal == LifeGoal::follow || goal == LifeGoal::stroll) {
         target_.reset();
     }
 }
 
 void Life::tick_goal(LifeGoal goal, const Player& body, const Onlooker& you) {
     switch (goal) {
+    case LifeGoal::go_back:
+    case LifeGoal::follow:
+        // Eyes on you, and every 5 choices a walk at where you are, its
+        // check for being stuck begun again, as a new path's is.
+        look_.look_at(eyes(you));
+        if (--retarget_ <= 0) {
+            retarget_ = retarget_choices;
+            target_ = you.feet;
+            stuck_from_ = body.position;
+            stuck_checked_ = ticks_;
+        }
+        return;
     case LifeGoal::stroll:
         return; // the walk does it
     case LifeGoal::look_at_player:
@@ -551,7 +614,7 @@ void Life::tick_goal(LifeGoal goal, const Player& body, const Onlooker& you) {
     }
 }
 
-MovementKeys Life::walk(const Player& body) {
+MovementKeys Life::walk(const Player& body, const Onlooker& you) {
     if (!target_) {
         return {};
     }
@@ -571,11 +634,14 @@ MovementKeys Life::walk(const Player& body) {
         stuck_checked_ = ticks_;
     }
     // The move control: the walking yaw turns toward the target by at most
-    // 90 degrees, and he walks on.
+    // 90 degrees, and he walks on; following you from far off, he sprints,
+    // and RFC 0010's sprint then lasts until he stops.
     const Vec3d to = *target_ - body.position;
     walking_yaw_ = static_cast<float>(
         turned_toward(static_cast<double>(walking_yaw_), std::atan2(-to.x, -to.z), walking_turn));
-    return {.forward = true};
+    const bool far = squared_distance(body.position, you.feet) > sprint_beyond * sprint_beyond;
+    return {.forward = true,
+            .sprint = far && (running(LifeGoal::follow) || running(LifeGoal::go_back))};
 }
 
 std::uint64_t LifeRandom::next() noexcept {
