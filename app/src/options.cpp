@@ -98,12 +98,27 @@ Result<bool> parse_run_option(std::string_view arg, Options& options) {
     return true;
 }
 
-// The options that dress the players (RFC 0012): --skin= and --perdix-skin=.
+// The options for the players (RFC 0012): --skin=, --perdix-skin= and
+// --perdix=.
 // True when `arg` was one of them, an error when its value is empty, false
 // when it is another option.
 Result<bool> parse_figure_option(std::string_view arg, Options& options) {
     constexpr std::string_view skin_flag = "--skin=";
     constexpr std::string_view perdix_skin_flag = "--perdix-skin=";
+    constexpr std::string_view perdix_flag = "--perdix=";
+    if (arg.starts_with(perdix_flag)) {
+        const std::string_view mode = arg.substr(perdix_flag.size());
+        if (mode == "life") {
+            options.perdix = LifeMode::life;
+        } else if (mode == "follow") {
+            options.perdix = LifeMode::follow;
+        } else if (mode == "still") {
+            options.perdix = LifeMode::still;
+        } else {
+            return Error{"--perdix takes life, follow or still, not \"" + std::string(mode) + "\""};
+        }
+        return true;
+    }
     for (const auto& [flag, value] :
          {std::pair{skin_flag, &options.skin}, std::pair{perdix_skin_flag, &options.perdix_skin}}) {
         if (arg.starts_with(flag)) {
@@ -156,7 +171,8 @@ Result<Options> parse_options(std::span<const std::string_view> args) {
                          "\": try --frames=N, --overlay, --pack=DIR, --minecraft=PATH, "
                          "--minecraft-version=ID, --no-minecraft, --flythrough[=quick|long], "
                          "--workers=N, --worker-qos=switching|utility|user-initiated, "
-                         "--skin=NAME[:slim] or --perdix-skin=NAME[:slim]"};
+                         "--skin=NAME[:slim], --perdix-skin=NAME[:slim] or "
+                         "--perdix=life|follow|still"};
         }
     }
     if (options.no_minecraft && (options.minecraft || options.minecraft_version)) {

@@ -2,6 +2,7 @@
 
 #include <vx/core/job_system.hpp>
 #include <vx/core/result.hpp>
+#include <vx/world/life.hpp>
 
 #include <doctest/doctest.h>
 
@@ -128,4 +129,20 @@ TEST_CASE("--skin and --perdix-skin name the skins the players wear") {
     CHECK(both.value().perdix_skin == "zlex");
     CHECK(error_of({"--skin="}).starts_with("--skin= needs a skin"));
     CHECK(error_of({"--perdix-skin="}).starts_with("--perdix-skin= needs a skin"));
+}
+
+TEST_CASE("--perdix sets what Perdix does, his own life without it") {
+    const vx::Result<vx::app::Options> none = parse({});
+    REQUIRE(none.has_value());
+    CHECK(none.value().perdix == vx::LifeMode::life);
+    for (const auto& [arg, mode] : {std::pair{"--perdix=life", vx::LifeMode::life},
+                                    std::pair{"--perdix=follow", vx::LifeMode::follow},
+                                    std::pair{"--perdix=still", vx::LifeMode::still}}) {
+        INFO(arg);
+        const vx::Result<vx::app::Options> set = parse({arg});
+        REQUIRE(set.has_value());
+        CHECK(set.value().perdix == mode);
+    }
+    CHECK(error_of({"--perdix=sit"}) == "--perdix takes life, follow or still, not \"sit\"");
+    CHECK(error_of({"--perdix="}) == "--perdix takes life, follow or still, not \"\"");
 }

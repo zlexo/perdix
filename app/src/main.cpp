@@ -53,6 +53,7 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <span>
 #include <string>
@@ -206,17 +207,28 @@ void move_player(Mover& mover, vx::app::Window& window, vx::render::Camera& came
     camera.fov_y = mover.field_of_view * static_cast<float>(mover.frame.fov_factor_at(between));
 }
 
+// Perdix as the world thread last sent him (RFC 0012): his last two ticks
+// and when the last fell due.
+struct Seen {
+    vx::app::WalkingFrame frame;
+    std::chrono::steady_clock::time_point tick_at;
+    bool present = false;
+};
+
 // The world thread's messages: the player's frames and landings for the
 // mover, the meshes and unloads for the uploads, and streaming's reports for
 // the overlay.
 void take_from_world(vx::app::WorldLoop& loop, vx::app::StreamedMeshes& meshes, Mover& mover,
-                     vx::app::Overlay& overlay, std::vector<vx::app::ToMain>& messages) {
+                     Seen& perdix, vx::app::Overlay& overlay,
+                     std::vector<vx::app::ToMain>& messages) {
     loop.take(messages);
     meshes.receive(messages);
     for (const vx::app::ToMain& message : messages) {
         if (message.kind == vx::app::ToMain::Kind::player) {
             mover.frame = message.player;
             mover.tick_at = message.tick_at;
+        } else if (message.kind == vx::app::ToMain::Kind::perdix) {
+            perdix = {.frame = message.player, .tick_at = message.tick_at, .present = true};
         } else if (message.kind == vx::app::ToMain::Kind::landed) {
             mover.landing = false;
             mover.noclip = !message.landed;
@@ -227,48 +239,69 @@ void take_from_world(vx::app::WorldLoop& loop, vx::app::StreamedMeshes& meshes, 
     messages.clear();
 }
 
-// The bodies and name tags a frame draws (RFC 0012).
+// The bodies and name tags a frame draws (RFC 0012): Perdix's, and yours
+// in the free camera.
 struct FrameFigures {
-    std::array<vx::PlayerPose, 1> poses{};
-    std::array<vx::Tag, 1> tags{};
+    std::array<vx::PlayerPose, 2> poses{};
+    std::array<vx::Tag, 2> tags{};
     std::size_t bodies = 0;
     std::size_t tags_shown = 0;
 };
+
+// Where the player looks at first: toward -x and -z, an eighth of a turn
+// left of north.
+constexpr float spawn_yaw = 0.785F;
+
+// A body between its last two ticks, `between` of the way, in skin `skin`.
+vx::PlayerPose pose_of(const vx::app::WalkingFrame& frame, double between, std::uint32_t skin,
+                       const vx::app::StartupFigures& figures) {
+    const vx::BodyAt at = vx::body_at(frame.previous_motion, frame.motion, between);
+    return {.feet = frame.previous + ((frame.position - frame.previous) * between),
+            .limb_position = at.limb_position,
+            .limb_amount = at.limb_amount,
+            .age = static_cast<double>(frame.ticks) + between,
+            .body_yaw = at.body_yaw,
+            .head_yaw = at.head_yaw,
+            .head_pitch = at.head_pitch,
+            .skin = skin,
+            .arms = skin < figures.skins.size() ? figures.skins[skin].arms : vx::Arms::wide,
+            .crouching = frame.crouching};
+}
+
+// Its name tag, as the game hangs one over a player.
+vx::Tag tag_of(const vx::PlayerPose& pose, std::string_view name) {
+    return {.anchor = vx::tag_anchor(pose.feet, pose.crouching),
+            .text = name,
+            .discreet = pose.crouching};
+}
 
 // The owner's Minecraft name, over your body when the free camera sees it
 // (RFC 0012).
 constexpr std::string_view your_name = "Zlex";
 
-// Your body while the free camera is out of it (RFC 0012), where it stands
-// between its last two ticks, in your skin and with your name over it; none
-// while you walk, the camera being your eyes.
-FrameFigures figures_shown(const Mover& mover, const vx::app::StartupFigures& figures,
+// The frame's bodies, each between its last two ticks with its name over
+// it (RFC 0012): Perdix in his skin, and yours while the free camera is out
+// of it; not while you walk, the camera being your eyes.
+FrameFigures figures_shown(const Mover& mover, const Seen& perdix,
+                           const vx::app::StartupFigures& figures,
                            std::chrono::steady_clock::time_point now) {
     FrameFigures shown;
-    if (!mover.noclip) {
-        return shown;
+    const auto add = [&](const vx::PlayerPose& pose, std::string_view name) {
+        shown.poses.at(shown.bodies) = pose;
+        shown.tags.at(shown.tags_shown) = tag_of(pose, name);
+        ++shown.bodies;
+        ++shown.tags_shown;
+    };
+    if (perdix.present) {
+        const double between =
+            std::clamp(std::chrono::duration<double>(now - perdix.tick_at) /
+                           std::chrono::duration<double>(vx::app::WorldLoop::tick_length),
+                       0.0, 1.0);
+        add(pose_of(perdix.frame, between, figures.perdix, figures), "Perdix");
     }
-    const vx::app::WalkingFrame& frame = mover.frame;
-    const double between = between_ticks(mover, now);
-    const vx::BodyAt at = vx::body_at(frame.previous_motion, frame.motion, between);
-    const vx::Vec3d feet = frame.previous + ((frame.position - frame.previous) * between);
-    const vx::Arms arms =
-        figures.yours < figures.skins.size() ? figures.skins[figures.yours].arms : vx::Arms::wide;
-    shown.poses[0] = {.feet = feet,
-                      .limb_position = at.limb_position,
-                      .limb_amount = at.limb_amount,
-                      .age = static_cast<double>(frame.ticks) + between,
-                      .body_yaw = at.body_yaw,
-                      .head_yaw = at.head_yaw,
-                      .head_pitch = at.head_pitch,
-                      .skin = figures.yours,
-                      .arms = arms,
-                      .crouching = frame.crouching};
-    shown.tags[0] = {.anchor = vx::tag_anchor(feet, frame.crouching),
-                     .text = your_name,
-                     .discreet = frame.crouching};
-    shown.bodies = 1;
-    shown.tags_shown = 1;
+    if (mover.noclip) {
+        add(pose_of(mover.frame, between_ticks(mover, now), figures.yours, figures), your_name);
+    }
     return shown;
 }
 
@@ -735,6 +768,20 @@ int main(int argc, char* argv[]) {
         settings.region.view_distance = plan->view_distance;
     } else {
         settings.player = vx::app::WorldLoopSettings::PlayerStart{.spawn = spawn, .lowest = -64.0};
+        // Perdix appears on the ground 5 blocks ahead of where you look at
+        // first, facing you (RFC 0012, open question 8).
+        const double ahead_x = spawn.x - (5.0 * std::sin(static_cast<double>(spawn_yaw)));
+        const double ahead_z = spawn.z - (5.0 * std::cos(static_cast<double>(spawn_yaw)));
+        const auto column_x = static_cast<std::int32_t>(std::floor(ahead_x));
+        const auto column_z = static_cast<std::int32_t>(std::floor(ahead_z));
+        settings.perdix = vx::app::WorldLoopSettings::PerdixStart{
+            .spawn = {.x = ahead_x,
+                      .y = static_cast<double>(generator.height(column_x, column_z)),
+                      .z = ahead_z},
+            .facing = static_cast<float>(
+                vx::wrap_turn(static_cast<double>(spawn_yaw) + std::numbers::pi)),
+            .mode = options.value().perdix,
+            .seed = world_seed ^ 0x9E37'79B9'7F4A'7C15ULL};
     }
     settings.physics = registry.physics();
 
@@ -788,8 +835,9 @@ int main(int argc, char* argv[]) {
     // 0010); V switches to RFC 0001's noclip camera and back.
     vx::render::Camera camera;
     camera.position = {spawn.x, spawn.y + vx::eye_height(vx::Pose::standing), spawn.z};
-    camera.yaw = 0.785F;  // toward -x and -z, an eighth of a turn left of north
-    camera.pitch = 0.25F; // a little up, at the spire
+    camera.yaw = spawn_yaw; // toward -x and -z, an eighth of a turn left of north
+    camera.pitch = 0.25F;   // a little up, at the spire
+    Seen perdix;
     Mover mover{.frame = {},
                 .tick_at = {},
                 .field_of_view = camera.fov_y,
@@ -828,7 +876,7 @@ int main(int argc, char* argv[]) {
         const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - last);
         const float seconds = std::min(std::chrono::duration<float>(elapsed).count(), 0.1F);
         last = now;
-        take_from_world(loop, meshes, mover, overlay, messages);
+        take_from_world(loop, meshes, mover, perdix, overlay, messages);
         move_player(mover, window.value(), camera, loop, seconds, now);
         send_viewer(loop, camera, aspect_of(window.value().framebuffer_size()));
         overlay.set_movement({.noclip = mover.noclip,
@@ -843,7 +891,7 @@ int main(int argc, char* argv[]) {
         const vx::render::Camera shown = shown_camera(mover, camera, now);
         const vx::Result<vx::render::Frame> rendered =
             draw_frame(renderer.value(), overlay, window.value(), shown, meshes, meshing,
-                       mover.bobbing, distance, figures_shown(mover, figures, now));
+                       mover.bobbing, distance, figures_shown(mover, perdix, figures, now));
         if (!rendered.has_value()) {
             std::cerr << "error: " << rendered.error().message << '\n';
             return 1;
