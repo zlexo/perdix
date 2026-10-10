@@ -22,6 +22,8 @@
 #include <vx/core/thread.hpp>
 #include <vx/core/vec3d.hpp>
 #include <vx/core/version.hpp>
+#include <vx/mesh/name_tag.hpp>
+#include <vx/mesh/player_model.hpp>
 #include <vx/render/block_pack.hpp>
 #include <vx/render/camera.hpp>
 #include <vx/render/chunk_renderer.hpp>
@@ -33,6 +35,7 @@
 #include <vx/render/swapchain_choice.hpp>
 #include <vx/world/block_registry.hpp>
 #include <vx/world/block_state.hpp>
+#include <vx/world/body_motion.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/movement.hpp>
 #include <vx/world/placeholder_generator.hpp>
@@ -165,8 +168,10 @@ void move_player(Mover& mover, vx::app::Window& window, vx::render::Camera& came
     if (window.take_noclip_toggle()) {
         if (!mover.noclip) {
             mover.noclip = true;
+            // No keys held, the look as it was: the body stays as you left it.
             vx::app::ToWorld still;
             still.kind = vx::app::ToWorld::Kind::input;
+            still.input = {.held = {}, .yaw = camera.yaw, .pitch = camera.pitch};
             send(loop, still);
         } else if (!mover.landing) {
             vx::app::ToWorld land;
@@ -192,7 +197,8 @@ void move_player(Mover& mover, vx::app::Window& window, vx::render::Camera& came
                     seconds);
     vx::app::ToWorld keys;
     keys.kind = vx::app::ToWorld::Kind::input;
-    keys.input = {.held = vx::app::read_walking_keys(window), .yaw = camera.yaw};
+    keys.input = {
+        .held = vx::app::read_walking_keys(window), .yaw = camera.yaw, .pitch = camera.pitch};
     send(loop, keys);
     const double between = between_ticks(mover, now);
     const vx::Vec3d eye = mover.frame.eye_at(between);
@@ -219,6 +225,51 @@ void take_from_world(vx::app::WorldLoop& loop, vx::app::StreamedMeshes& meshes, 
         }
     }
     messages.clear();
+}
+
+// The bodies and name tags a frame draws (RFC 0012).
+struct FrameFigures {
+    std::array<vx::PlayerPose, 1> poses{};
+    std::array<vx::Tag, 1> tags{};
+    std::size_t bodies = 0;
+    std::size_t tags_shown = 0;
+};
+
+// The owner's Minecraft name, over your body when the free camera sees it
+// (RFC 0012).
+constexpr std::string_view your_name = "Zlex";
+
+// Your body while the free camera is out of it (RFC 0012), where it stands
+// between its last two ticks, in your skin and with your name over it; none
+// while you walk, the camera being your eyes.
+FrameFigures figures_shown(const Mover& mover, const vx::app::StartupFigures& figures,
+                           std::chrono::steady_clock::time_point now) {
+    FrameFigures shown;
+    if (!mover.noclip) {
+        return shown;
+    }
+    const vx::app::WalkingFrame& frame = mover.frame;
+    const double between = between_ticks(mover, now);
+    const vx::BodyAt at = vx::body_at(frame.previous_motion, frame.motion, between);
+    const vx::Vec3d feet = frame.previous + ((frame.position - frame.previous) * between);
+    const vx::Arms arms =
+        figures.yours < figures.skins.size() ? figures.skins[figures.yours].arms : vx::Arms::wide;
+    shown.poses[0] = {.feet = feet,
+                      .limb_position = at.limb_position,
+                      .limb_amount = at.limb_amount,
+                      .age = static_cast<double>(frame.ticks) + between,
+                      .body_yaw = at.body_yaw,
+                      .head_yaw = at.head_yaw,
+                      .head_pitch = at.head_pitch,
+                      .skin = figures.yours,
+                      .arms = arms,
+                      .crouching = frame.crouching};
+    shown.tags[0] = {.anchor = vx::tag_anchor(feet, frame.crouching),
+                     .text = your_name,
+                     .discreet = frame.crouching};
+    shown.bodies = 1;
+    shown.tags_shown = 1;
+    return shown;
 }
 
 // Where the camera is and looks, for what streams in first (RFC 0006).
@@ -315,15 +366,21 @@ struct WorldReports {
 vx::Result<vx::render::Frame>
 draw_frame(vx::render::Renderer& renderer, vx::app::Overlay& overlay, const vx::app::Window& window,
            const vx::render::Camera& camera, vx::app::StreamedMeshes& meshes,
-           vx::app::ChunkMeshing& meshing, bool& bobbing, vx::app::RenderDistance& distance) {
+           vx::app::ChunkMeshing& meshing, bool& bobbing, vx::app::RenderDistance& distance,
+           const FrameFigures& figures = {}) {
     // A daytime sky blue, #78A7FF in sRGB.
     constexpr vx::render::Color sky = {.r = 0.188F, .g = 0.386F, .b = 1.0F, .a = 1.0F};
     renderer.resize(window.framebuffer_size());
     overlay.set_chunk_backlog(meshes.waiting());
     ImDrawData* const shown =
         overlay.build(renderer, camera, window.mouse_captured(), meshing, bobbing, distance);
-    return renderer.render(
-        {.sky = sky, .camera = camera, .cubes = {}, .overlay = shown, .chunk_changes = &meshes});
+    return renderer.render({.sky = sky,
+                            .camera = camera,
+                            .cubes = {},
+                            .players = std::span(figures.poses).first(figures.bodies),
+                            .tags = std::span(figures.tags).first(figures.tags_shown),
+                            .overlay = shown,
+                            .chunk_changes = &meshes});
 }
 
 // With validation on, a run that broke Vulkan's rules fails, so a smoke run
@@ -786,7 +843,7 @@ int main(int argc, char* argv[]) {
         const vx::render::Camera shown = shown_camera(mover, camera, now);
         const vx::Result<vx::render::Frame> rendered =
             draw_frame(renderer.value(), overlay, window.value(), shown, meshes, meshing,
-                       mover.bobbing, distance);
+                       mover.bobbing, distance, figures_shown(mover, figures, now));
         if (!rendered.has_value()) {
             std::cerr << "error: " << rendered.error().message << '\n';
             return 1;

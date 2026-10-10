@@ -2,6 +2,7 @@
 
 #include <vx/core/vec3d.hpp>
 #include <vx/world/block_state.hpp>
+#include <vx/world/body_motion.hpp>
 #include <vx/world/chunk_boxes.hpp>
 #include <vx/world/chunk_storage.hpp>
 #include <vx/world/coordinates.hpp>
@@ -462,4 +463,43 @@ TEST_CASE("in the air, or switched off, the bob dies away") {
     CHECK(none.shift_y == 0.0);
     CHECK(none.turn_z == 0.0F);
     CHECK(none.turn_x == 0.0F);
+}
+
+TEST_CASE("each tick animates the body as the move and the look go (RFC 0012)") {
+    const vx::ChunkStorage chunk = floor_chunk();
+    const vx::ChunkBoxes blocks(chunk, {});
+    vx::app::Walking walking(on_the_floor, 0.0);
+    const vx::TickInput looking{.held = {.forward = true}, .yaw = 0.5F, .pitch = 0.25F};
+    for (int tick = 0; tick < 9; ++tick) {
+        walking.tick(looking, blocks);
+    }
+    const vx::BodyMotion ninth = walking.frame().motion;
+    walking.tick(looking, blocks);
+    const vx::app::WalkingFrame& frame = walking.frame();
+    // The tick before's body, for the frames between the two.
+    CHECK(frame.previous_motion.limb_position == ninth.limb_position);
+    CHECK(frame.previous_motion.limb_speed == ninth.limb_speed);
+    CHECK(frame.previous_motion.body_yaw == ninth.body_yaw);
+    // The head takes the tick's look; the swing follows the walk.
+    CHECK(frame.motion.head_yaw == 0.5F);
+    CHECK(frame.motion.head_pitch == 0.25F);
+    CHECK(frame.motion.limb_speed > 0.5);
+    CHECK(frame.previous_motion.limb_position < frame.motion.limb_position);
+    // Walking straight, the body has turned toward where it walks: the look.
+    CHECK(std::abs(frame.motion.body_yaw - 0.5F) < 0.05F);
+}
+
+TEST_CASE("a held tick keeps the body still and a placed player stands at rest") {
+    const vx::ChunkStorage chunk = floor_chunk();
+    const vx::ChunkBoxes blocks(chunk, {});
+    vx::app::Walking walking(on_the_floor, 0.0);
+    for (int tick = 0; tick < 6; ++tick) {
+        walking.tick(walk, blocks);
+    }
+    walking.hold();
+    CHECK(walking.frame().previous_motion.limb_position == walking.frame().motion.limb_position);
+    CHECK(walking.frame().previous_motion.limb_speed == walking.frame().motion.limb_speed);
+    walking.place({.x = 20.5, .y = 1.0, .z = 20.5});
+    CHECK(walking.frame().motion.limb_speed == 0.0);
+    CHECK(walking.frame().previous_motion.limb_speed == 0.0);
 }

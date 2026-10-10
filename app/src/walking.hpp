@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vx/core/vec3d.hpp>
+#include <vx/world/body_motion.hpp>
 #include <vx/world/collision.hpp>
 #include <vx/world/movement.hpp>
 
@@ -36,6 +37,10 @@ struct WalkingFrame {
     double bob = 0.0;
     double previous_walked = 0.0; // the bob's walk distance
     double walked = 0.0;
+    // The body's animation after the tick before and the last one (RFC
+    // 0012): its walk swing, its turn and where its head looks.
+    BodyMotion previous_motion{};
+    BodyMotion motion{};
     bool on_ground = false;
     bool sprinting = false;
     bool crouching = false;
