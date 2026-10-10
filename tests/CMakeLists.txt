@@ -70,6 +70,7 @@ add_executable(vx_world_tests
     world/flight_test.cpp
     world/job_record_test.cpp
     world/jump_test.cpp
+    world/look_control_test.cpp
     world/memory_budget_test.cpp
     world/move_rules_test.cpp
     world/movement_property_test.cpp
