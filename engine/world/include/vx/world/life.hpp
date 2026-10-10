@@ -48,7 +48,7 @@ struct Onlooker {
 };
 
 // The goals of Perdix's life (RFC 0012), for whatever shows what he does.
-enum class LifeGoal : std::uint8_t { look_around };
+enum class LifeGoal : std::uint8_t { look_at_player, look_around };
 
 // One tick of Perdix's life: what RFC 0010's tick moves his body with, the
 // keys and the walking yaw, and where his head looks, for RFC 0012's
@@ -64,11 +64,15 @@ struct LifeTick {
 // chosen again every second tick in their order: a goal that is not running
 // starts when its chance comes and what it claims is free or held by a goal
 // after it, which stops; a running one stops once it can no longer go on.
-// Looking around claims both: a chance of 2 in 100 at each choice, at a
-// point one block away at his eye height in a random direction, for 22 to
-// 40 ticks. With nothing running he stands, his head easing back to his
-// body. The same seed, world and positions give the same life, and a tick
-// allocates nothing beyond what the world's boxes take in `scratch`.
+// Looking at you claims the eyes: a chance of 2 in 100 at each choice while
+// you are within 6 blocks (4.8 while you sneak) and in his line of sight
+// from eye to eye, then your eyes for 40 to 80 ticks, while you stay within
+// 6, wall or no wall. Looking around claims both: 2 in 100 at each choice,
+// so only when nothing holds either, at a point one block away at his eye
+// height in a random direction, for 22 to 40 ticks. With nothing running he
+// stands, his head easing back to his body. The same seed, world and
+// positions give the same life, and a tick allocates nothing beyond what
+// the world's boxes take in `scratch`.
 //
 // Each world tick, for him:
 //
@@ -90,7 +94,7 @@ public:
     [[nodiscard]] std::uint64_t starts(LifeGoal goal) const noexcept;
 
 private:
-    static constexpr std::size_t goal_count = 1;
+    static constexpr std::size_t goal_count = 2;
     // What a goal claims: his legs, his eyes.
     enum class Claim : std::uint8_t { legs, eyes };
     static constexpr std::size_t claim_count = 2;
@@ -114,6 +118,7 @@ private:
     std::array<std::optional<LifeGoal>, claim_count> holders_{};
     LookControl look_;
     float walking_yaw_;
+    int look_time_ = 0;   // choices left looking at you
     int around_time_ = 0; // ticks left looking around
     Vec3d around_;        // where looking around looks, from him
 };
