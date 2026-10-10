@@ -4,6 +4,7 @@
 
 #include <vx/core/job_system.hpp>
 #include <vx/core/result.hpp>
+#include <vx/world/life.hpp>
 
 #include <cstdint>
 #include <optional>
@@ -41,6 +42,9 @@ struct Options {
     // the game's defaults) or a skin file's path, each with :slim or :wide.
     std::optional<std::string> skin;
     std::optional<std::string> perdix_skin;
+    // What Perdix does from the start (RFC 0012): his own life, following
+    // you, or standing still.
+    LifeMode perdix = LifeMode::life;
 };
 
 // The options, from the arguments after the program's name, or why they are
