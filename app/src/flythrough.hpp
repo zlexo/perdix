@@ -49,6 +49,10 @@ struct FlythroughPlan {
 
     [[nodiscard]] static FlythroughPlan full() noexcept;
     [[nodiscard]] static FlythroughPlan quick() noexcept;
+    // RFC 0005's ten minutes on the fanless reference machine: the full
+    // plan with cruise, turns and sprint stretched, so the sprint runs on a
+    // machine that has been working hard for minutes.
+    [[nodiscard]] static FlythroughPlan endurance() noexcept;
     [[nodiscard]] const PhaseLength& length(Phase phase) const noexcept {
         return lengths[static_cast<std::size_t>(phase)];
     }

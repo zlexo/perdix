@@ -1,5 +1,6 @@
 #include "options.hpp"
 
+#include <vx/core/job_system.hpp>
 #include <vx/core/result.hpp>
 
 #include <doctest/doctest.h>
@@ -8,6 +9,7 @@
 #include <initializer_list>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -53,6 +55,21 @@ TEST_CASE("every option is read, and none at all is a run with nothing set") {
     const vx::Result<vx::app::Options> quick = parse({"--flythrough=quick"});
     REQUIRE(quick.has_value());
     CHECK(quick.value().flythrough == vx::app::Flythrough::quick);
+    const vx::Result<vx::app::Options> endurance = parse({"--flythrough=long"});
+    REQUIRE(endurance.has_value());
+    CHECK(endurance.value().flythrough == vx::app::Flythrough::endurance);
+    // RFC 0005's workers: unset by default, switching their QoS.
+    CHECK_FALSE(none.value().workers.has_value());
+    CHECK(none.value().worker_qos == vx::WorkerQos::switching);
+    for (const auto& [name, qos] : {std::pair{"utility", vx::WorkerQos::utility},
+                                    std::pair{"user-initiated", vx::WorkerQos::user_initiated},
+                                    std::pair{"switching", vx::WorkerQos::switching}}) {
+        const std::string flag = std::string("--worker-qos=") + name;
+        const vx::Result<vx::app::Options> parsed = parse({"--workers=3", flag});
+        REQUIRE(parsed.has_value());
+        CHECK(parsed.value().workers == 3U);
+        CHECK(parsed.value().worker_qos == qos);
+    }
 }
 
 TEST_CASE("options that cannot be used say which, and why") {
@@ -66,6 +83,12 @@ TEST_CASE("options that cannot be used say which, and why") {
     CHECK(error_of({"--frames=many"}) == "--frames takes a whole number, not \"many\"");
     CHECK(error_of({"--fly"}).starts_with("unknown option \"--fly\": try --frames=N"));
     CHECK(error_of({"--flythrough=slow"}).starts_with("unknown option \"--flythrough=slow\""));
+    CHECK(error_of({"--workers=0"}) == "--workers takes a whole number from 1 to 64, not \"0\"");
+    CHECK(error_of({"--workers=65"}) == "--workers takes a whole number from 1 to 64, not \"65\"");
+    CHECK(error_of({"--workers=six"}) ==
+          "--workers takes a whole number from 1 to 64, not \"six\"");
+    CHECK(error_of({"--worker-qos=fast"}) ==
+          "--worker-qos takes switching, utility or user-initiated, not \"fast\"");
 }
 
 TEST_CASE("--no-minecraft turns the game off, and the environment fills the search") {

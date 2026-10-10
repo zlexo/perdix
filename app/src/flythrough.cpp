@@ -70,6 +70,15 @@ FlythroughPlan FlythroughPlan::full() noexcept {
             .check = false};
 }
 
+FlythroughPlan FlythroughPlan::endurance() noexcept {
+    // About ten minutes in all: 300 s of cruise, 120 of turns, 150 of sprint.
+    FlythroughPlan plan = full();
+    plan.lengths[static_cast<std::size_t>(Phase::cruise)].seconds = 300.0;
+    plan.lengths[static_cast<std::size_t>(Phase::turns)].seconds = 120.0;
+    plan.lengths[static_cast<std::size_t>(Phase::sprint)].seconds = 150.0;
+    return plan;
+}
+
 FlythroughPlan FlythroughPlan::quick() noexcept {
     // Loading and the teleport wait for the region, which both must reach
     // for the comparison, at most 300 s: far beyond what a software driver

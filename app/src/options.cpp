@@ -5,7 +5,9 @@
 #include <vx/core/result.hpp>
 
 #include <charconv>
+#include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -18,17 +20,92 @@ std::filesystem::path from_utf8(std::string_view text) {
     return {std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size())};
 }
 
+// A whole number of `T`, all of `value`.
+template <class T> std::optional<T> whole_number(std::string_view value) {
+    T number = 0;
+    const auto [parsed_to, error] =
+        std::from_chars(value.data(), value.data() + value.size(), number);
+    if (error != std::errc{} || parsed_to != value.data() + value.size()) {
+        return std::nullopt;
+    }
+    return number;
+}
+
+std::optional<WorkerQos> worker_qos(std::string_view value) {
+    if (value == "switching") {
+        return WorkerQos::switching;
+    }
+    if (value == "utility") {
+        return WorkerQos::utility;
+    }
+    if (value == "user-initiated") {
+        return WorkerQos::user_initiated;
+    }
+    return std::nullopt;
+}
+
+// --workers=N: from 1 to 64.
+Result<std::uint32_t> worker_count(std::string_view value) {
+    const std::optional<std::uint32_t> workers = whole_number<std::uint32_t>(value);
+    if (!workers || *workers < 1 || *workers > 64) {
+        return Error{"--workers takes a whole number from 1 to 64, not \"" + std::string(value) +
+                     "\""};
+    }
+    return *workers;
+}
+
+// The options that set how a run is measured: the flythroughs, the worker
+// count and their quality of service, and the frame limit. True when `arg`
+// was one of them, an error when its value was not, false when it is
+// another option.
+Result<bool> parse_run_option(std::string_view arg, Options& options) {
+    constexpr std::string_view frames_flag = "--frames=";
+    constexpr std::string_view flythrough_flag = "--flythrough";
+    constexpr std::string_view quick_flythrough_flag = "--flythrough=quick";
+    constexpr std::string_view endurance_flythrough_flag = "--flythrough=long";
+    constexpr std::string_view workers_flag = "--workers=";
+    constexpr std::string_view worker_qos_flag = "--worker-qos=";
+    if (arg == flythrough_flag) {
+        options.flythrough = Flythrough::full;
+    } else if (arg == quick_flythrough_flag) {
+        options.flythrough = Flythrough::quick;
+    } else if (arg == endurance_flythrough_flag) {
+        options.flythrough = Flythrough::endurance;
+    } else if (arg.starts_with(workers_flag)) {
+        const Result<std::uint32_t> workers = worker_count(arg.substr(workers_flag.size()));
+        if (!workers.has_value()) {
+            return workers.error();
+        }
+        options.workers = workers.value();
+    } else if (arg.starts_with(worker_qos_flag)) {
+        const std::string_view value = arg.substr(worker_qos_flag.size());
+        const std::optional<WorkerQos> qos = worker_qos(value);
+        if (!qos) {
+            return Error{"--worker-qos takes switching, utility or user-initiated, not \"" +
+                         std::string(value) + "\""};
+        }
+        options.worker_qos = *qos;
+    } else if (arg.starts_with(frames_flag)) {
+        const std::string_view value = arg.substr(frames_flag.size());
+        const std::optional<std::uint64_t> frames = whole_number<std::uint64_t>(value);
+        if (!frames) {
+            return Error{"--frames takes a whole number, not \"" + std::string(value) + "\""};
+        }
+        options.frames = *frames;
+    } else {
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 Result<Options> parse_options(std::span<const std::string_view> args) {
-    constexpr std::string_view frames_flag = "--frames=";
     constexpr std::string_view overlay_flag = "--overlay";
     constexpr std::string_view pack_flag = "--pack=";
     constexpr std::string_view minecraft_flag = "--minecraft=";
     constexpr std::string_view minecraft_version_flag = "--minecraft-version=";
     constexpr std::string_view no_minecraft_flag = "--no-minecraft";
-    constexpr std::string_view flythrough_flag = "--flythrough";
-    constexpr std::string_view quick_flythrough_flag = "--flythrough=quick";
     Options options;
     for (const std::string_view arg : args) {
         if (arg == overlay_flag) {
@@ -47,21 +124,13 @@ Result<Options> parse_options(std::span<const std::string_view> args) {
             options.minecraft_version = std::string(arg.substr(minecraft_version_flag.size()));
         } else if (arg == no_minecraft_flag) {
             options.no_minecraft = true;
-        } else if (arg == flythrough_flag) {
-            options.flythrough = Flythrough::full;
-        } else if (arg == quick_flythrough_flag) {
-            options.flythrough = Flythrough::quick;
-        } else if (arg.starts_with(frames_flag)) {
-            const std::string_view value = arg.substr(frames_flag.size());
-            const auto [parsed_to, error] =
-                std::from_chars(value.data(), value.data() + value.size(), options.frames);
-            if (error != std::errc{} || parsed_to != value.data() + value.size()) {
-                return Error{"--frames takes a whole number, not \"" + std::string(value) + "\""};
-            }
-        } else {
+        } else if (const Result<bool> run = parse_run_option(arg, options); !run.has_value()) {
+            return run.error();
+        } else if (!run.value()) {
             return Error{"unknown option \"" + std::string(arg) +
                          "\": try --frames=N, --overlay, --pack=DIR, --minecraft=PATH, "
-                         "--minecraft-version=ID, --no-minecraft or --flythrough[=quick]"};
+                         "--minecraft-version=ID, --no-minecraft, --flythrough[=quick|long], "
+                         "--workers=N or --worker-qos=switching|utility|user-initiated"};
         }
     }
     if (options.no_minecraft && (options.minecraft || options.minecraft_version)) {

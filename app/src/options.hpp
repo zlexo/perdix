@@ -2,6 +2,7 @@
 
 #include "startup_pack.hpp"
 
+#include <vx/core/job_system.hpp>
 #include <vx/core/result.hpp>
 
 #include <cstdint>
@@ -12,9 +13,9 @@
 
 namespace vx::app {
 
-// RFC 0006's benchmark flythrough: none, the full one, or the few seconds CI
-// runs.
-enum class Flythrough : std::uint8_t { none, full, quick };
+// RFC 0006's benchmark flythrough: none, the full one, the few seconds CI
+// runs, or RFC 0005's ten minutes on the same path.
+enum class Flythrough : std::uint8_t { none, full, quick, endurance };
 
 // The app's command line.
 struct Options {
@@ -32,11 +33,15 @@ struct Options {
     bool no_minecraft = false;
     // Fly RFC 0006's benchmark path, print its report, and quit.
     Flythrough flythrough = Flythrough::none;
+    // RFC 0005's workers: how many, unset for the cores less two, and how
+    // they pick their QoS class (the sweep compares them).
+    std::optional<std::uint32_t> workers;
+    WorkerQos worker_qos = WorkerQos::switching;
 };
 
 // The options, from the arguments after the program's name, or why they are
-// not options: an unknown one, a value that is not a number or is missing,
-// or --no-minecraft with either of the other two.
+// not options: an unknown one, a value that is not a number, out of range or
+// missing, or --no-minecraft with either of the other two.
 [[nodiscard]] Result<Options> parse_options(std::span<const std::string_view> args);
 
 // What the app reads from the environment to find Minecraft: the home
