@@ -30,4 +30,21 @@ struct BodyMotion {
 // keeps facing where it faced.
 void animate(BodyMotion& motion, Vec3d moved, float look_yaw, float look_pitch) noexcept;
 
+// A body between two ticks, as the camera poses it.
+struct BodyAt {
+    double limb_position = 0.0;
+    double limb_amount = 0.0; // how far the limbs swing: 0 to 1
+    float body_yaw = 0.0F;
+    float head_yaw = 0.0F;
+    float head_pitch = 0.0F;
+};
+
+// The body `between` (0 to 1) of the way from the tick that left `previous`
+// to the one that left `current`, as the game draws it: the swing's phase
+// runs up to the current one at the current speed, the amount is the speed
+// blended between the ticks, at most 1, the yaws turn the shorter way round
+// and the pitch is blended.
+[[nodiscard]] BodyAt body_at(const BodyMotion& previous, const BodyMotion& current,
+                             double between) noexcept;
+
 } // namespace vx

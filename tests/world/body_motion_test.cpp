@@ -30,6 +30,10 @@ constexpr double radians(double degrees) {
     return degrees * pi / 180.0;
 }
 
+double degrees(float radians) {
+    return static_cast<double>(radians) * 180.0 / pi;
+}
+
 // A player on the flat world with a body: each step runs RFC 0010's tick,
 // then animates the body by the move the tick made.
 struct Walker {
@@ -162,4 +166,58 @@ TEST_CASE("a move or a look that is not finite leaves the body as it was") {
     CHECK(motion.body_yaw == before.body_yaw);
     CHECK(motion.head_yaw == before.head_yaw);
     CHECK(motion.head_pitch == before.head_pitch);
+}
+
+TEST_CASE("between ticks the swing runs up to the tick's phase at the tick's speed") {
+    const vx::BodyMotion previous{.limb_speed = 0.5, .limb_position = 1.0};
+    const vx::BodyMotion current{.limb_speed = 0.6, .limb_position = 1.6};
+    const vx::BodyAt start = vx::body_at(previous, current, 0.0);
+    CHECK(start.limb_position == doctest::Approx(1.0));
+    CHECK(start.limb_amount == doctest::Approx(0.5));
+    const vx::BodyAt quarter = vx::body_at(previous, current, 0.25);
+    CHECK(quarter.limb_position == doctest::Approx(1.15));
+    CHECK(quarter.limb_amount == doctest::Approx(0.525));
+    const vx::BodyAt end = vx::body_at(previous, current, 1.0);
+    CHECK(end.limb_position == doctest::Approx(1.6));
+    CHECK(end.limb_amount == doctest::Approx(0.6));
+    // The amount is at most 1, whatever the speeds.
+    const vx::BodyMotion faster{.limb_speed = 1.4, .limb_position = 3.0};
+    CHECK(vx::body_at(current, faster, 0.75).limb_amount == 1.0);
+}
+
+TEST_CASE("between ticks the yaws turn the shorter way round and the pitch is blended") {
+    const auto at = [](double angle) { return static_cast<float>(radians(angle)); };
+    const vx::BodyMotion previous{
+        .body_yaw = at(170.0), .head_yaw = at(-170.0), .head_pitch = 0.2F};
+    const vx::BodyMotion current{
+        .body_yaw = at(-170.0), .head_yaw = at(170.0), .head_pitch = -0.4F};
+    const vx::BodyAt quarter = vx::body_at(previous, current, 0.25);
+    CHECK(degrees(quarter.body_yaw) == doctest::Approx(175.0).epsilon(1e-5));
+    CHECK(degrees(quarter.head_yaw) == doctest::Approx(-175.0).epsilon(1e-5));
+    CHECK(quarter.head_pitch == doctest::Approx(0.05));
+    const vx::BodyAt three_quarters = vx::body_at(previous, current, 0.75);
+    CHECK(degrees(three_quarters.body_yaw) == doctest::Approx(-175.0).epsilon(1e-5));
+    CHECK(degrees(three_quarters.head_yaw) == doctest::Approx(175.0).epsilon(1e-5));
+    CHECK(three_quarters.head_pitch == doctest::Approx(-0.25));
+}
+
+TEST_CASE("between two walking ticks the body runs from one tick's pose to the next") {
+    Walker walker;
+    walker.motion.body_yaw = static_cast<float>(radians(40.0));
+    for (int i = 0; i < 3; ++i) {
+        walker.step(forward);
+    }
+    const vx::BodyMotion previous = walker.motion;
+    walker.step(forward, static_cast<float>(radians(10.0)));
+    const vx::BodyMotion& current = walker.motion;
+    const vx::BodyAt start = vx::body_at(previous, current, 0.0);
+    CHECK(start.limb_position == doctest::Approx(previous.limb_position));
+    CHECK(start.limb_amount == doctest::Approx(previous.limb_speed));
+    CHECK(start.body_yaw == doctest::Approx(previous.body_yaw));
+    CHECK(start.head_yaw == doctest::Approx(previous.head_yaw));
+    const vx::BodyAt end = vx::body_at(previous, current, 1.0);
+    CHECK(end.limb_position == doctest::Approx(current.limb_position));
+    CHECK(end.limb_amount == doctest::Approx(current.limb_speed));
+    CHECK(end.body_yaw == doctest::Approx(current.body_yaw));
+    CHECK(end.head_yaw == doctest::Approx(current.head_yaw));
 }

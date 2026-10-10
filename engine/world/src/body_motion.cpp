@@ -58,4 +58,21 @@ void animate(BodyMotion& motion, Vec3d moved, float look_yaw, float look_pitch) 
     motion.head_pitch = look_pitch;
 }
 
+BodyAt body_at(const BodyMotion& previous, const BodyMotion& current, double between) noexcept {
+    const auto turned = [between](float from, float to) {
+        const auto start = static_cast<double>(from);
+        return static_cast<float>(
+            wrapped(start + (wrapped(static_cast<double>(to) - start) * between)));
+    };
+    const double speed =
+        previous.limb_speed + ((current.limb_speed - previous.limb_speed) * between);
+    return {.limb_position = current.limb_position - (current.limb_speed * (1.0 - between)),
+            .limb_amount = std::min(speed, 1.0),
+            .body_yaw = turned(previous.body_yaw, current.body_yaw),
+            .head_yaw = turned(previous.head_yaw, current.head_yaw),
+            .head_pitch = static_cast<float>(
+                static_cast<double>(previous.head_pitch) +
+                (static_cast<double>(current.head_pitch - previous.head_pitch) * between))};
+}
+
 } // namespace vx
