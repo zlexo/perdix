@@ -6,12 +6,14 @@
 #include <vx/render/chunk_arena.hpp>
 #include <vx/render/renderer.hpp>
 #include <vx/render/swapchain_choice.hpp>
+#include <vx/world/life.hpp>
 
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 struct ImDrawData;
 struct ImGuiContext;
@@ -49,13 +51,31 @@ struct MovementReport {
     std::uint64_t ticks = 0; // movement ticks run so far
 };
 
+// The god panel (RFC 0012), which G opens: Perdix's mode, bringing him to
+// you, and the skin each player wears. The caller fills it in, the panel's
+// build changes it as it is clicked, and the caller acts on the changes: it
+// tells the world thread a new mode, and brings Perdix when `bring_perdix`
+// is set, then clears it. A skin chosen shows at once.
+struct GodPanel {
+    bool perdix = false; // whether the world has him
+    LifeMode perdix_mode = LifeMode::life;
+    double perdix_distance = 0.0; // from the camera, in blocks
+    bool bring_perdix = false;    // set when Bring him here is clicked
+    // Every skin's name, by its index. The {} lets designated initializers
+    // leave it out on Linux Clang too.
+    std::vector<std::string> skins{}; // NOLINT(readability-redundant-member-init)
+    std::uint32_t perdix_skin = 0;    // past the last skin: the missing texture
+    std::uint32_t your_skin = 0;
+};
+
 // RFC 0001's debug overlay, built with Dear ImGui over the window: frame
 // time graphs, the GPU and driver, the present mode switch, RFC 0004's
 // texture filter switch, RFC 0003's meshing toggles, RFC 0007's chunk
 // rendering counters and switches, the camera's position, the player's
-// movement (RFC 0010) and the validation count. O shows and hides it. It
-// owns the ImGui context, which the renderer it is given to draws with, so
-// it must outlive that renderer.
+// movement (RFC 0010) and the validation count. O shows and hides it. The
+// god panel shares its ImGui context and its frame. It owns the context,
+// which the renderer it is given to draws with, so it must outlive that
+// renderer.
 class Overlay {
 public:
     // An overlay for `window`, shown from the start or not. `validation` says
@@ -75,9 +95,10 @@ public:
     void toggle() noexcept { shown_ = !shown_; }
     void set_shown(bool shown) noexcept { shown_ = shown; }
 
-    // The god panel (RFC 0012), open or not.
+    // The god panel, open or not, and what it shows and sets.
     [[nodiscard]] bool panel_open() const noexcept { return panel_open_; }
     void set_panel_open(bool open) noexcept { panel_open_ = open; }
+    [[nodiscard]] GodPanel& god_panel() noexcept { return god_; }
 
     // Passes `event` to ImGui while the overlay or the panel shows and the
     // mouse is free. True when they take it from the app: a click on one of
@@ -90,8 +111,8 @@ public:
     // CPU's time is the interval less the renderer's waits.
     void record(std::chrono::nanoseconds interval, const render::FrameTimes& times);
 
-    // Builds this frame's overlay: its draw lists, or null while it is
-    // hidden. A captured mouse flies the camera, and the overlay ignores it.
+    // Builds this frame's overlay and panel: their draw lists, or null
+    // while neither shows. A captured mouse flies the camera, and the overlay ignores it.
     // Switching the present mode asks `renderer` for it. Switching merging
     // changes `meshing.merge`, and the caller meshes the chunks again. The
     // View Bobbing switch changes `bobbing`, and the Render Distance slider
@@ -142,6 +163,10 @@ private:
     void draw_streaming() const;
 
     void draw_validation(const render::Context& context) const;
+    // The overlay's window, and the panel's.
+    void draw_overlay(render::Renderer& renderer, const render::Camera& camera,
+                      ChunkMeshing& meshing, bool& bobbing, RenderDistance& distance);
+    void draw_god_panel();
 
     ImGuiContext* context_;
     MovementReport movement_;
@@ -153,6 +178,7 @@ private:
     bool validation_;
     bool shown_;
     bool panel_open_ = false;
+    GodPanel god_;
     History frame_;
     History cpu_;
     History gpu_;

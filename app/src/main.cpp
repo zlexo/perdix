@@ -37,6 +37,7 @@
 #include <vx/world/block_state.hpp>
 #include <vx/world/body_motion.hpp>
 #include <vx/world/coordinates.hpp>
+#include <vx/world/life.hpp>
 #include <vx/world/movement.hpp>
 #include <vx/world/placeholder_generator.hpp>
 
@@ -281,9 +282,10 @@ constexpr std::string_view your_name = "Zlex";
 
 // The frame's bodies, each between its last two ticks with its name over
 // it (RFC 0012): Perdix in his skin, and yours while the free camera is out
-// of it; not while you walk, the camera being your eyes.
+// of it; not while you walk, the camera being your eyes. The god panel
+// chooses the skins.
 FrameFigures figures_shown(const Mover& mover, const Seen& perdix,
-                           const vx::app::StartupFigures& figures,
+                           const vx::app::StartupFigures& figures, const vx::app::GodPanel& god,
                            std::chrono::steady_clock::time_point now) {
     FrameFigures shown;
     const auto add = [&](const vx::PlayerPose& pose, std::string_view name) {
@@ -297,12 +299,45 @@ FrameFigures figures_shown(const Mover& mover, const Seen& perdix,
             std::clamp(std::chrono::duration<double>(now - perdix.tick_at) /
                            std::chrono::duration<double>(vx::app::WorldLoop::tick_length),
                        0.0, 1.0);
-        add(pose_of(perdix.frame, between, figures.perdix, figures), "Perdix");
+        add(pose_of(perdix.frame, between, god.perdix_skin, figures), "Perdix");
     }
     if (mover.noclip) {
-        add(pose_of(mover.frame, between_ticks(mover, now), figures.yours, figures), your_name);
+        add(pose_of(mover.frame, between_ticks(mover, now), god.your_skin, figures), your_name);
     }
     return shown;
+}
+
+// What the god panel changed this frame (RFC 0012): a new mode for Perdix,
+// told to the world thread, and Bring him here: to the ground 5 blocks
+// ahead of the camera, which in the free camera is not where your body is.
+void act_on_panel(vx::app::GodPanel& god, vx::LifeMode& told, vx::app::WorldLoop& loop,
+                  const vx::render::Camera& camera) {
+    if (god.perdix_mode != told) {
+        told = god.perdix_mode;
+        vx::app::ToWorld mode;
+        mode.kind = vx::app::ToWorld::Kind::perdix_mode;
+        mode.perdix_mode = told;
+        send(loop, mode);
+    }
+    if (god.bring_perdix) {
+        god.bring_perdix = false;
+        vx::app::ToWorld bring;
+        bring.kind = vx::app::ToWorld::Kind::bring_perdix;
+        bring.feet = {.x = camera.position.x,
+                      .y = camera.position.y - vx::eye_height(vx::Pose::standing),
+                      .z = camera.position.z};
+        bring.input.yaw = camera.yaw;
+        send(loop, bring);
+    }
+}
+
+// The god panel's word on Perdix: how far he is from the camera.
+void measure_perdix(vx::app::GodPanel& god, const Seen& perdix, const vx::render::Camera& camera) {
+    if (perdix.present) {
+        const vx::Vec3d at = perdix.frame.position;
+        god.perdix_distance = std::hypot(at.x - camera.position.x, at.y - camera.position.y,
+                                         at.z - camera.position.z);
+    }
 }
 
 // Where the camera is and looks, for what streams in first (RFC 0006).
@@ -788,6 +823,15 @@ int main(int argc, char* argv[]) {
     // Before the renderer, so it is destroyed after it: the renderer draws
     // with the overlay's ImGui context until then.
     vx::app::Overlay overlay(window.value().handle(), validation, options.value().overlay);
+    // The god panel (RFC 0012), as the world starts: Perdix's mode and the
+    // skins the options chose.
+    vx::app::GodPanel& god = overlay.god_panel();
+    god.perdix = settings.perdix.has_value();
+    god.perdix_mode = options.value().perdix;
+    god.skins = figures.names;
+    god.perdix_skin = figures.perdix;
+    god.your_skin = figures.yours;
+    vx::LifeMode told = god.perdix_mode;
     vx::Result<vx::render::Renderer> renderer = vx::render::Renderer::create(
         {.surface = window.value().surface_source(),
          .framebuffer = window.value().framebuffer_size(),
@@ -850,7 +894,7 @@ int main(int argc, char* argv[]) {
                  "sprint, Shift to sneak, Space twice to fly, the mouse to look. V switches to a "
                  "camera that flies through everything (W A S D, Space and Shift for up and "
                  "down, Ctrl to go faster) and back. Escape releases the mouse; O shows the "
-                 "overlay.\n";
+                 "overlay; G opens the god panel, for Perdix and the skins.\n";
 
     using Clock = std::chrono::steady_clock;
     Clock::time_point last = Clock::now();
@@ -888,15 +932,17 @@ int main(int argc, char* argv[]) {
                               .flying = mover.frame.flying,
                               .ticks = mover.frame.ticks});
 
+        measure_perdix(god, perdix, camera);
         const vx::render::Camera shown = shown_camera(mover, camera, now);
         const vx::Result<vx::render::Frame> rendered =
             draw_frame(renderer.value(), overlay, window.value(), shown, meshes, meshing,
-                       mover.bobbing, distance, figures_shown(mover, perdix, figures, now));
+                       mover.bobbing, distance, figures_shown(mover, perdix, figures, god, now));
         if (!rendered.has_value()) {
             std::cerr << "error: " << rendered.error().message << '\n';
             return 1;
         }
         reports.send_changes(loop, meshes, meshing, distance, renderer.value().chunks(), now);
+        act_on_panel(god, told, loop, camera);
         last_drawn = rendered.value() == vx::render::Frame::drawn;
         if (!last_drawn) {
             // Presenting paces the loop; with nothing to present, a 60 Hz wait does.
