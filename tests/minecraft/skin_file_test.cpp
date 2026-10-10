@@ -364,6 +364,27 @@ TEST_CASE("the owner's skin in the core pack reads as a 64 by 64 skin") {
     }
 }
 
+TEST_CASE("Perdix's own skin in the core pack reads as a 64 by 64 skin") {
+    const std::filesystem::path path = std::filesystem::path(VX_SHIPPED_PACK_DIR) /
+                                       "assets/core/textures/entity/player/perdix.png";
+    const std::optional<std::string> png = vx::read_file(path);
+    REQUIRE(png.has_value());
+    REQUIRE(png->size() > 24);
+    const auto field = [&](std::size_t at) {
+        std::uint32_t value = 0;
+        for (std::size_t index = 0; index < 4; ++index) {
+            value = (value << 8U) | static_cast<std::uint8_t>((*png)[at + index]);
+        }
+        return value;
+    };
+    CHECK(field(16) == 64);
+    CHECK(field(20) == 64);
+    const vx::Result<vx::Skin> skin = vx::minecraft::read_skin(bytes_of(*png), vx::Arms::wide);
+    if (!skin.has_value()) {
+        FAIL(skin.error().message);
+    }
+}
+
 TEST_CASE("the game's default skins read from the player's own Minecraft, when asked") {
     // A local check against the real game, never in CI: with the variable set,
     // finding no jar fails the test.
