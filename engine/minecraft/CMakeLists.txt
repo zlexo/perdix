@@ -30,6 +30,7 @@ target_compile_definitions(vx_yyjson PUBLIC
 # GPU or window code (ADR 0003), so the web viewer can compile it to
 # WebAssembly. Texture maps are TOML, read with world's toml++.
 add_library(vx_minecraft STATIC
+    src/font_file.cpp
     src/install.cpp
     src/json.cpp
     src/made_textures.cpp

@@ -230,6 +230,7 @@ doctest_discover_tests(vx_render_allocation_tests PROPERTIES ${VX_VULKAN_DOCTEST
 
 add_executable(vx_minecraft_tests
     main.cpp
+    minecraft/font_file_test.cpp
     minecraft/install_test.cpp
     minecraft/made_textures_test.cpp
     minecraft/minecraft_pack_test.cpp
