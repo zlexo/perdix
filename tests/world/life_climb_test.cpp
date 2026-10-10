@@ -17,33 +17,33 @@ namespace {
 
 using vx::test::block_box;
 
+// A pit 3 blocks across with a half block underfoot, so every spot is up on
+// the ground around it, a block above his feet or, with the ground 1.5
+// high, too high to jump.
+std::unique_ptr<vx::test::SceneOf<vx::test::LooseWorld>> pit(double ground) {
+    auto scene = std::make_unique<vx::test::SceneOf<vx::test::LooseWorld>>(8);
+    for (int x = -12; x <= 12; ++x) {
+        for (int z = -12; z <= 12; ++z) {
+            if (std::max(std::abs(x), std::abs(z)) <= 1) {
+                scene->world.boxes.push_back(
+                    {.min = {.x = static_cast<double>(x), .y = -0.5, .z = static_cast<double>(z)},
+                     .max = {.x = x + 1.0, .y = 0.0, .z = z + 1.0}});
+                continue;
+            }
+            scene->world.boxes.push_back(block_box(x, -1.0, z));
+            scene->world.boxes.push_back(
+                {.min = {.x = static_cast<double>(x), .y = 0.0, .z = static_cast<double>(z)},
+                 .max = {.x = x + 1.0, .y = ground, .z = z + 1.0}});
+        }
+    }
+    scene->perdix.position = {.x = 0.5, .y = 0.0, .z = 0.5};
+    scene->you.feet = {.x = 0.5, .y = 8.0, .z = 0.5};
+    return scene;
+}
+
 } // namespace
 
 TEST_CASE("strolling out of a pit he jumps its edge but walled in 1.5 high never does") {
-    // A pit 3 blocks across with a half block underfoot, so every spot is
-    // up on the ground around it, a block above his feet or, with the
-    // ground 1.5 high, too high to jump.
-    const auto pit = [](double ground) {
-        auto scene = std::make_unique<vx::test::SceneOf<vx::test::LooseWorld>>(8);
-        for (int x = -12; x <= 12; ++x) {
-            for (int z = -12; z <= 12; ++z) {
-                if (std::max(std::abs(x), std::abs(z)) <= 1) {
-                    scene->world.boxes.push_back({.min = {.x = static_cast<double>(x),
-                                                          .y = -0.5,
-                                                          .z = static_cast<double>(z)},
-                                                  .max = {.x = x + 1.0, .y = 0.0, .z = z + 1.0}});
-                    continue;
-                }
-                scene->world.boxes.push_back(block_box(x, -1.0, z));
-                scene->world.boxes.push_back(
-                    {.min = {.x = static_cast<double>(x), .y = 0.0, .z = static_cast<double>(z)},
-                     .max = {.x = x + 1.0, .y = ground, .z = z + 1.0}});
-            }
-        }
-        scene->perdix.position = {.x = 0.5, .y = 0.0, .z = 0.5};
-        scene->you.feet = {.x = 0.5, .y = 8.0, .z = 0.5};
-        return scene;
-    };
     SUBCASE("a block high: out at the first stroll") {
         const auto scene = pit(1.0);
         bool jumped = false;
@@ -70,4 +70,21 @@ TEST_CASE("strolling out of a pit he jumps its edge but walled in 1.5 high never
         }
         CHECK(scene->perdix.position.y == 0.0);
     }
+}
+
+TEST_CASE("started over, he forgets the jump his last move found") {
+    // Two of the same life, one a tick ahead: when it jumps, the other has
+    // that jump waiting.
+    const auto ahead = pit(1.0);
+    const auto scene = pit(1.0);
+    bool waiting = false;
+    for (int tick = 0; tick < 4'000 && !waiting; ++tick) {
+        waiting = ahead->step().input.held.jump;
+        if (!waiting) {
+            static_cast<void>(scene->step());
+        }
+    }
+    REQUIRE(waiting);
+    scene->life.start_over(scene->motion.body_yaw);
+    CHECK_FALSE(scene->step().input.held.jump);
 }

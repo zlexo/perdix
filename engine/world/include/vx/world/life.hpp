@@ -176,6 +176,11 @@ public:
     // Changes what he does from the next tick: goals the new mode does not
     // run stop now.
     void set_mode(LifeMode mode) noexcept;
+    // Starts his life over where his body was just put, facing `facing`, as
+    // when he is brought to you: every goal stops, and with them any walk;
+    // his head and walking yaw face `facing`; no jump waits. The mode, the
+    // random numbers and the counts go on.
+    void start_over(float facing) noexcept;
     [[nodiscard]] LifeMode mode() const noexcept { return mode_; }
 
     [[nodiscard]] bool running(LifeGoal goal) const noexcept;
