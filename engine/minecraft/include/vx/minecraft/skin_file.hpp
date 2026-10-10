@@ -5,9 +5,21 @@
 #include <vx/world/skin.hpp>
 
 #include <array>
+#include <cstddef>
+#include <span>
 #include <string_view>
 
 namespace vx::minecraft {
+
+// A skin in the game's file format (RFC 0012), made ready to draw as the
+// game makes a downloaded skin ready: a 64 by 64 PNG as it is, or a legacy
+// 64 by 32 one made square by copying its right arm and leg, each face
+// mirrored, into the left limbs' places. Then the base layer, the part under
+// the hat, jacket, sleeves and pants, is made opaque, its colors kept. Before
+// that, a legacy skin whose whole right half is opaque, alpha 128 or more,
+// has its hat area made transparent: the old format had no hat to leave
+// empty. Any other size is refused, worded to follow the file's name.
+[[nodiscard]] Result<Skin> read_skin(std::span<const std::byte> png, Arms arms);
 
 // The game's default skins (DefaultPlayerSkin, 26.2), in its order, each with
 // slim and with wide arms.
