@@ -351,6 +351,32 @@ TEST_CASE("every face points out of its box and winds counter-clockwise seen fro
     }
 }
 
+TEST_CASE("crouching leans the body and lowers it 2/16 block") {
+    const Body standing = posed({.age = unrolled});
+    const Body crouching = posed({.age = unrolled, .crouching = true});
+    // The legs keep their pose in the model, 4 pixels further back, and
+    // the whole body is 2/16 block lower.
+    for (const std::size_t leg : {right_leg, right_pants, left_leg, left_pants}) {
+        const std::span<const BodyVertex, 36> before = box_of(standing, leg);
+        const std::span<const BodyVertex, 36> after = box_of(crouching, leg);
+        for (std::size_t at = 0; at < before.size(); ++at) {
+            check_near(position(after[at]).y - position(before[at]).y, -2.0 / 16.0);
+            check_near(position(after[at]).z - position(before[at]).z, 4.0 / 16.0 * scale);
+        }
+    }
+    // The head 4.2 pixels lower in the model, the body pitched 0.5 forward.
+    check_near(center(face_of(crouching, head, top)).y, 1.8759 - 4.2 / 16.0 * scale - 2.0 / 16.0);
+    const Vec3d chest = normal(face_of(crouching, torso, front)[0]);
+    check_near(chest.y, -std::sin(0.5));
+    check_near(chest.z, -std::cos(0.5));
+    // The arms pitched 0.4 further about shoulders 3.2 pixels lower, with
+    // the idle sway's pitch at this age.
+    const double sway = 0.05 * std::sin(0.067 * unrolled);
+    const double shoulder = 1.2900 - 3.2 / 16.0 * scale - 2.0 / 16.0;
+    check_near(pitch_back(crouching, right_arm, {.x = 0.2930, .y = shoulder}), 0.4 + sway);
+    check_near(pitch_back(crouching, left_arm, {.x = -0.2930, .y = shoulder}), 0.4 - sway);
+}
+
 TEST_CASE("the walk swing pitches arms and legs as the game does") {
     const Vec3d right_hip{.x = 1.9 / 16.0 * scale, .y = 0.7041};
     const Vec3d left_hip{.x = -1.9 / 16.0 * scale, .y = 0.7041};

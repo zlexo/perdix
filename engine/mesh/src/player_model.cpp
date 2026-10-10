@@ -125,7 +125,7 @@ Rotation part_rotation(const PartPose& part) noexcept {
 }
 
 // The game's poses, in its order: every part from rest, then the head, the
-// walk swing, the leg splay and the idle sway (RFC 0012).
+// walk swing, the leg splay, the crouch and the idle sway (RFC 0012).
 std::array<PartPose, part_count> pose_parts(const PlayerPose& pose, const Model& model) noexcept {
     std::array<PartPose, part_count> parts{};
     for (std::size_t part = 0; part < part_count; ++part) {
@@ -152,6 +152,19 @@ std::array<PartPose, part_count> pose_parts(const PlayerPose& pose, const Model&
     parts[right_leg].roll = 0.005;
     parts[left_leg].yaw = -0.005;
     parts[left_leg].roll = -0.005;
+
+    if (pose.crouching) {
+        parts[body].pitch = 0.5;
+        parts[body].pivot.y += 3.2;
+        for (const std::size_t arm : {right_arm, left_arm}) {
+            parts[arm].pitch += 0.4;
+            parts[arm].pivot.y += 3.2;
+        }
+        for (const std::size_t leg : {right_leg, left_leg}) {
+            parts[leg].pivot.z += 4.0;
+        }
+        parts[head].pivot.y += 4.2;
+    }
 
     // Both arms drift outward and back again, never in, over about 70 and
     // 94 ticks.
@@ -291,8 +304,10 @@ void pose_player(const PlayerPose& pose, BlockPos origin,
     const Model& model = pose.arms == Arms::slim ? slim_model : wide_model;
     const std::array<PartPose, part_count> parts = pose_parts(pose, model);
 
+    // The whole body sits 2/16 block lower while crouching.
+    const double crouch = pose.crouching ? -2.0 / 16.0 : 0.0;
     const Placement placement{.feet = {.x = pose.feet.x - origin.x,
-                                       .y = pose.feet.y - origin.y,
+                                       .y = pose.feet.y - origin.y + crouch,
                                        .z = pose.feet.z - origin.z},
                               .cos_yaw = std::cos(static_cast<double>(pose.body_yaw)),
                               .sin_yaw = std::sin(static_cast<double>(pose.body_yaw))};
