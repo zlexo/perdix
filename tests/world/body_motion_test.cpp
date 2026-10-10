@@ -140,6 +140,84 @@ TEST_CASE("walking into a wall swings nothing and turns nothing") {
     CHECK(walker.motion.body_yaw == static_cast<float>(radians(30.0)));
 }
 
+TEST_CASE("walking forward from a body 40 degrees off closes 0.3 of the gap a tick") {
+    for (const double off : {40.0, -40.0}) {
+        INFO("the body ", off, " degrees off");
+        Walker walker;
+        walker.motion.body_yaw = static_cast<float>(radians(off));
+        double expected = off;
+        for (int i = 0; i < 10; ++i) {
+            INFO("tick ", i + 1);
+            walker.step(forward);
+            expected *= 0.7;
+            CHECK(degrees(walker.motion.body_yaw) == doctest::Approx(expected).epsilon(1e-5));
+        }
+    }
+}
+
+TEST_CASE("strafing turns the body toward the way moved until it is 50 degrees off the look") {
+    // A, left: the move goes 90 degrees left of the look. The body turns 0.3
+    // of the way to it each tick, 27 then 45.9 degrees, and the third tick's
+    // 59.13 is held back to 50; D the same to the right.
+    for (const bool left : {true, false}) {
+        INFO((left ? "A" : "D"));
+        Walker walker;
+        const double side = left ? 1.0 : -1.0;
+        const std::array<double, 3> first = {27.0, 45.9, 50.0};
+        for (std::size_t i = 0; i < first.size(); ++i) {
+            INFO("tick ", i + 1);
+            walker.step({.left = left, .right = !left});
+            CHECK(degrees(walker.motion.body_yaw) ==
+                  doctest::Approx(side * first[i]).epsilon(1e-5));
+        }
+        for (int i = 3; i < 20; ++i) {
+            walker.step({.left = left, .right = !left});
+        }
+        CHECK(degrees(walker.motion.body_yaw) == doctest::Approx(side * 50.0).epsilon(1e-5));
+        CHECK(walker.motion.head_yaw == 0.0F);
+    }
+}
+
+TEST_CASE("walking backward keeps the body on the look") {
+    Walker walker;
+    for (int i = 0; i < 20; ++i) {
+        walker.step({.back = true});
+        CHECK(walker.motion.body_yaw == 0.0F);
+    }
+    CHECK(walker.player.position.z > 2.0);
+    // A body 30 degrees off eases back to the look, not around to face the
+    // way it walks.
+    walker.motion.body_yaw = static_cast<float>(radians(30.0));
+    double expected = 30.0;
+    for (int i = 0; i < 5; ++i) {
+        walker.step({.back = true});
+        expected *= 0.7;
+        CHECK(degrees(walker.motion.body_yaw) == doctest::Approx(expected).epsilon(1e-5));
+    }
+}
+
+TEST_CASE("standing while the look turns 70 degrees moves the body only by the 20 beyond 50") {
+    SUBCASE("in one tick") {
+        Walker walker;
+        walker.step({}, static_cast<float>(radians(70.0)));
+        CHECK(degrees(walker.motion.body_yaw) == doctest::Approx(20.0).epsilon(1e-5));
+    }
+    SUBCASE("ten degrees a tick either way") {
+        for (const double side : {1.0, -1.0}) {
+            Walker walker;
+            for (int i = 1; i <= 7; ++i) {
+                walker.step({}, static_cast<float>(radians(side * 10.0 * i)));
+                const double held = std::max(0.0, (10.0 * i) - 50.0);
+                CHECK(degrees(walker.motion.body_yaw) ==
+                      doctest::Approx(side * held).epsilon(1e-5));
+            }
+            // Looking back does not bring the body back: it is within 50.
+            walker.step({}, 0.0F);
+            CHECK(degrees(walker.motion.body_yaw) == doctest::Approx(side * 20.0).epsilon(1e-5));
+        }
+    }
+}
+
 TEST_CASE("the head takes the tick's look") {
     vx::BodyMotion motion = vx::body_facing(0.5F, -0.25F);
     CHECK(motion.head_yaw == 0.5F);
@@ -150,6 +228,71 @@ TEST_CASE("the head takes the tick's look") {
     vx::animate(motion, {}, -1.0F, 0.75F);
     CHECK(motion.head_yaw == -1.0F);
     CHECK(motion.head_pitch == 0.75F);
+}
+
+TEST_CASE("the body turns toward the way moved in the engine's yaw with positive to the left") {
+    // Looking and walking down -x is yaw +90 degrees, a left turn from -z;
+    // down +x is -90. The body starts down -z and turns 0.3 of the way, held
+    // within 50 degrees of the look: 40, then 55 and 65.5 degrees.
+    for (const double side : {1.0, -1.0}) {
+        INFO("toward ", side > 0.0 ? "-x" : "+x");
+        vx::BodyMotion motion = vx::body_facing(0.0F, 0.0F);
+        const auto look = static_cast<float>(radians(side * 90.0));
+        const Vec3d moved{.x = -side * 0.2, .y = 0.0, .z = 0.0};
+        for (const double expected : {40.0, 55.0, 65.5}) {
+            vx::animate(motion, moved, look, 0.0F);
+            CHECK(degrees(motion.body_yaw) == doctest::Approx(side * expected).epsilon(1e-5));
+        }
+    }
+    // Down +z, behind the start, is half a turn: the body comes round to it
+    // the shorter way, whichever side it starts on.
+    for (const double start : {170.0, -170.0}) {
+        vx::BodyMotion motion = vx::body_facing(static_cast<float>(radians(start)), 0.0F);
+        const auto look = static_cast<float>(pi);
+        for (int i = 0; i < 40; ++i) {
+            vx::animate(motion, {.x = 0.0, .y = 0.0, .z = 0.2}, look, 0.0F);
+        }
+        CHECK(std::abs(std::abs(degrees(motion.body_yaw)) - 180.0) < 1e-4);
+    }
+}
+
+TEST_CASE("a move of 0.05 blocks or less leaves the body's facing alone") {
+    // The body 30 degrees off the look, moving along the look: a move that
+    // counts turns it to 21 degrees, one that does not leaves it at 30.
+    const auto after_move = [](double distance) {
+        vx::BodyMotion motion = vx::body_facing(0.0F, 0.0F);
+        motion.body_yaw = static_cast<float>(radians(30.0));
+        vx::animate(motion, {.x = 0.0, .y = 0.0, .z = -distance}, 0.0F, 0.0F);
+        return degrees(motion.body_yaw);
+    };
+    CHECK(after_move(0.04) == doctest::Approx(30.0).epsilon(1e-5));
+    CHECK(after_move(0.05) == doctest::Approx(30.0).epsilon(1e-5));
+    CHECK(after_move(0.0501) == doctest::Approx(21.0).epsilon(1e-5));
+    // Vertical motion does not count: a fall turns nothing.
+    vx::BodyMotion falling = vx::body_facing(0.0F, 0.0F);
+    falling.body_yaw = static_cast<float>(radians(30.0));
+    vx::animate(falling, {.x = 0.0, .y = -3.0, .z = 0.01}, 0.0F, 0.0F);
+    CHECK(degrees(falling.body_yaw) == doctest::Approx(30.0).epsilon(1e-5));
+    CHECK(falling.limb_speed == doctest::Approx(0.4 * 0.04));
+}
+
+TEST_CASE("a move more than 95 degrees from the look either way counts as walking backward") {
+    // From a body on the look, a move 94 degrees off is followed, 0.3 of the
+    // way: 28.2 degrees toward it. At 96 the body turns toward the opposite
+    // way instead, 84 degrees the other side of the look: 25.2 degrees away.
+    // The same mirrored, 264 and 266 degrees round to the left.
+    const auto after_move = [](double move_degrees) {
+        vx::BodyMotion motion = vx::body_facing(0.0F, 0.0F);
+        const double way = radians(move_degrees);
+        vx::animate(motion, {.x = -0.2 * std::sin(way), .y = 0.0, .z = -0.2 * std::cos(way)}, 0.0F,
+                    0.0F);
+        return degrees(motion.body_yaw);
+    };
+    CHECK(after_move(94.0) == doctest::Approx(28.2).epsilon(1e-5));
+    CHECK(after_move(96.0) == doctest::Approx(-25.2).epsilon(1e-5));
+    CHECK(after_move(264.0) == doctest::Approx(25.2).epsilon(1e-5));
+    CHECK(after_move(266.0) == doctest::Approx(-28.2).epsilon(1e-5));
+    CHECK(after_move(180.0) == doctest::Approx(0.0));
 }
 
 TEST_CASE("a move or a look that is not finite leaves the body as it was") {
