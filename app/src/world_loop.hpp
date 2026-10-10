@@ -1,6 +1,7 @@
 #pragma once
 
 #include "walking.hpp"
+#include "world_report.hpp"
 
 #include <vx/core/inbox.hpp>
 #include <vx/core/job_system.hpp>
@@ -16,6 +17,7 @@
 #include <vx/world/coordinates.hpp>
 #include <vx/world/generator.hpp>
 #include <vx/world/job_record.hpp>
+#include <vx/world/memory_budget.hpp>
 #include <vx/world/movement.hpp>
 #include <vx/world/region.hpp>
 #include <vx/world/streamed_boxes.hpp>
@@ -110,6 +112,7 @@ struct ToMain {
         player, // the player after a tick, or after landing
         landed, // whether the noclip camera's landing worked
         sample, // what the main thread asked for with ToWorld::Kind::sample
+        report, // what it asked for with ToWorld::Kind::report
     };
     Kind kind = Kind::mesh;
     ChunkPos pos; // the unloaded chunk
@@ -122,6 +125,7 @@ struct ToMain {
     std::chrono::steady_clock::time_point tick_at{}; // NOLINT(readability-redundant-member-init)
     bool landed = false;
     WorldSample sample{};
+    WorldReport report{};
 };
 
 // What the main thread tells the world thread.
@@ -135,6 +139,8 @@ struct ToWorld {
         meshing,       // RFC 0003's merge toggle: every chunk shown meshed again
         sample,        // a WorldSample, for the flythrough
         view_distance, // RFC 0006's Render Distance option, in chunks
+        arena,         // RFC 0007's mesh arena: full, and its share of its limit
+        report,        // a WorldReport, for the overlay
         stop,
     };
     Kind kind = Kind::camera;
@@ -153,10 +159,20 @@ struct ToWorld {
     // came first). One it drops but never counts holds streaming back for
     // good.
     std::uint64_t uploaded = 0;
+    // RFC 0007's mesh arena, for RFC 0006's memory budget: the frames so far
+    // that ended with a mesh refused and the arena unable to grow, and the
+    // share of the most it may grow to that it holds, and whether it was full
+    // when this was sent. The budget counts the arena full when that count
+    // has risen since its last check and it is still full.
+    std::uint64_t arena_full_frames = 0;
+    double arena_share = 0.0;
+    bool arena_full = false;
 };
 
 struct WorldLoopSettings {
     RegionSettings region;
+    // RFC 0006's budget for chunk data, checked a few times a second.
+    std::size_t memory_budget = MemoryBudget::default_bytes;
     // Each pass tops every job level up to this many queued jobs (RFC 0005).
     std::uint32_t queue_limit = 256;
     // Streaming meshes sent but not yet uploaded, above which new streaming
@@ -242,6 +258,8 @@ public:
     }
 
     static constexpr std::chrono::milliseconds tick_length{50};
+    // How often the memory budget is checked, on the loop's clock.
+    static constexpr std::chrono::milliseconds memory_check_interval{250};
 
 private:
     struct MeshRecord {
@@ -338,6 +356,15 @@ private:
     void land(Vec3d feet);
     void send_player(std::chrono::steady_clock::time_point at);
     [[nodiscard]] bool missing_near_camera();
+    // RFC 0006's memory check, when one is due at `now`: the chunk data held
+    // and the arena's state, against the budget.
+    void keep_memory(std::chrono::steady_clock::time_point now);
+    // The budget's limits, to the streamer.
+    void apply_limits();
+    // The region's settings with the budget's limits, which the checks
+    // recompute the region from, as the streamer applies them.
+    [[nodiscard]] RegionSettings region_settings() const noexcept;
+    [[nodiscard]] WorldReport report() const;
 
     WakeEvent wake_; // before the inboxes that signal it
     WorldStreamer streamer_;
@@ -380,6 +407,14 @@ private:
     std::chrono::nanoseconds answering_{0};
     bool behind_ = false; // the streamer has results left from its last step
     bool stopping_ = false;
+    bool arena_full_ = false; // whether full, as the main thread last said
+    MemoryBudget budget_;
+    std::int32_t chosen_hysteresis_;        // the settings', which the budget comes back to
+    std::uint64_t arena_full_frames_ = 0;   // as the main thread last said
+    std::uint64_t checked_full_frames_ = 0; // as the last memory check saw it
+    double arena_share_ = 0.0;
+    std::size_t chunk_bytes_ = 0; // at the last memory check
+    std::optional<std::chrono::steady_clock::time_point> next_memory_check_;
 };
 
 } // namespace vx::app

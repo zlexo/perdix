@@ -163,6 +163,9 @@ public:
             case ToMain::Kind::sample:
                 samples.push_back(message.sample);
                 break;
+            case ToMain::Kind::report:
+                reports.push_back(message.report);
+                break;
             }
         }
     }
@@ -194,6 +197,7 @@ public:
     std::vector<std::chrono::steady_clock::time_point> tick_times;
     std::vector<bool> landings;
     std::vector<vx::app::WorldSample> samples;
+    std::vector<vx::app::WorldReport> reports;
 
 private:
     void take(const vx::app::MeshUpdate& update) {
@@ -1316,4 +1320,159 @@ TEST_CASE("the render distance moves the loop's region: the main thread holds wh
     sample = checked();
     CHECK(sample.broken == 0);
     CHECK(sample.complete);
+}
+
+namespace {
+
+// A clock the test moves on.
+class ManualClock final : public vx::JobClock {
+public:
+    [[nodiscard]] std::chrono::steady_clock::time_point now() const noexcept override { return at; }
+    std::chrono::steady_clock::time_point at;
+};
+
+void send_arena(WorldLoop& loop, std::uint64_t full_frames, double share, bool full = true) {
+    ToWorld message;
+    message.kind = ToWorld::Kind::arena;
+    message.arena_full_frames = full_frames;
+    message.arena_share = share;
+    message.arena_full = full;
+    loop.to_world().push(std::move(message));
+}
+
+vx::app::WorldReport ask_report(WorldLoop& loop, MainThread& main) {
+    ToWorld message;
+    message.kind = ToWorld::Kind::report;
+    loop.to_world().push(std::move(message));
+    loop.pass();
+    std::vector<ToMain> messages;
+    loop.take(messages);
+    main.receive(messages);
+    REQUIRE_FALSE(main.reports.empty());
+    return main.reports.back();
+}
+
+constexpr vx::RegionSettings six{
+    .view_distance = 6, .near_distance = 1, .near_height = 1, .hysteresis = 2};
+
+} // namespace
+
+TEST_CASE("over its memory budget the loop lowers the streamer's hysteresis, then its view "
+          "distance, a step each check, and its report says why") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    ManualClock clock;
+    WorldLoop loop(generator, table, jobs, pool,
+                   {.region = six, .memory_budget = 1, .clock = &clock});
+    move_camera(loop, above_hills);
+    loop.settle();
+    MainThread main;
+    // The first pass checked: chunk data was already over one byte.
+    CHECK(loop.streamer().limits() == vx::RegionLimits{.view_distance = 6, .hysteresis = 1});
+    // No further check before 250 ms have passed on the loop's clock.
+    loop.pass();
+    CHECK(loop.streamer().limits().hysteresis == 1);
+    const vx::RegionLimits expected[] = {{.view_distance = 6, .hysteresis = 0},
+                                         {.view_distance = 5, .hysteresis = 0},
+                                         {.view_distance = 4, .hysteresis = 0},
+                                         {.view_distance = 4, .hysteresis = 0}};
+    for (const vx::RegionLimits& limits : expected) {
+        clock.at += WorldLoop::memory_check_interval;
+        loop.settle();
+        CHECK(loop.streamer().limits() == limits);
+    }
+    const vx::app::WorldReport report = ask_report(loop, main);
+    CHECK(report.limits == vx::RegionLimits{.view_distance = 4, .hysteresis = 0});
+    CHECK(report.chosen == vx::RegionLimits{.view_distance = 6, .hysteresis = 2});
+    CHECK(report.limited_by == vx::LimitedBy::chunk_memory);
+    CHECK(report.budget == 1);
+    CHECK(report.chunk_bytes > 0);
+    std::size_t chunks = 0;
+    for (const std::size_t count : report.chunks) {
+        chunks += count;
+    }
+    CHECK(chunks == loop.streamer().records().size());
+    // The player's slider caps it, nearer still.
+    ToWorld nearer;
+    nearer.kind = ToWorld::Kind::view_distance;
+    nearer.view_distance = 3;
+    loop.to_world().push(std::move(nearer));
+    loop.settle();
+    CHECK(loop.streamer().limits().view_distance == 3);
+}
+
+TEST_CASE("an arena full in frames since the last check lowers the limits, an old count does "
+          "not, and five calm seconds bring them back to the player's") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    ManualClock clock;
+    WorldLoop loop(generator, table, jobs, pool, {.region = six, .clock = &clock});
+    move_camera(loop, above_hills);
+    loop.settle();
+    MainThread main;
+    REQUIRE(loop.streamer().limits() == vx::RegionLimits{.view_distance = 6, .hysteresis = 2});
+    const auto check = [&] {
+        clock.at += WorldLoop::memory_check_interval;
+        loop.settle();
+        return loop.streamer().limits();
+    };
+    // Full in 3 frames: one step down, and the report says why.
+    send_arena(loop, 3, 1.0);
+    CHECK(check() == vx::RegionLimits{.view_distance = 6, .hysteresis = 1});
+    CHECK(ask_report(loop, main).limited_by == vx::LimitedBy::mesh_memory);
+    // The same count again, as while the window is minimized and no frame
+    // runs the upkeep: no further step, and with the share near the limit,
+    // nothing comes back either.
+    for (int at = 0; at < 30; ++at) {
+        send_arena(loop, 3, 0.95);
+        CHECK(check() == vx::RegionLimits{.view_distance = 6, .hysteresis = 1});
+    }
+    // The slider moves while the budget holds the region back: nearer caps
+    // it at once, and the player's hysteresis is what comes back.
+    ToWorld nearer;
+    nearer.kind = ToWorld::Kind::view_distance;
+    nearer.view_distance = 5;
+    loop.to_world().push(std::move(nearer));
+    CHECK(check() == vx::RegionLimits{.view_distance = 5, .hysteresis = 1});
+    // Room again: after five calm seconds, one step back, to the player's.
+    send_arena(loop, 3, 0.1, false);
+    for (int at = 0; at < 20; ++at) {
+        CHECK(check() == vx::RegionLimits{.view_distance = 5, .hysteresis = 1});
+    }
+    CHECK(check() == vx::RegionLimits{.view_distance = 5, .hysteresis = 2});
+    const vx::app::WorldReport report = ask_report(loop, main);
+    CHECK(report.limited_by == vx::LimitedBy::nothing);
+    CHECK(report.chosen == vx::RegionLimits{.view_distance = 5, .hysteresis = 2});
+}
+
+TEST_CASE("a lowering's own full frames, reported once the arena has room again, are not a "
+          "second fill, and a new fill still is") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    ManualClock clock;
+    WorldLoop loop(generator, table, jobs, pool, {.region = six, .clock = &clock});
+    move_camera(loop, above_hills);
+    loop.settle();
+    REQUIRE(loop.streamer().limits() == vx::RegionLimits{.view_distance = 6, .hysteresis = 2});
+    const auto check = [&] {
+        clock.at += WorldLoop::memory_check_interval;
+        loop.settle();
+        return loop.streamer().limits();
+    };
+    // The arena fills: one step down.
+    send_arena(loop, 3, 1.0);
+    CHECK(check() == vx::RegionLimits{.view_distance = 6, .hysteresis = 1});
+    // Frames kept ending full until the lowering's unloads applied, so the
+    // count rose; by the report the arena has room. The same fill: no step.
+    send_arena(loop, 5, 0.9, false);
+    CHECK(check() == vx::RegionLimits{.view_distance = 6, .hysteresis = 1});
+    // A new fill, still full when reported: the next step down.
+    send_arena(loop, 7, 1.0);
+    CHECK(check() == vx::RegionLimits{.view_distance = 6, .hysteresis = 0});
 }

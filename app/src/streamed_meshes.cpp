@@ -95,6 +95,7 @@ void StreamedMeshes::take(std::vector<ToMain>& messages,
         case ToMain::Kind::player:
         case ToMain::Kind::landed:
         case ToMain::Kind::sample:
+        case ToMain::Kind::report:
             if (kept != at) {
                 messages[kept] = std::move(message);
             }
