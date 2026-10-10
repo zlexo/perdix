@@ -131,10 +131,17 @@ struct LifeTick {
 // positions give the same life, and a tick allocates nothing beyond what
 // the world's boxes take in `scratch`.
 //
+// He climbs steps as the game's auto-jump climbs them (auto_jumps()): after
+// a move that finds one, he holds Space on the next tick, and RFC 0010's
+// tick jumps. A Player that may fly would take two such presses within 6
+// ticks for a double tap, which the game's auto-jump never does; Perdix's
+// does not fly, and the arc of a jump keeps presses farther apart anyway.
+//
 // Each world tick, for him:
 //
 //     const LifeTick t = life.tick(perdix.player(), motion.body_yaw, you, world, scratch);
 //     perdix.tick(t.input, world);  // RFC 0010's move
+//     life.after_move(perdix.player(), moved, world, scratch);
 //     animate(motion, moved, t.look_yaw, t.look_pitch);
 class Life {
 public:
@@ -145,6 +152,10 @@ public:
     // 0012's BodyMotion), with `you` about, among the world's blocks.
     [[nodiscard]] LifeTick tick(const Player& body, float body_yaw, const Onlooker& you,
                                 const BlockBoxes& world, std::vector<Box>& scratch);
+    // After RFC 0010's tick moved `body` by `moved` with what tick() gave:
+    // the auto-jump's look ahead, for a jump on the next tick.
+    void after_move(const Player& body, Vec3d moved, const BlockBoxes& world,
+                    std::vector<Box>& scratch);
 
     [[nodiscard]] bool running(LifeGoal goal) const noexcept;
     // How many times `goal` has started.
@@ -187,6 +198,11 @@ private:
     std::optional<Vec3d> target_;
     Vec3d stuck_from_;
     std::uint64_t stuck_checked_ = 0;
+    // The last tick's choices, which auto-jump reads after the move, and
+    // whether the next tick jumps.
+    LifeTick last_;
+    bool jump_next_ = false;
+    MovementNumbers numbers_;
 };
 
 } // namespace vx

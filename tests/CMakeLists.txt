@@ -71,6 +71,7 @@ add_executable(vx_world_tests
     world/flight_test.cpp
     world/job_record_test.cpp
     world/jump_test.cpp
+    world/life_climb_test.cpp
     world/life_look_test.cpp
     world/life_stroll_test.cpp
     world/life_test.cpp
