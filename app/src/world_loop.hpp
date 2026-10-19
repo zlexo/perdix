@@ -18,6 +18,7 @@
 #include <vx/world/generator.hpp>
 #include <vx/world/job_record.hpp>
 #include <vx/world/life.hpp>
+#include <vx/world/lod.hpp>
 #include <vx/world/memory_budget.hpp>
 #include <vx/world/movement.hpp>
 #include <vx/world/region.hpp>
@@ -40,7 +41,8 @@ namespace vx::app {
 // them lie in each of RFC 0003's twelve ranges, back to back in ChunkMesh's
 // order. An empty mesh has no buffer.
 struct MeshUpdate {
-    ChunkPos pos;
+    ChunkPos pos;           // on its level's grid
+    std::uint8_t level = 0; // RFC 0011's
     std::uint32_t load_id = 0;
     // Rises with every remesh of the chunk, so an older mesh is dropped.
     std::uint32_t generation = 0;
@@ -58,12 +60,14 @@ enum class SampleKind : std::uint8_t { completion, full, checked };
 inline constexpr double near_holes_distance = 256.0;
 
 // How a chunk looks from a viewer: whether the view holds it, and whether
-// its nearest point lies within `near` blocks of the eye.
+// its nearest point lies within `near` blocks of the eye. On RFC 0011's
+// `level` the chunk is that level's, 32 x 2^level blocks a side.
 struct ChunkSight {
     bool in_view = false;
     bool near = false;
 };
-[[nodiscard]] ChunkSight chunk_sight(const Viewer& viewer, ChunkPos pos, double near) noexcept;
+[[nodiscard]] ChunkSight chunk_sight(const Viewer& viewer, ChunkPos pos, double near,
+                                     std::uint8_t level = 0) noexcept;
 
 // What the world thread reports when the main thread asks (RFC 0006's
 // flythrough). A completion sample, the answer to a completion request
@@ -121,7 +125,8 @@ struct ToMain {
         report, // what it asked for with ToWorld::Kind::report
     };
     Kind kind = Kind::mesh;
-    ChunkPos pos; // the unloaded chunk
+    ChunkPos pos;           // the unloaded chunk
+    std::uint8_t level = 0; // and its level (RFC 0011)
     MeshUpdate mesh;
     std::vector<MeshUpdate> batch;
     WalkingFrame player{};
@@ -179,7 +184,15 @@ struct ToWorld {
 };
 
 struct WorldLoopSettings {
+    // Level 0's region. With levels on, its view distance is the terrain
+    // disc's, all levels together.
     RegionSettings region;
+    // RFC 0011's levels: none streams level 0 alone, as the app does until
+    // the drawn levels are chosen each frame. With rings, a streamer runs on
+    // each level, each over LodRings::stream_distance of its own chunks, for
+    // these rings with the region's view distance, as the memory budget
+    // limits it, and its near cylinder.
+    std::optional<LodRings> lod = std::nullopt;
     // RFC 0006's budget for chunk data, checked a few times a second.
     std::size_t memory_budget = MemoryBudget::default_bytes;
     // Each pass tops every job level up to this many queued jobs (RFC 0005).
@@ -263,6 +276,12 @@ public:
     [[nodiscard]] const WorldStreamer& streamer() const noexcept {
         return levels_.front()->streamer;
     }
+    // A level's streamer, below levels().
+    [[nodiscard]] const WorldStreamer& streamer(std::uint8_t level) const noexcept {
+        return levels_.at(level)->streamer;
+    }
+    // The levels streamed: 1, or with RFC 0011's rings all of them.
+    [[nodiscard]] std::size_t levels() const noexcept { return levels_.size(); }
     // Streaming meshes sent but not yet uploaded.
     [[nodiscard]] std::uint64_t unuploaded() const noexcept { return sent_ - uploaded_; }
     // Mesh jobs queued or running.
@@ -324,8 +343,9 @@ private:
     struct Level {
         Level(const Generator& generator, JobSystem& jobs, WakeEvent& wake,
               const RegionSettings& region)
-            : streamer(generator, jobs, wake, region) {}
+            : streamer(generator, jobs, wake, region), level(region.level) {}
         WorldStreamer streamer;
+        std::uint8_t level;
         std::vector<MeshRecord> meshes;
         Backlog waiting;
         // The mesh record at the streamer's record `index`, made if none is.
@@ -352,6 +372,7 @@ private:
         const MeshContext* context;
         JobRecord* pins; // read only, until the world thread releases it
         ChunkPos pos;
+        std::uint8_t level;
         std::uint32_t generation;
         MeshOptions options; // the job's own: the loop's may change while it runs
         void operator()(JobContext& job) const noexcept;
@@ -361,6 +382,12 @@ private:
     static std::vector<std::unique_ptr<Level>> make_levels(const Generator& generator,
                                                            JobSystem& jobs, WakeEvent& wake,
                                                            const WorldLoopSettings& settings);
+    // A level's region settings under these limits: level 0's region, or a
+    // coarse level's disc with no near cylinder, each as far out as its level
+    // streams.
+    [[nodiscard]] static RegionSettings level_region(const WorldLoopSettings& settings,
+                                                     std::uint8_t level,
+                                                     RegionLimits limits) noexcept;
     void handle(ToWorld& message);
     // New mesh options: every chunk that has a mesh, or waits for one,
     // meshed again with them.
@@ -458,6 +485,7 @@ private:
     std::optional<Perdix> perdix_;
     TickInput input_;
     MeshOptions meshing_;
+    std::size_t feed_turn_ = 0; // the level first in turn for what equal shares leave over
     std::chrono::steady_clock::time_point last_tick_;
     std::chrono::steady_clock::time_point next_tick_;
     bool ticking_ = false;
