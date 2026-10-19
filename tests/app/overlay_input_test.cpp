@@ -377,6 +377,17 @@ TEST_CASE("the render distance slider sets the distance once let go, and nothing
     send(motion(window.id(), ImVec2(slider.x + 100.0F, slider.y)));
     send(left_button(window.id(), false, ImVec2(slider.x + 100.0F, slider.y)));
     CHECK(distance.chunks == set);
+
+    // With RFC 0011's horizon on, the slider reaches 512 chunks: dragged to
+    // its far end, past what full detail allows.
+    distance.fixed = false;
+    distance.limit = vx::app::RenderDistance::horizon_most;
+    send(left_button(window.id(), true, slider));
+    send(motion(window.id(), ImVec2(static_cast<float>(window_size.width) - 1.0F, slider.y)));
+    send(left_button(window.id(), false,
+                     ImVec2(static_cast<float>(window_size.width) - 1.0F, slider.y)));
+    CHECK(distance.chunks > vx::app::RenderDistance::most);
+    CHECK(distance.chunks <= vx::app::RenderDistance::horizon_most);
 }
 
 TEST_CASE("the god panel's clicks set Perdix's mode, bring him and choose skins, and are taken") {

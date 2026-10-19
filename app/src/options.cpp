@@ -54,13 +54,16 @@ Result<std::uint32_t> worker_count(std::string_view value) {
     return *workers;
 }
 
-// --view-distance=N: in chunks, within the overlay slider's range.
+// --view-distance=N: in chunks, within the overlay slider's range, which
+// --horizon widens (checked once every option is read).
 Result<std::int32_t> view_distance(std::string_view value) {
     const std::optional<std::int32_t> chunks = whole_number<std::int32_t>(value);
-    if (!chunks || *chunks < least_view_distance || *chunks > most_view_distance) {
+    if (!chunks || *chunks < least_view_distance || *chunks > most_horizon_view_distance) {
         return Error{"--view-distance takes a whole number of chunks from " +
                      std::to_string(least_view_distance) + " to " +
-                     std::to_string(most_view_distance) + ", not \"" + std::string(value) + "\""};
+                     std::to_string(most_view_distance) + ", or " +
+                     std::to_string(most_horizon_view_distance) + " with --horizon, not \"" +
+                     std::string(value) + "\""};
     }
     return *chunks;
 }
@@ -199,6 +202,10 @@ Result<Options> parse_options(std::span<const std::string_view> args) {
     }
     if (options.no_minecraft && (options.minecraft || options.minecraft_version)) {
         return Error{"--no-minecraft goes without --minecraft and --minecraft-version"};
+    }
+    if (options.view_distance && *options.view_distance > most_view_distance && !options.horizon) {
+        return Error{"--view-distance above " + std::to_string(most_view_distance) +
+                     " chunks needs --horizon"};
     }
     return options;
 }

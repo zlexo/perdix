@@ -153,6 +153,15 @@ void use_horizon(const vx::app::WorldLoopSettings& settings, vx::render::Rendere
     }
 }
 
+// The overlay's Render distance slider: at the region's view distance, up to
+// RFC 0011's 512 chunks with the horizon on.
+vx::app::RenderDistance render_distance(const vx::app::WorldLoopSettings& settings) {
+    return {.chunks = settings.region.view_distance,
+            .fixed = false,
+            .limit = settings.lod ? vx::app::RenderDistance::horizon_most
+                                  : vx::app::RenderDistance::most};
+}
+
 // The startup line about the world.
 std::string describe_world(const vx::app::WorldLoopSettings& settings, const std::string& workers) {
     return "World: placeholder hills, seed 0x5EED, view distance " +
@@ -901,7 +910,9 @@ int main(int argc, char* argv[]) {
          .block_textures = pack.textures,
          .skins = figures.skins,
          .font = figures.font.has_value() ? &figures.font.value() : nullptr,
-         .chunk_arena_quads = arena_quads(arena_distance(settings)),
+         // Grown by repacks as the levels stream in: at 512 chunks they
+         // could want twice this.
+         .chunk_arena_quads = arena_quads(std::min(arena_distance(settings), 32)),
          .stage_chunk_uploads = false,
          .draw_call_limit = 0});
     if (!renderer.has_value()) {
@@ -959,7 +970,7 @@ int main(int argc, char* argv[]) {
     Clock::time_point last = Clock::now();
     bool last_drawn = false;
     vx::app::ChunkMeshing meshing;
-    vx::app::RenderDistance distance{.chunks = settings.region.view_distance, .fixed = false};
+    vx::app::RenderDistance distance = render_distance(settings);
     WorldReports reports;
     reports.view_distance = settings.region.view_distance;
     std::vector<vx::app::ToMain> messages;
