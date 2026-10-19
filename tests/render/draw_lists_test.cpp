@@ -284,3 +284,40 @@ TEST_CASE("draw lists: each drawn chunk's origin, its commands in both passes, a
     CHECK(lists.cutout.size() == 2);
     CHECK(lists.stats.quads == 21 + 30 + 6);
 }
+
+TEST_CASE(
+    "a chunk of RFC 0011's level L spans 32 x 2^L blocks: its origin, its box and its faces") {
+    // A level-2 chunk, x from -128 to 0, and the level-0 chunk at its far
+    // end, x from -128 to -96; the camera at x = -60, inside the coarse
+    // chunk's span on every axis, looking east.
+    std::array<ChunkMeshRecord, 2> records{};
+    records[0].pos = {.x = -1, .y = 0, .z = 0};
+    records[0].level = 2;
+    records[0].range.first_quad = 100;
+    records[0].count = {1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0};
+    records[1].pos = {.x = -4, .y = 0, .z = 0};
+    records[1].range.first_quad = 200;
+    records[1].count = {1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0};
+    const glm::i64vec3 camera_block(-60, 10, 10);
+    const glm::vec3 camera(0.5F, 0.5F, 0.5F);
+    DrawLists lists;
+    vx::render::build_draw_lists(records, camera_block, camera, {}, {}, lists);
+    REQUIRE(lists.origins.size() == 2);
+    // The level rides in the origin's fourth component, for the shader.
+    CHECK(lists.origins[0] == glm::vec4(-68.0F, -10.0F, -10.0F, 2.0F));
+    CHECK(lists.origins[1] == glm::vec4(-68.0F, -10.0F, -10.0F, 0.0F));
+    // Its -x faces can face the camera 68 blocks into it; a level-0
+    // chunk's that far behind cannot.
+    CHECK(vx::render::facing_mask({-68, -10, -10}, 128) == 0b111'111);
+    CHECK(vx::render::facing_mask({-68, -10, -10}) == 0b110'111);
+    CHECK(drawn_quads(lists.opaque) ==
+          std::vector<std::uint32_t>{100, 101, 102, 103, 104, 105, 200, 201, 202, 204, 205});
+    // Looking east, the level-0 chunk lies behind the camera and is culled;
+    // the coarse one reaches 60 blocks ahead of it and stays.
+    const vx::Frustum looking_east({.x = 1.0, .y = 0.0, .z = 0.0}, {.x = 0.0, .y = 0.0, .z = 1.0},
+                                   {.x = 0.0, .y = 1.0, .z = 0.0}, 0.7, 1.6, 0.05);
+    vx::render::build_draw_lists(records, camera_block, camera, looking_east, {}, lists);
+    CHECK(lists.stats.culled == 1);
+    REQUIRE(lists.origins.size() == 1);
+    CHECK(lists.origins[0].w == 2.0F);
+}

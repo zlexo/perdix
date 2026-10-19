@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -585,4 +586,205 @@ TEST_CASE("frozen culling draws each chunk where it is from wherever the camera 
     const std::vector<std::uint8_t> live = draw_all(renderer, none, moved);
     CHECK(differing_pixels(frozen, live) == 0);
     CHECK(sky_pixels(live) < std::size_t{image_size.width} * image_size.height);
+}
+
+// RFC 0011's coarse chunks on the GPU: cells 2^level blocks wide, textures
+// repeating once a block, and past level 2 a texture's average color.
+namespace {
+
+// Past the unused magenta: layer 1, a checker of 4-texel squares averaged
+// down its mips, and layer 2, red at every mip but the last, 1 by 1 texel,
+// which is blue.
+std::vector<std::byte> lod_layer_bytes() {
+    constexpr std::size_t count = 3;
+    std::vector<std::byte> bytes(count * vx::render::block_texture_layer_bytes);
+    const auto checker = [](std::size_t u, std::size_t v) {
+        return ((u / 4) + (v / 4)) % 2 == 0 ? 60.0 : 200.0;
+    };
+    for (std::size_t level = 0; level < 5; ++level) {
+        const std::size_t side = std::size_t{16} >> level;
+        const std::size_t cover = std::size_t{1} << level; // level-0 texels a side
+        for (std::size_t layer = 0; layer < count; ++layer) {
+            for (std::size_t texel = 0; texel < side * side; ++texel) {
+                Rgba color{255, 0, 255, 255};
+                if (layer == 1) {
+                    double sum = 0.0;
+                    for (std::size_t dv = 0; dv < cover; ++dv) {
+                        for (std::size_t du = 0; du < cover; ++du) {
+                            sum += checker(((texel % side) * cover) + du,
+                                           ((texel / side) * cover) + dv);
+                        }
+                    }
+                    const auto gray =
+                        static_cast<std::uint8_t>(sum / static_cast<double>(cover * cover));
+                    color = {gray, gray, gray, 255};
+                } else if (layer == 2) {
+                    color = level == 4 ? Rgba{0, 0, 255, 255} : Rgba{255, 0, 0, 255};
+                }
+                const std::size_t at =
+                    4 * ((count * vx::render::block_texture_level_start.at(level)) +
+                         (layer * side * side) + texel);
+                for (std::size_t channel = 0; channel < 4; ++channel) {
+                    bytes[at + channel] = std::byte{color[channel]};
+                }
+            }
+        }
+    }
+    return bytes;
+}
+
+std::vector<vx::BlockVisual> lod_visuals() {
+    std::vector<vx::BlockVisual> visuals(3);
+    for (std::uint16_t state = 1; state < 3; ++state) {
+        visuals[state] = {.opacity = vx::Opacity::opaque,
+                          .cull_group = 0,
+                          .texture = {state, state, state, state, state, state}};
+    }
+    return visuals;
+}
+
+// Meshes that own their quads: each update's ranges point into `quads`.
+struct OwnedMeshes {
+    std::deque<std::vector<vx::Quad>> quads;
+
+    vx::render::ChunkMeshUpdate own(const vx::ChunkMesh& mesh, vx::ChunkPos pos,
+                                    std::uint8_t level) {
+        const std::span<const vx::Quad> all = mesh.all();
+        quads.emplace_back(all.begin(), all.end());
+        vx::ChunkMesh copy{};
+        for (std::size_t pass = 0; pass < 2; ++pass) {
+            for (std::size_t face = 0; face < 6; ++face) {
+                const std::span<const vx::Quad> range = mesh.ranges[pass][face];
+                const auto offset = static_cast<std::size_t>(range.data() - all.data());
+                copy.ranges[pass][face] =
+                    std::span<const vx::Quad>(quads.back()).subspan(offset, range.size());
+            }
+        }
+        return {.pos = pos, .generation = 1, .mesh = copy, .level = level};
+    }
+};
+
+// A camera at `eye` looking at `target` (RFC 0001: yaw 0 looks down -z).
+vx::render::Camera looking(glm::dvec3 eye, glm::dvec3 target) {
+    const glm::dvec3 d = target - eye;
+    vx::render::Camera camera;
+    camera.position = eye;
+    camera.yaw = static_cast<float>(std::atan2(-d.x, -d.z));
+    camera.pitch = static_cast<float>(std::atan2(d.y, std::hypot(d.x, d.z)));
+    return camera;
+}
+
+} // namespace
+
+TEST_CASE("a level-1 chunk draws as the eight level-0 chunks of its blocks, textures and all") {
+    // Stone terraces in cells of 2 by 2 by 2 blocks, 4 to 15 cells high.
+    const auto solid = [](int cx, int cy, int cz) {
+        if (cx < 0 || cy < 0 || cz < 0 || cx >= 32 || cy >= 32 || cz >= 32) {
+            return false;
+        }
+        return cy < 4 + static_cast<int>(hash(cx >> 2, 0, cz >> 2, 9) % 12);
+    };
+    const std::vector<vx::BlockVisual> visuals = lod_visuals();
+    vx::MeshScratch scratch;
+    const auto padded = std::make_unique<vx::PaddedChunk>();
+    OwnedMeshes owned;
+    Offers coarse;
+    for (int y = 0; y < vx::padded_size; ++y) {
+        for (int z = 0; z < vx::padded_size; ++z) {
+            for (int x = 0; x < vx::padded_size; ++x) {
+                padded->blocks[vx::padded_index(x, y, z)] = solid(x - 1, y - 1, z - 1)
+                                                                ? static_cast<vx::BlockState>(1)
+                                                                : vx::BlockState::air;
+            }
+        }
+    }
+    coarse.waiting.push_back(
+        owned.own(vx::mesh_chunk(*padded, visuals, scratch, {.occlusion = false}),
+                  {.x = 0, .y = 0, .z = 0}, 1));
+    Offers fine;
+    for (int cy = 0; cy < 2; ++cy) {
+        for (int cz = 0; cz < 2; ++cz) {
+            for (int cx = 0; cx < 2; ++cx) {
+                for (int y = 0; y < vx::padded_size; ++y) {
+                    for (int z = 0; z < vx::padded_size; ++z) {
+                        for (int x = 0; x < vx::padded_size; ++x) {
+                            const int bx = (cx * vx::chunk_size) + x - 1;
+                            const int by = (cy * vx::chunk_size) + y - 1;
+                            const int bz = (cz * vx::chunk_size) + z - 1;
+                            padded->blocks[vx::padded_index(x, y, z)] =
+                                bx >= 0 && by >= 0 && bz >= 0 && solid(bx >> 1, by >> 1, bz >> 1)
+                                    ? static_cast<vx::BlockState>(1)
+                                    : vx::BlockState::air;
+                        }
+                    }
+                }
+                fine.waiting.push_back(
+                    owned.own(vx::mesh_chunk(*padded, visuals, scratch, {.occlusion = false}),
+                              {.x = cx, .y = cy, .z = cz}, 0));
+            }
+        }
+    }
+    const std::vector<std::byte> textures = lod_layer_bytes();
+    const vx::render::Camera camera = looking({52.5, 34.5, 70.5}, {30.0, 12.0, 30.0});
+    vx::Result<vx::render::Renderer> coarse_renderer = scene_renderer(textures, false);
+    REQUIRE(coarse_renderer.has_value());
+    const std::vector<std::uint8_t> one = draw_all(coarse_renderer.value(), coarse, camera);
+    vx::Result<vx::render::Renderer> fine_renderer = scene_renderer(textures, false);
+    REQUIRE(fine_renderer.has_value());
+    const std::vector<std::uint8_t> eight = draw_all(fine_renderer.value(), fine, camera);
+    const std::size_t pixels = one.size() / 4;
+    CHECK(sky_pixels(one) < pixels / 2);
+    // The same image to a color step: the triangles split differently where
+    // the quads merge differently, and a pixel's color can round apart.
+    int largest = 0;
+    for (std::size_t at = 0; at < one.size(); at += 4) {
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            largest =
+                std::max(largest, std::abs(int{one[at + channel]} - int{eight[at + channel]}));
+        }
+    }
+    MESSAGE(differing_pixels(one, eight)
+            << " of " << pixels << " pixels differ, by at most " << largest);
+    CHECK(largest <= 1);
+}
+
+TEST_CASE("past level 2 a face draws its texture's last mip, its average, where level 2 draws the "
+          "texture") {
+    // A floor of the marker block, half the chunk high, seen from 10 blocks
+    // above: close enough that texturing reads the red mips.
+    const auto floor_at = [](std::uint8_t level) {
+        const std::vector<vx::BlockVisual> visuals = lod_visuals();
+        vx::MeshScratch scratch;
+        const auto padded = std::make_unique<vx::PaddedChunk>();
+        for (int y = 0; y < vx::padded_size; ++y) {
+            for (int z = 0; z < vx::padded_size; ++z) {
+                for (int x = 0; x < vx::padded_size; ++x) {
+                    padded->blocks[vx::padded_index(x, y, z)] =
+                        y >= 1 && y <= 16 ? static_cast<vx::BlockState>(2) : vx::BlockState::air;
+                }
+            }
+        }
+        OwnedMeshes owned;
+        Offers offers;
+        offers.waiting.push_back(
+            owned.own(vx::mesh_chunk(*padded, visuals, scratch, {.occlusion = false}), {}, level));
+        const std::vector<std::byte> textures = lod_layer_bytes();
+        vx::Result<vx::render::Renderer> renderer = scene_renderer(textures, false);
+        REQUIRE(renderer.has_value());
+        const double middle = 16.0 * static_cast<double>(1 << level);
+        const double top = 16.0 * static_cast<double>(1 << level);
+        vx::render::Camera camera;
+        camera.position = {middle + 0.5, top + 10.0, middle + 0.5};
+        camera.pitch = -1.5F;
+        const std::vector<std::uint8_t> pixels = draw_all(renderer.value(), offers, camera);
+        const std::size_t center =
+            4 * (((image_size.height / 2) * image_size.width) + (image_size.width / 2));
+        return Rgba{pixels[center], pixels[center + 1], pixels[center + 2], pixels[center + 3]};
+    };
+    const Rgba flat = floor_at(3);
+    CHECK(flat[2] > 150);
+    CHECK(flat[0] < 60);
+    const Rgba textured = floor_at(2);
+    CHECK(textured[0] > 150);
+    CHECK(textured[2] < 60);
 }

@@ -823,3 +823,40 @@ TEST_CASE("under random uploads, batches, stale offers, removals, frames, compac
     CHECK(space.stats().retired == 0);
     CHECK(space.stats().free == capacity - space.stats().live);
 }
+
+TEST_CASE("a chunk's place on each of RFC 0011's levels holds a record of its own") {
+    ArenaSpace space = make_space(1'024, 3);
+    FakeArena arena(1'024);
+    ChunkUploads uploads(space);
+    uploads.begin_frame(0, Time{});
+    const TestMesh mesh(some, 7);
+    vx::render::ChunkMeshUpdate coarse = mesh.update(here, 1);
+    coarse.level = 2;
+    REQUIRE(uploads.upload(mesh.update(here, 1), arena, Time{}).value() == Uploaded::written);
+    REQUIRE(uploads.upload(coarse, arena, Time{}).value() == Uploaded::written);
+    CHECK(uploads.stats().meshes == 2);
+    REQUIRE(uploads.find(here) != nullptr);
+    REQUIRE(uploads.find(here, 2) != nullptr);
+    CHECK(uploads.find(here)->level == 0);
+    CHECK(uploads.find(here, 2)->level == 2);
+    CHECK(uploads.find(here, 1) == nullptr);
+    // Each level keeps its own generations: level 2's newer mesh leaves
+    // level 0's, and an update no newer than its own level's is dropped.
+    coarse.generation = 2;
+    REQUIRE(uploads.upload(coarse, arena, Time{}).value() == Uploaded::written);
+    CHECK(uploads.find(here)->generation == 1);
+    CHECK(uploads.find(here, 2)->generation == 2);
+    CHECK(uploads.upload(mesh.update(here, 1), arena, Time{}).value() == Uploaded::dropped);
+    // Removing one level's mesh leaves the other's, whichever fills the
+    // hole in the records.
+    uploads.remove(here, 2);
+    CHECK(uploads.find(here, 2) == nullptr);
+    REQUIRE(uploads.find(here) != nullptr);
+    CHECK(uploads.find(here)->level == 0);
+    CHECK(uploads.stats().meshes == 1);
+    REQUIRE(uploads.upload(coarse, arena, Time{}).value() == Uploaded::written);
+    uploads.remove(here);
+    CHECK(uploads.find(here) == nullptr);
+    REQUIRE(uploads.find(here, 2) != nullptr);
+    CHECK(uploads.find(here, 2)->generation == 2);
+}

@@ -7,6 +7,7 @@
 #include <vx/render/upload.hpp>
 #include <vx/world/chunk_map.hpp>
 #include <vx/world/coordinates.hpp>
+#include <vx/world/lod.hpp>
 
 #include <volk.h>
 
@@ -27,6 +28,9 @@ struct ChunkMeshUpdate {
     std::uint32_t generation = 0;
     // RFC 0003's twelve ranges, all empty for a chunk with nothing to draw.
     ChunkMesh mesh;
+    // RFC 0011's level: `pos` is on that level's grid, and the mesh's quads
+    // are in cells 2^level blocks wide.
+    std::uint8_t level = 0;
 };
 
 // The order of a pass's six face groups in the arena: +x, +y, +z, -x, -y,
@@ -48,6 +52,7 @@ struct ChunkMeshRecord {
     // direction of a checkerboard of two cutout blocks that do not hide each
     // other.
     std::array<std::uint16_t, 12> count{};
+    std::uint8_t level = 0; // RFC 0011's, as the update's
 };
 
 // Where uploads put quads: the arena's buffer, or a stand-in in tests.
@@ -164,8 +169,8 @@ public:
     // written.
     [[nodiscard]] Result<Uploaded> upload_batch(std::span<const ChunkMeshUpdate> batch,
                                                 QuadWriter& writer);
-    // The chunk unloaded: its mesh goes.
-    void remove(ChunkPos pos);
+    // The chunk at `pos` on `level`'s grid unloaded: its mesh goes.
+    void remove(ChunkPos pos, std::uint8_t level = 0);
     // RFC 0007's compaction: the highest meshes move down, each into the
     // lowest free range that fits it while that lies lower, up to
     // `max_meshes` meshes and `max_quads` quads, though the first move goes
@@ -185,13 +190,15 @@ public:
     // Raised while a loading screen shows (RFC 0007).
     void set_budget(std::chrono::nanoseconds budget) noexcept { budget_ = budget; }
 
-    [[nodiscard]] const ChunkMeshRecord* find(ChunkPos pos) const noexcept;
+    [[nodiscard]] const ChunkMeshRecord* find(ChunkPos pos, std::uint8_t level = 0) const noexcept;
     [[nodiscard]] std::span<const ChunkMeshRecord> records() const noexcept { return records_; }
     [[nodiscard]] const UploadStats& stats() const noexcept { return stats_; }
 
 private:
-    // The newest generation known for `pos`: its mesh's, or its empty one's.
-    [[nodiscard]] std::optional<std::uint32_t> newest(ChunkPos pos) const noexcept;
+    // The newest generation known for `pos` on `level`: its mesh's, or its
+    // empty one's.
+    [[nodiscard]] std::optional<std::uint32_t> newest(ChunkPos pos,
+                                                      std::uint8_t level) const noexcept;
     [[nodiscard]] bool stale(const ChunkMeshUpdate& update) const noexcept;
     // The quads of the batch's updates that are not stale; `quads` holds each
     // update's.
@@ -210,8 +217,10 @@ private:
     std::uint32_t slot_ = 0;
     Clock::time_point frame_start_;
     std::vector<ChunkMeshRecord> records_;
-    ChunkMap index_;   // a chunk's record
-    ChunkMap emptied_; // the generation of a chunk's empty mesh, until it unloads
+    // By RFC 0011's level: a chunk's record, and the generation of a chunk's
+    // empty mesh until it unloads.
+    std::array<ChunkMap, lod_levels> index_;
+    std::array<ChunkMap, lod_levels> emptied_;
     UploadStats stats_;
     // Scratch, kept for its capacity: records by first quad, and a repack's
     // new ranges by record.

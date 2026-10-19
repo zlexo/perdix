@@ -41,8 +41,9 @@ public:
     [[nodiscard]] Result<Uploaded> upload_batch(std::span<const ChunkMeshUpdate> batch) {
         return uploads_->upload_batch(batch, *writer_);
     }
-    // The chunk unloaded: its mesh goes.
-    void remove(ChunkPos pos) { uploads_->remove(pos); }
+    // The chunk at `pos` on `level`'s grid (RFC 0011) unloaded: its mesh
+    // goes.
+    void remove(ChunkPos pos, std::uint8_t level = 0) { uploads_->remove(pos, level); }
 
 private:
     ChunkUploads* uploads_;
