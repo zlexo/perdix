@@ -16,6 +16,7 @@
 #include <vx/world/coordinates.hpp>
 #include <vx/world/job_record.hpp>
 #include <vx/world/life.hpp>
+#include <vx/world/lod.hpp>
 #include <vx/world/movement.hpp>
 #include <vx/world/versions.hpp>
 #include <vx/world/world_streamer.hpp>
@@ -47,15 +48,23 @@ constexpr std::size_t around_index(int dx, int dy, int dz) noexcept {
     return static_cast<std::size_t>(at);
 }
 
+// The level-0 chunk `chunk`'s place on RFC 0011's `level`: the chunk there
+// that holds it.
+ChunkPos on_level(ChunkPos chunk, std::uint8_t level) noexcept {
+    return {.x = chunk.x >> level, .y = chunk.y >> level, .z = chunk.z >> level};
+}
+
 } // namespace
 
-ChunkSight chunk_sight(const Viewer& viewer, ChunkPos pos, double near) noexcept {
-    // The chunk's box relative to the eye.
-    const BlockPos low = block_at(pos, {});
-    const Vec3d min{.x = static_cast<double>(low.x) - viewer.eye.x,
-                    .y = static_cast<double>(low.y) - viewer.eye.y,
-                    .z = static_cast<double>(low.z) - viewer.eye.z};
-    constexpr Vec3d side{.x = chunk_size, .y = chunk_size, .z = chunk_size};
+ChunkSight chunk_sight(const Viewer& viewer, ChunkPos pos, double near,
+                       std::uint8_t level) noexcept {
+    // The chunk's box relative to the eye, in doubles: a coarse chunk's
+    // corner can be 2^31 blocks out.
+    const double size = std::ldexp(static_cast<double>(chunk_size), level);
+    const Vec3d min{.x = (static_cast<double>(pos.x) * size) - viewer.eye.x,
+                    .y = (static_cast<double>(pos.y) * size) - viewer.eye.y,
+                    .z = (static_cast<double>(pos.z) * size) - viewer.eye.z};
+    const Vec3d side{.x = size, .y = size, .z = size};
     const Vec3d max = min + side;
     if (!viewer.view.may_contain(min, max)) {
         return {};
@@ -95,6 +104,7 @@ void WorldLoop::MeshJob::operator()(JobContext& job) const noexcept {
     MeshResult result;
     result.pins = pins;
     result.update.pos = pos;
+    result.update.level = level;
     result.update.load_id = pins->load_id;
     result.update.generation = generation;
     for (std::size_t pass = 0; pass < 2; ++pass) {
@@ -147,9 +157,39 @@ WorldLoop::WorldLoop(const Generator& generator, std::span<const BlockVisual> vi
 std::vector<std::unique_ptr<WorldLoop::Level>>
 WorldLoop::make_levels(const Generator& generator, JobSystem& jobs, WakeEvent& wake,
                        const WorldLoopSettings& settings) {
+    const RegionLimits limits{.view_distance = settings.region.view_distance,
+                              .hysteresis = settings.region.hysteresis};
+    const std::uint8_t count = settings.lod ? lod_levels : 1;
     std::vector<std::unique_ptr<Level>> levels;
-    levels.push_back(std::make_unique<Level>(generator, jobs, wake, settings.region));
+    levels.reserve(count);
+    for (std::uint8_t level = 0; level < count; ++level) {
+        levels.push_back(
+            std::make_unique<Level>(generator, jobs, wake, level_region(settings, level, limits)));
+    }
     return levels;
+}
+
+RegionSettings WorldLoop::level_region(const WorldLoopSettings& settings, std::uint8_t level,
+                                       RegionLimits limits) noexcept {
+    RegionSettings region = settings.region;
+    region.view_distance = limits.view_distance;
+    region.hysteresis = limits.hysteresis;
+    if (!settings.lod) {
+        return region;
+    }
+    // The rings' terrain disc is the region's, and their near cylinder too,
+    // so the levels drawn agree with what level 0 streams.
+    LodRings rings = *settings.lod;
+    rings.view_distance = limits.view_distance;
+    rings.near_distance = settings.region.near_distance;
+    rings.near_height = settings.region.near_height;
+    region.view_distance = rings.stream_distance(level);
+    region.level = level;
+    if (level > 0) {
+        region.near_distance = -1;
+        region.near_height = 0;
+    }
+    return region;
 }
 
 WorldLoop::MeshRecord& WorldLoop::Level::record(std::uint32_t index) {
@@ -171,8 +211,9 @@ WorldLoop::~WorldLoop() {
         level->streamer.cancel_queued();
     }
     jobs_->wait_until_idle();
-    mesh_results_.drain(
-        [this](MeshResult&& result) { levels_.front()->streamer.release(*result.pins); });
+    mesh_results_.drain([this](MeshResult&& result) {
+        levels_.at(result.update.level)->streamer.release(*result.pins);
+    });
 }
 
 bool WorldLoop::pass() {
@@ -322,7 +363,10 @@ void WorldLoop::handle(ToWorld& message) {
         camera_ = message.camera.chunk;
         viewer_ = message.camera;
         for (const std::unique_ptr<Level>& level : levels_) {
-            if (level->streamer.set_viewer(message.camera)) {
+            // Each level's streamer looks from the chunk on its grid.
+            Viewer viewer = message.camera;
+            viewer.chunk = on_level(viewer.chunk, level->level);
+            if (level->streamer.set_viewer(viewer)) {
                 level->rescore();
             }
         }
@@ -415,17 +459,18 @@ void WorldLoop::keep_memory(std::chrono::steady_clock::time_point now) {
 }
 
 void WorldLoop::apply_limits() {
+    // The budget limits the terrain disc of all levels together: each
+    // streams as far as its level needs within it.
     for (const std::unique_ptr<Level>& level : levels_) {
-        level->streamer.set_limits(budget_.limits());
+        const RegionSettings region = region_settings(*level);
+        level->streamer.set_limits(
+            {.view_distance = region.view_distance, .hysteresis = region.hysteresis});
     }
     follow_events();
 }
 
-RegionSettings WorldLoop::region_settings([[maybe_unused]] const Level& level) const noexcept {
-    RegionSettings region = settings_.region;
-    region.view_distance = budget_.limits().view_distance;
-    region.hysteresis = budget_.limits().hysteresis;
-    return region;
+RegionSettings WorldLoop::region_settings(const Level& level) const noexcept {
+    return level_region(settings_, level.level, budget_.limits());
 }
 
 WorldReport WorldLoop::report() const {
@@ -673,7 +718,11 @@ void WorldLoop::drop_mesh(Level& level, std::uint32_t index, ChunkPos pos) {
         --meshes_in_flight_;
     }
     if (record.forwarded != 0) {
-        to_main_.push({.kind = ToMain::Kind::unload, .pos = pos, .mesh = {}, .batch = {}});
+        to_main_.push({.kind = ToMain::Kind::unload,
+                       .pos = pos,
+                       .level = level.level,
+                       .mesh = {},
+                       .batch = {}});
     }
     // It leaves its batch, which goes out without it.
     if (record.batch != 0) {
@@ -687,7 +736,7 @@ void WorldLoop::drop_mesh(Level& level, std::uint32_t index, ChunkPos pos) {
 }
 
 void WorldLoop::integrate_mesh(MeshResult& result) {
-    Level& level = *levels_.front();
+    Level& level = *levels_.at(result.update.level);
     level.streamer.release(*result.pins);
     --meshes_in_flight_;
     ++meshes_made_;
@@ -792,9 +841,27 @@ void WorldLoop::feed() {
         --urgent_room;
         return true;
     });
-    std::size_t normal_room = room(JobLevel::normal, "Queued normal");
-    for (const std::unique_ptr<Level>& level : levels_) {
-        feed(*level, normal_room);
+    // The normal job level's room, shared between RFC 0011's levels so none
+    // starves: an equal share each, and what is left over a job each to the
+    // levels next in turn, a turn that moves on with each pass; then what a
+    // level leaves goes to the others, the finest first. The job queue runs
+    // the jobs by their keys, each level's size on screen.
+    const std::size_t normal_room = room(JobLevel::normal, "Queued normal");
+    const std::size_t count = levels_.size();
+    std::size_t over = normal_room % count;
+    std::size_t left = 0;
+    for (std::size_t step = 0; step < count; ++step) {
+        std::size_t share = normal_room / count;
+        if (over > 0) {
+            ++share;
+            --over;
+        }
+        feed(*levels_[(feed_turn_ + step) % count], share);
+        left += share;
+    }
+    feed_turn_ = (feed_turn_ + 1) % count;
+    for (std::size_t level = 0; count > 1 && left > 0 && level < count; ++level) {
+        feed(*levels_[level], left);
     }
 }
 
@@ -864,7 +931,8 @@ WorldSample WorldLoop::sample(SampleKind kind) {
         out.kind = SampleKind::full;
     }
     out.longest_pass = std::exchange(longest_pass_, std::chrono::nanoseconds{0});
-    out.view_distance = levels_.front()->streamer.limits().view_distance;
+    // The terrain disc's, all levels together.
+    out.view_distance = budget_.limits().view_distance;
     bool any_missing = false;
     for (const std::unique_ptr<Level>& level : levels_) {
         out.longest_step = std::max(out.longest_step, level->streamer.take_longest_step());
@@ -889,7 +957,8 @@ bool WorldLoop::count_holes(Level& level, WorldSample& sample) {
         if (!viewer_) {
             continue;
         }
-        const ChunkSight sight = chunk_sight(*viewer_, records[index].pos, near_holes_distance);
+        const ChunkSight sight =
+            chunk_sight(*viewer_, records[index].pos, near_holes_distance, level.level);
         if (sight.in_view) {
             ++sample.holes;
         }
@@ -931,7 +1000,8 @@ std::uint32_t WorldLoop::broken_invariants(Level& level, const StreamingStats& s
     // than taken from the streamer: no record stays outside it.
     if (camera_) {
         const RegionSettings region = region_settings(level);
-        broken += records.outside(Region(*camera_, region).grown(region.hysteresis));
+        broken += records.outside(
+            Region(on_level(*camera_, level.level), region).grown(region.hysteresis));
     }
     return broken;
 }
@@ -970,6 +1040,7 @@ void WorldLoop::skip_mesh(Level& level, std::uint32_t index) {
     ++meshes_skipped_;
     forward(level, index,
             MeshUpdate{.pos = pos,
+                       .level = level.level,
                        .load_id = record.load_id,
                        .generation = record.generation,
                        .counts = {},
@@ -986,11 +1057,16 @@ bool WorldLoop::start_mesh(Level& level, std::uint32_t index, std::uint32_t key)
     }
     const JobPriority priority{.level = record.urgent ? JobLevel::urgent : JobLevel::normal,
                                .key = key};
+    // Corner shadows at level 0 only: a coarse cell's corners are too far
+    // apart for them to read as contact shadows (RFC 0011).
+    MeshOptions options = meshing_;
+    options.occlusion = options.occlusion && level.level == 0;
     record.job = jobs_->submit(priority, MeshJob{.context = &context_,
                                                  .pins = pins,
                                                  .pos = pos,
+                                                 .level = level.level,
                                                  .generation = generation,
-                                                 .options = meshing_});
+                                                 .options = options});
     if (!record.job) {
         level.streamer.release(*pins);
         return false;

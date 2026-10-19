@@ -13,6 +13,7 @@
 #include <vx/world/chunk_storage.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/life.hpp>
+#include <vx/world/lod.hpp>
 #include <vx/world/placeholder_generator.hpp>
 #include <vx/world/region.hpp>
 #include <vx/world/world_streamer.hpp>
@@ -25,6 +26,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <numbers>
@@ -225,15 +227,17 @@ private:
 };
 
 // RFC 0003's mesher run here over the blocks the loop holds now: the mesh the
-// main thread should hold for a chunk once the loop has settled.
+// main thread should hold for a chunk once the loop has settled, on level 0
+// or one of RFC 0011's coarse levels.
 class Mesher {
 public:
     std::uint64_t hash(const WorldLoop& loop, ChunkPos pos,
-                       std::span<const vx::BlockVisual> visuals, vx::MeshOptions options = {}) {
+                       std::span<const vx::BlockVisual> visuals, vx::MeshOptions options = {},
+                       std::uint8_t level = 0) {
         std::array<vx::ChunkStorage, 27> uniform;
         const auto chunk_at = [&](int dx, int dy, int dz) -> const vx::ChunkStorage* {
             const vx::ChunkRecord* record =
-                loop.streamer().find({.x = pos.x + dx, .y = pos.y + dy, .z = pos.z + dz});
+                loop.streamer(level).find({.x = pos.x + dx, .y = pos.y + dy, .z = pos.z + dz});
             REQUIRE(record != nullptr);
             if (record->blocks != nullptr) {
                 return &record->blocks->value();
@@ -1675,4 +1679,377 @@ TEST_CASE("a lowering's own full frames, reported once the arena has room again,
     // A new fill, still full when reported: the next step down.
     send_arena(loop, 7, 1.0);
     CHECK(check() == vx::RegionLimits{.view_distance = 6, .hysteresis = 0});
+}
+
+// RFC 0011's levels: a streamer on each, and every mesh and unload with its
+// level.
+
+namespace {
+
+using LevelChunk = std::tuple<int, std::int32_t, std::int32_t, std::int32_t>;
+
+LevelChunk level_chunk_of(std::uint8_t level, ChunkPos pos) {
+    return {int{level}, pos.x, pos.y, pos.z};
+}
+
+// The chunks of every level drawn and complete.
+std::set<LevelChunk> shown_on_levels(const WorldLoop& loop) {
+    std::set<LevelChunk> out;
+    for (std::uint8_t level = 0; level < loop.levels(); ++level) {
+        const vx::ChunkRecords& records = loop.streamer(level).records();
+        for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+            if (records.live(index) && records[index].drawn &&
+                records[index].state == ChunkState::complete) {
+                out.insert(level_chunk_of(level, records[index].pos));
+            }
+        }
+    }
+    return out;
+}
+
+// The rings as the loop applies them to a region.
+vx::LodRings rings_for(vx::LodRings rings, const vx::RegionSettings& region) {
+    rings.view_distance = region.view_distance;
+    rings.near_distance = region.near_distance;
+    rings.near_height = region.near_height;
+    return rings;
+}
+
+// The main thread's meshes by level and chunk, each its newest, as RFC
+// 0011's uploads keep them.
+class LevelMeshes {
+public:
+    void receive(std::vector<ToMain>& messages) {
+        for (ToMain& message : messages) {
+            switch (message.kind) {
+            case ToMain::Kind::mesh:
+                take(message.mesh);
+                break;
+            case ToMain::Kind::batch:
+                for (const vx::app::MeshUpdate& update : message.batch) {
+                    take(update);
+                }
+                break;
+            case ToMain::Kind::unload:
+                held.erase(level_chunk_of(message.level, message.pos));
+                unloads.insert(int{message.level});
+                break;
+            default:
+                break;
+            }
+        }
+    }
+
+    struct Held {
+        std::uint32_t generation = 0;
+        std::uint64_t bytes = 0; // a hash of the counts and quads
+        bool empty = true;
+    };
+    std::map<LevelChunk, Held> held;
+    std::set<int> unloads; // the levels unloads came for
+
+private:
+    void take(const vx::app::MeshUpdate& update) {
+        Held& slot = held[level_chunk_of(update.level, update.pos)];
+        if (update.generation < slot.generation) {
+            return;
+        }
+        slot.generation = update.generation;
+        slot.empty =
+            std::ranges::all_of(update.counts, [](std::uint32_t count) { return count == 0; });
+        slot.bytes = mesh_hash(update.counts, update.quads.data());
+    }
+};
+
+std::set<LevelChunk> keys(const std::map<LevelChunk, LevelMeshes::Held>& held) {
+    std::set<LevelChunk> out;
+    for (const auto& [chunk, mesh] : held) {
+        out.insert(chunk);
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("with RFC 0011's rings each level streams its own disc, and every chunk drawn sends "
+          "its mesh once, with its level") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small, .lod = vx::LodRings{}});
+    REQUIRE(loop.levels() == vx::lod_levels);
+    move_camera(loop, above_hills);
+    loop.settle();
+    std::vector<ToMain> messages;
+    loop.take(messages);
+    std::set<LevelChunk> meshed;
+    for (const ToMain& message : messages) {
+        REQUIRE(message.kind == ToMain::Kind::mesh);
+        CHECK(meshed.insert(level_chunk_of(message.mesh.level, message.mesh.pos)).second);
+    }
+    CHECK(meshed == shown_on_levels(loop));
+    const vx::LodRings rings = rings_for({}, small);
+    for (std::uint8_t level = 0; level < vx::lod_levels; ++level) {
+        INFO("level " << int{level});
+        CHECK(loop.streamer(level).limits().view_distance == rings.stream_distance(level));
+        CHECK(std::ranges::count_if(meshed, [level](const LevelChunk& chunk) {
+                  return std::get<0>(chunk) == level;
+              }) > 0);
+    }
+    CHECK(loop.meshes_in_flight() == 0);
+}
+
+TEST_CASE("coarse levels are meshed without corner shadows, level 0 with them") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small, .lod = vx::LodRings{}});
+    move_camera(loop, above_hills);
+    loop.settle();
+    std::vector<ToMain> messages;
+    loop.take(messages);
+    LevelMeshes main;
+    main.receive(messages);
+    Mesher mesher;
+    std::array<std::size_t, vx::lod_levels> compared{};
+    std::size_t shadowed = 0; // coarse meshes their shadows would change
+    for (const auto& [chunk, mesh] : main.held) {
+        const auto& [level, x, y, z] = chunk;
+        if (mesh.empty) {
+            continue;
+        }
+        const auto at = static_cast<std::uint8_t>(level);
+        const ChunkPos pos{.x = x, .y = y, .z = z};
+        const std::uint64_t made =
+            mesher.hash(loop, pos, table, {.merge = true, .occlusion = level == 0}, at);
+        CHECK(mesh.bytes == made);
+        ++compared.at(at);
+        if (level > 0 &&
+            mesher.hash(loop, pos, table, {.merge = true, .occlusion = true}, at) != made) {
+            ++shadowed;
+        }
+    }
+    CHECK(compared[0] > 10);
+    CHECK(compared[1] > 0);
+    // The check can tell: on some coarse meshes, corner shadows would show.
+    CHECK(shadowed > 0);
+}
+
+TEST_CASE("a far move unloads every level's meshes with their level, and each level ends holding "
+          "what it shows") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small, .lod = vx::LodRings{}});
+    LevelMeshes main;
+    std::vector<ToMain> messages;
+    for (const ChunkPos camera : {above_hills, ChunkPos{.x = 3 + 4'000, .y = 2, .z = 3}}) {
+        move_camera(loop, camera);
+        loop.settle();
+        loop.take(messages);
+        main.receive(messages);
+        CHECK(keys(main.held) == shown_on_levels(loop));
+    }
+    // 4,000 chunks is 125 level-5 chunks: every level's disc moved on.
+    CHECK(main.unloads == std::set<int>{0, 1, 2, 3, 4, 5});
+}
+
+TEST_CASE("the render distance is the terrain disc of all levels, and each level streams as far "
+          "as it needs within it") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small, .lod = vx::LodRings{}});
+    move_camera(loop, above_hills);
+    loop.settle();
+    ToWorld message;
+    message.kind = ToWorld::Kind::view_distance;
+    message.view_distance = 8;
+    loop.to_world().push(std::move(message));
+    loop.settle();
+    vx::RegionSettings farther = small;
+    farther.view_distance = 8;
+    const vx::LodRings rings = rings_for({}, farther);
+    for (std::uint8_t level = 0; level < vx::lod_levels; ++level) {
+        INFO("level " << int{level});
+        CHECK(loop.streamer(level).limits() ==
+              vx::RegionLimits{.view_distance = rings.stream_distance(level),
+                               .hysteresis = small.hysteresis});
+    }
+    // 8, 6, 4, 3, 2 and 2 of their own chunks.
+    CHECK(loop.streamer(1).limits().view_distance == 6);
+}
+
+TEST_CASE("a sample counts every level's chunks, and its checks find every level whole") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    // A small window's rings: level 0 streams 7 chunks of the 8 in view.
+    vx::LodRings window;
+    window.framebuffer_height = 480;
+    window.pixels_per_cell = 8.0;
+    vx::RegionSettings region = small;
+    region.view_distance = 8;
+    REQUIRE(rings_for(window, region).stream_distance(0) == 7);
+    // No upload is acknowledged here, so no backpressure: over 512 meshes go.
+    WorldLoop loop(generator, table, jobs, pool,
+                   {.region = region, .lod = window, .unuploaded_limit = 1'000'000});
+    MainThread main;
+    move_camera(loop, above_hills);
+    loop.pass();
+    const vx::app::WorldSample early = ask_sample(loop, main);
+    CHECK_FALSE(early.complete);
+    loop.settle();
+    ToWorld message;
+    message.kind = ToWorld::Kind::sample;
+    message.sample_kind = SampleKind::checked;
+    loop.to_world().push(std::move(message));
+    loop.pass();
+    std::vector<ToMain> messages;
+    loop.take(messages);
+    main.receive(messages);
+    REQUIRE_FALSE(main.samples.empty());
+    const vx::app::WorldSample done = main.samples.back();
+    CHECK(done.complete);
+    CHECK(done.broken == 0);
+    CHECK(done.holes == 0);
+    // The terrain disc's distance, not level 0's own, which the rings with
+    // the region's near cylinder give.
+    CHECK(done.view_distance == 8);
+    CHECK(loop.streamer().limits().view_distance == 7);
+    // Every level's chunks counted.
+    std::uint64_t generated = 0;
+    std::size_t bytes = 0;
+    for (std::uint8_t level = 0; level < loop.levels(); ++level) {
+        generated += loop.streamer(level).stats().generated;
+        bytes += loop.streamer(level).chunk_bytes();
+    }
+    CHECK(done.generated == generated);
+    CHECK(done.chunk_bytes == bytes);
+    CHECK(loop.streamer(5).stats().generated > 0);
+}
+
+TEST_CASE("a pass's room is shared between the levels in turn, so none starves") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    // Room for 3 jobs a pass, for 6 levels.
+    WorldLoop loop(generator, table, jobs, pool,
+                   {.region = small, .lod = vx::LodRings{}, .queue_limit = 3});
+    move_camera(loop, above_hills);
+    std::array<std::size_t, vx::lod_levels> passes_with_a_job{};
+    for (int pass = 0; pass < 6; ++pass) {
+        jobs.run_until_idle();
+        loop.pass();
+        // Every earlier job ran and was taken in: those in flight started now.
+        std::size_t started = 0;
+        for (std::uint8_t level = 0; level < vx::lod_levels; ++level) {
+            const std::size_t in_flight = loop.streamer(level).stats().jobs_in_flight;
+            started += in_flight;
+            passes_with_a_job.at(level) += in_flight > 0 ? 1 : 0;
+        }
+        CHECK(started + loop.meshes_in_flight() == 3);
+    }
+    // Each level had a job in half the passes: the turn moved on each pass.
+    for (std::uint8_t level = 0; level < vx::lod_levels; ++level) {
+        INFO("level " << int{level});
+        CHECK(passes_with_a_job.at(level) == 3);
+    }
+}
+
+TEST_CASE("coarse levels stream no near cylinder: high over the hills, only level 0 keeps chunks "
+          "around the camera") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small, .lod = vx::LodRings{}});
+    // 2,560 blocks up: on levels 1 to 3, rows 40, 20 and 10.
+    const ChunkPos high{.x = 3, .y = 80, .z = 3};
+    move_camera(loop, high);
+    loop.settle();
+    const auto top_row = [&loop](std::uint8_t level) {
+        std::int32_t top = std::numeric_limits<std::int32_t>::min();
+        const vx::ChunkRecords& records = loop.streamer(level).records();
+        for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+            if (records.live(index)) {
+                top = std::max(top, records[index].pos.y);
+            }
+        }
+        return top;
+    };
+    CHECK(top_row(0) >= high.y);
+    for (std::uint8_t level = 1; level <= 3; ++level) {
+        INFO("level " << int{level});
+        // The terrain and the rows planned around it, far under the camera.
+        CHECK(top_row(level) < (high.y >> level) - 2);
+    }
+}
+
+TEST_CASE("room a level leaves goes to the others, the finest first") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool,
+                   {.region = small, .lod = vx::LodRings{}, .queue_limit = 6});
+    move_camera(loop, {.x = 2, .y = 2, .z = 3});
+    loop.settle();
+    // A step east within the same level-1 chunk: only level 0 has new work,
+    // so it takes the coarse levels' shares too.
+    move_camera(loop, {.x = 3, .y = 2, .z = 3});
+    loop.pass();
+    for (std::uint8_t level = 1; level < vx::lod_levels; ++level) {
+        CHECK(loop.streamer(level).stats().jobs_in_flight == 0);
+    }
+    CHECK(loop.streamer().stats().jobs_in_flight + loop.meshes_in_flight() == 6);
+}
+
+TEST_CASE("a coarse chunk's sight takes its own box, 32 x 2^level blocks a side") {
+    // Looking north from the middle of chunk (0, 0, 0).
+    vx::Viewer viewer = vx::viewer_at({.x = 0, .y = 0, .z = 0});
+    viewer.view = vx::Frustum({.x = 0.0, .y = 0.0, .z = -1.0}, {.x = 1.0, .y = 0.0, .z = 0.0},
+                              {.x = 0.0, .y = 1.0, .z = 0.0}, 0.7002075382097097, 16.0 / 9.0, 0.05);
+    // Level-2 chunk (0, 0, -3) spans 256 to 384 blocks north of the origin:
+    // ahead, its nearest point 272 blocks from the eye. Its level-0
+    // namesake would be 80 away.
+    const ChunkPos ahead{.x = 0, .y = 0, .z = -3};
+    const vx::app::ChunkSight coarse = vx::app::chunk_sight(viewer, ahead, 256.0, 2);
+    CHECK(coarse.in_view);
+    CHECK_FALSE(coarse.near);
+    CHECK(vx::app::chunk_sight(viewer, ahead, 280.0, 2).near);
+    CHECK(vx::app::chunk_sight(viewer, ahead, 256.0).near);
+    // Three behind: out of view.
+    CHECK_FALSE(vx::app::chunk_sight(viewer, {.x = 0, .y = 0, .z = 3}, 256.0, 2).in_view);
+}
+
+TEST_CASE("the loop goes with every level's meshes queued, or done and not taken in, and every "
+          "pin back") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    // In debug builds each streamer's destructor asserts that every job
+    // record came back to it.
+    for (const bool run : {false, true}) {
+        WorldLoop loop(generator, table, jobs, pool, {.region = small, .lod = vx::LodRings{}});
+        move_camera(loop, above_hills);
+        loop.settle();
+        // Merging off: every level's meshes again.
+        ToWorld message;
+        message.kind = ToWorld::Kind::meshing;
+        message.meshing = {.merge = false, .occlusion = true};
+        loop.to_world().push(std::move(message));
+        loop.pass();
+        REQUIRE(loop.meshes_in_flight() > 0);
+        if (run) {
+            jobs.run_until_idle(); // done, their results not taken in
+        }
+    }
 }
