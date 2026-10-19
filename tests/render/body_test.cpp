@@ -297,7 +297,5 @@ TEST_CASE("full fog turns a body the fog color, as 26.2's entity shader fogs it"
                              project(front, {.x = 0.5, .y = 65.05, .z = 0.62})}) {
         CHECK(near(pixel_at(seen, at.x, at.y), {64, 128, 192, 255}));
     }
-    // The sky is not fogged: it is cleared, not drawn.
-    CHECK(near(pixel_at(seen, 2, 2), sky_pixel));
     CHECK(renderer.value().context().instance().validation_counts().errors == 0);
 }

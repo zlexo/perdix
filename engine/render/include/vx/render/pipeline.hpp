@@ -35,6 +35,11 @@ struct GraphicsPipelineDesc {
     // writes it. Text seen through walls does neither.
     bool depth_test = true;
     bool depth_write = true;
+    // With depth tested: how a fragment's depth must compare with the
+    // target's to pass. Greater, nearer in reversed-Z; equal draws only
+    // where the target still holds a depth, as the sky (RFC 0013) does
+    // where nothing was drawn.
+    VkCompareOp depth_compare = VK_COMPARE_OP_GREATER;
     // Push constants from offset 0, and the stages that read them.
     std::uint32_t push_constant_size = 0;
     VkShaderStageFlags push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT;

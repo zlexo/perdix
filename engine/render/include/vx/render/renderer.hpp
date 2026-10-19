@@ -302,6 +302,7 @@ private:
         GraphicsPipeline opaque;
         GraphicsPipeline cutout;
         std::optional<GraphicsPipeline> wireframe; // where the device offers it
+        GraphicsPipeline sky;                      // RFC 0013's, drawn after the chunks
         Buffer indices;
     };
 
