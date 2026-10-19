@@ -105,6 +105,7 @@ doctest_discover_tests(vx_world_tests PROPERTIES ${VX_DOCTEST_PROPERTIES})
 
 add_executable(vx_mesh_tests
     main.cpp
+    mesh/lod_mesh_test.cpp
     mesh/mesh_chunk_test.cpp
     mesh/name_tag_test.cpp
     mesh/padded_chunk_test.cpp
