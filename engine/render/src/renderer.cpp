@@ -188,8 +188,16 @@ DrawPush make_draw_push(const Camera& camera, const BlockAndFraction& split, VkE
             .texture = texture};
 }
 
-// The body pipeline (RFC 0012) pulls vx::BodyVertex as two float4s and
-// reads the cube's push constants, the skin in place of the texture.
+// The bodies' push constants (body.slang): the cube's, the skin in place of
+// the texture, and the frame's fog (RFC 0013).
+struct BodyPush {
+    DrawPush draw;         // offset 0
+    VkDeviceAddress fog;   // offset 96
+    std::uint64_t padding; // to 112, a multiple of 16 as the shader rounds it
+};
+static_assert(sizeof(BodyPush) == 112 && offsetof(BodyPush, fog) == 96);
+
+// The body pipeline (RFC 0012) pulls vx::BodyVertex as two float4s.
 static_assert(sizeof(BodyVertex) == 32 && offsetof(BodyVertex, texel) == 12 &&
               offsetof(BodyVertex, normal) == 20);
 
@@ -205,7 +213,7 @@ Result<GraphicsPipeline> make_body_pipeline(const Device& device, VkFormat color
                                      .depth_format = depth_format,
                                      .cull_mode = VK_CULL_MODE_NONE,
                                      .set_layout = textures,
-                                     .push_constant_size = sizeof(DrawPush),
+                                     .push_constant_size = sizeof(BodyPush),
                                      .push_constant_stages = push_stages},
                                     "body");
 }
@@ -308,19 +316,20 @@ struct ChunkPush {
     glm::vec3 camera_fraction; // offset 80
     float occlusion_strength;  // offset 92
     std::uint32_t filter;      // offset 96: a BlockFilter, as chunk.slang numbers them
-    std::uint32_t padding_a;   // to 112, a multiple of 16 as the shader rounds it
-    std::uint64_t padding_b;
+    std::uint32_t padding;     // to 104, the address's alignment
+    VkDeviceAddress fog;       // offset 104: the frame's fog (RFC 0013)
 };
 static_assert(sizeof(ChunkPush) == 112 && offsetof(ChunkPush, origins) == 72 &&
               offsetof(ChunkPush, camera_fraction) == 80 &&
-              offsetof(ChunkPush, occlusion_strength) == 92 && offsetof(ChunkPush, filter) == 96);
+              offsetof(ChunkPush, occlusion_strength) == 92 && offsetof(ChunkPush, filter) == 96 &&
+              offsetof(ChunkPush, fog) == 104);
 
 // One frame's push constants for the chunks, on a target of `extent`. Each
 // chunk's origin was subtracted from the camera's block in 64-bit integers,
 // as cubes are, so the GPU only sees small numbers.
 ChunkPush make_chunk_push(const Camera& camera, const BlockAndFraction& split, VkExtent2D extent,
                           VkDeviceAddress quads, VkDeviceAddress origins, BlockFilter filter,
-                          float occlusion_strength) {
+                          float occlusion_strength, VkDeviceAddress fog) {
     const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
     return {.view_projection = view_projection(camera, aspect),
             .quads = quads,
@@ -328,8 +337,35 @@ ChunkPush make_chunk_push(const Camera& camera, const BlockAndFraction& split, V
             .camera_fraction = split.fraction,
             .occlusion_strength = occlusion_strength,
             .filter = static_cast<std::uint32_t>(filter),
-            .padding_a = 0,
-            .padding_b = 0};
+            .padding = 0,
+            .fog = fog};
+}
+
+// RFC 0013's fog for a frame, as fog.slang reads it through its address.
+struct FogBlock {
+    glm::vec4 color; // sRGB-encoded, 0 to 1; w is 1 with the fog on, 0 off
+    glm::vec4 ramps; // the haze's end, the band's start and end, in blocks
+};
+static_assert(sizeof(FogBlock) == 32);
+
+// Writes a frame's fog, or none, into its slot's buffer.
+Result<void> write_fog(VmaAllocator allocator, const Buffer& buffer,
+                       const std::optional<Fog>& fog) {
+    FogBlock block{.color = glm::vec4(0.0F), .ramps = glm::vec4(0.0F)};
+    if (fog) {
+        block.color = glm::vec4(static_cast<float>(fog->color.r) / 255.0F,
+                                static_cast<float>(fog->color.g) / 255.0F,
+                                static_cast<float>(fog->color.b) / 255.0F, 1.0F);
+        block.ramps =
+            glm::vec4(fog->ramps.haze_end, fog->ramps.band_start, fog->ramps.band_end, 0.0F);
+    }
+    std::memcpy(buffer.mapping().data(), &block, sizeof(block));
+    if (const VkResult result =
+            vmaFlushAllocation(allocator, buffer.allocation(), 0, VK_WHOLE_SIZE);
+        result != VK_SUCCESS) {
+        return Error{"vmaFlushAllocation failed: " + vk_result_name(result)};
+    }
+    return {};
 }
 
 // Writes each cube's block, as seen from the camera's block, into a frame
@@ -349,6 +385,17 @@ Result<void> write_cube_origins(VmaAllocator allocator, const Buffer& origins,
         return Error{"vmaFlushAllocation failed: " + vk_result_name(result)};
     }
     return {};
+}
+
+// Writes a frame's cube origins and its fog into its slot's buffers.
+Result<void> write_cubes_and_fog(VmaAllocator allocator, const Buffer& origins, const Buffer& fog,
+                                 const FrameInputs& inputs, const glm::i64vec3& camera_block) {
+    if (const Result<void> written =
+            write_cube_origins(allocator, origins, inputs.cubes, camera_block);
+        !written.has_value()) {
+        return written.error();
+    }
+    return write_fog(allocator, fog, inputs.fog);
 }
 
 // One of the chunk shader's two pipelines: its fragment shader is
@@ -449,7 +496,7 @@ struct ChunkDraw {
 // each one's skin, a slot of the texture table.
 struct BodyDraw {
     const GraphicsPipeline* pipeline;
-    DrawPush push;
+    BodyPush push;
     std::uint32_t count;
     std::array<std::uint32_t, Renderer::max_players> skins;
 };
@@ -1209,7 +1256,7 @@ Renderer::Renderer(Renderer&& other) noexcept
       origins_(std::move(other.origins_)), body_vertices_(std::move(other.body_vertices_)),
       body_origins_(std::move(other.body_origins_)), posed_(other.posed_),
       tag_vertices_(std::move(other.tag_vertices_)), tag_origins_(std::move(other.tag_origins_)),
-      laid_(other.laid_), tag_order_(other.tag_order_),
+      fog_(std::move(other.fog_)), laid_(other.laid_), tag_order_(other.tag_order_),
       image_rendered_(std::exchange(other.image_rendered_, {})),
       frames_done_(std::exchange(other.frames_done_, VK_NULL_HANDLE)), frame_(other.frame_),
       gpu_timer_(std::move(other.gpu_timer_)), times_(other.times_),
@@ -1313,6 +1360,14 @@ Result<void> Renderer::create_frame_objects() {
             return tag_origins.error();
         }
         tag_origins_.push_back(std::move(tag_origins).value());
+        Result<Buffer> fog = Buffer::create(
+            context_.device(), sizeof(FogBlock),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            BufferMemory::per_frame, "frame slot " + std::to_string(slot) + " fog");
+        if (!fog.has_value()) {
+            return fog.error();
+        }
+        fog_.push_back(std::move(fog).value());
     }
 
     Result<GpuTimer> timer = GpuTimer::create(context_.device(), frames_in_flight);
@@ -1712,8 +1767,9 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
     // The slot's origins are free with the slot.
     const BlockAndFraction split = split_position(inputs.camera.position);
     const Buffer& origins = origins_[frame % frames_in_flight];
+    const Buffer& fog = fog_[frame % frames_in_flight];
     if (const Result<void> written =
-            write_cube_origins(context_.device().allocator(), origins, inputs.cubes, split.block);
+            write_cubes_and_fog(context_.device().allocator(), origins, fog, inputs, split.block);
         !written.has_value()) {
         return written.error();
     }
@@ -1721,9 +1777,11 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
     BodyDraw bodies{.pipeline = &body_drawing_.pipeline, .push = {}, .count = 0, .skins = {}};
     const auto body_draw = [&](VkExtent2D extent) {
         BodyDraw draw = bodies;
-        draw.push = make_draw_push(inputs.camera, split, extent,
-                                   body_vertices_[frame % frames_in_flight].address(),
-                                   body_origins_[frame % frames_in_flight].address(), 0);
+        draw.push = {.draw = make_draw_push(inputs.camera, split, extent,
+                                            body_vertices_[frame % frames_in_flight].address(),
+                                            body_origins_[frame % frames_in_flight].address(), 0),
+                     .fog = fog.address(),
+                     .padding = 0};
         return draw;
     };
     TagDraw tags{.see_through = &text_drawing_.see_through,
@@ -1754,7 +1812,7 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
                          .wireframe_pipeline = wireframe() ? &*chunk_drawing_.wireframe : nullptr,
                          .indices = chunk_drawing_.indices.handle(),
                          .push = make_chunk_push(inputs.camera, split, extent, 0, 0, block_filter_,
-                                                 occlusion_strength_),
+                                                 occlusion_strength_, fog.address()),
                          .frame = {},
                          .draw_limit = chunks_.draw_limit()};
     };

@@ -7,6 +7,7 @@
 #include <vx/mesh/quad.hpp>
 #include <vx/render/block_textures.hpp>
 #include <vx/render/camera.hpp>
+#include <vx/render/fog.hpp>
 #include <vx/render/renderer.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
@@ -16,6 +17,7 @@
 #include <glm/ext/vector_double3.hpp>
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -515,4 +517,101 @@ TEST_CASE("the wireframe draws a face's triangle edges where the device offers i
     CHECK(draw(renderer, camera) == solid);
     CHECK(renderer.context().instance().validation_counts().errors == 0);
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}
+
+namespace {
+
+// The sRGB encoding of a channel of linear light, 0 to 1.
+double encoded(double linear) {
+    return linear <= 0.0031308 ? linear * 12.92 : (1.055 * std::pow(linear, 1.0 / 2.4)) - 0.055;
+}
+
+// A face of `linear` light under fog `amount` toward `fog`, as 26.2 mixes
+// it, in encoded values, then read back from the sRGB image: 0 to 255.
+double fogged(double linear, std::uint8_t fog, double amount) {
+    const double face = encoded(linear);
+    return 255.0 * (face + (amount * ((static_cast<double>(fog) / 255.0) - face)));
+}
+
+// What a renderer draws for `camera` under `fog`, read back.
+std::vector<std::uint8_t> draw_fogged(vx::render::Renderer& renderer,
+                                      const vx::render::Camera& camera,
+                                      const std::optional<vx::render::Fog>& fog) {
+    const vx::Result<vx::render::Frame> frame =
+        renderer.render({.sky = black, .camera = camera, .cubes = {}, .fog = fog});
+    REQUIRE(frame.has_value());
+    vx::Result<std::vector<std::uint8_t>> pixels = renderer.capture();
+    REQUIRE(pixels.has_value());
+    return std::move(pixels).value();
+}
+
+} // namespace
+
+TEST_CASE("fog mixes a face toward the fog color by the larger ramp, in encoded values as 26.2 "
+          "mixes") {
+    const std::array<Quarters, 1> layers = {Quarters{white, white, white, white}};
+    const std::vector<std::byte> textures = texture_bytes(layers);
+    vx::Result<vx::render::Renderer> created = renderer_with(textures);
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    OneBlock block(vx::Opacity::opaque);
+    REQUIRE(renderer.set_chunk({.x = 0, .y = 0, .z = 0}, block.mesh()).has_value());
+
+    // The +z face, 1.2 blocks off: each corner is sqrt(1.94) from the eye
+    // and 1.3 across, and the distances are interpolated from the corners,
+    // as 26.2 does, so the whole face has those. White at the face's shade.
+    const vx::render::Camera camera = facing(vx::Face::pos_z);
+    const auto distance = static_cast<float>(std::sqrt(1.94));
+    constexpr float cylinder = 1.3F;
+    constexpr double face = 0.8;
+    constexpr vx::render::Srgb8 color{.r = 64, .g = 128, .b = 192};
+    const auto expect = [&](const std::vector<std::uint8_t>& pixels, double amount) {
+        const Pixel at = pixel_at(pixels, 32, 32);
+        CHECK(std::abs(at[0] - fogged(face, color.r, amount)) <= 1.5);
+        CHECK(std::abs(at[1] - fogged(face, color.g, amount)) <= 1.5);
+        CHECK(std::abs(at[2] - fogged(face, color.b, amount)) <= 1.5);
+    };
+
+    // No fog: the face as it is.
+    expect(draw_fogged(renderer, camera, std::nullopt), 0.0);
+    // The haze alone, half way: its end at twice the distance.
+    const vx::render::FogRamps haze{
+        .haze_end = 2.0F * distance, .band_start = 100.0F, .band_end = 200.0F};
+    REQUIRE(vx::render::fog_amount(haze, distance, cylinder) == doctest::Approx(0.5));
+    expect(draw_fogged(renderer, camera, vx::render::Fog{.color = color, .ramps = haze}), 0.5);
+    // The band alone, on the cylinder: a quarter of the way through it.
+    const vx::render::FogRamps band{.haze_end = 1.0e6F, .band_start = 1.0F, .band_end = 2.2F};
+    REQUIRE(vx::render::fog_amount(band, distance, cylinder) == doctest::Approx(0.25));
+    expect(draw_fogged(renderer, camera, vx::render::Fog{.color = color, .ramps = band}), 0.25);
+    // Both: the larger, not their sum.
+    const vx::render::FogRamps both{
+        .haze_end = 4.0F * distance, .band_start = 1.0F, .band_end = 2.2F};
+    REQUIRE(vx::render::fog_amount(both, distance, cylinder) == doctest::Approx(0.25));
+    expect(draw_fogged(renderer, camera, vx::render::Fog{.color = color, .ramps = both}), 0.25);
+    // A linear mix would miss the half-way pixel by far more than that.
+    CHECK(std::abs(fogged(face, color.r, 0.5) - (255.0 * encoded((face + 0.0513) / 2.0))) > 20.0);
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}
+
+TEST_CASE("full fog turns a cutout block's texels the fog color and leaves its holes") {
+    const std::array<Quarters, 1> layers = {Quarters{see_through, white, see_through, white}};
+    const std::vector<std::byte> textures = texture_bytes(layers);
+    vx::Result<vx::render::Renderer> created = renderer_with(textures);
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    OneBlock cutout(vx::Opacity::cutout);
+    REQUIRE(renderer.set_chunk({.x = 0, .y = 0, .z = 0}, cutout.mesh()).has_value());
+    const vx::render::Fog full{
+        .color = {.r = 64, .g = 128, .b = 192},
+        .ramps = {.haze_end = 0.01F, .band_start = 100.0F, .band_end = 200.0F}};
+    const std::vector<std::uint8_t> pixels = draw_fogged(renderer, facing(vx::Face::pos_z), full);
+    CHECK(pixel_at(pixels, 22, 32) == Pixel{0, 0, 0, 255});
+    const Pixel texel = pixel_at(pixels, 42, 32);
+    CHECK(std::abs(int{texel[0]} - 64) <= 1);
+    CHECK(std::abs(int{texel[1]} - 128) <= 1);
+    CHECK(std::abs(int{texel[2]} - 192) <= 1);
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
 }

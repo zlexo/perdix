@@ -129,6 +129,7 @@ add_executable(vx_render_tests
     render/device_selection_test.cpp
     render/draw_lists_test.cpp
     render/feature_floor_test.cpp
+    render/fog_test.cpp
     render/projection_test.cpp
     render/swapchain_choice_test.cpp
     render/texture_table_capacity_test.cpp

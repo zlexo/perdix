@@ -2,6 +2,7 @@
 #include "walking.hpp"
 
 #include <vx/render/camera.hpp>
+#include <vx/render/fog.hpp>
 
 #include <doctest/doctest.h>
 #include <glm/ext/matrix_transform.hpp>
@@ -11,6 +12,7 @@
 #include <glm/vec4.hpp>
 
 #include <initializer_list>
+#include <optional>
 
 // RFC 0010's view bobbing as the app draws it: Minecraft 26.2 multiplies its
 // view by a shift in view space, then a turn around the view's z axis, then
@@ -49,4 +51,23 @@ TEST_CASE("no bob leaves the camera as it was") {
     CHECK(shown.yaw == camera.yaw);
     CHECK(shown.pitch == camera.pitch);
     CHECK(shown.roll == 0.0F);
+}
+
+TEST_CASE("a frame's fog is 26.2's at the view distance the world holds, and none when off") {
+    CHECK_FALSE(vx::app::frame_fog(false, 32).has_value());
+    // 32 chunks, 1,024 blocks: past 26.2's farthest view, so the fog color
+    // is its own and the ramps are scaled.
+    const std::optional<vx::render::Fog> far = vx::app::frame_fog(true, 32);
+    REQUIRE(far.has_value());
+    CHECK(far->color == vx::render::Srgb8{.r = 192, .g = 216, .b = 255});
+    CHECK(far->ramps.haze_end == doctest::Approx(2'048.0));
+    CHECK(far->ramps.band_start == doctest::Approx(921.6));
+    CHECK(far->ramps.band_end == doctest::Approx(1'024.0));
+    // 4 chunks, 128 blocks: 26.2's own, its color pulled toward the sky.
+    const std::optional<vx::render::Fog> near = vx::app::frame_fog(true, 4);
+    REQUIRE(near.has_value());
+    CHECK(near->color == vx::render::Srgb8{.r = 178, .g = 206, .b = 255});
+    CHECK(near->ramps.haze_end == doctest::Approx(1'024.0));
+    CHECK(near->ramps.band_start == doctest::Approx(115.2));
+    CHECK(near->ramps.band_end == doctest::Approx(128.0));
 }

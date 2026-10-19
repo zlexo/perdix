@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -131,7 +132,16 @@ public:
     // uploads (RFC 0007's backlog).
     void set_chunk_backlog(std::size_t waiting) noexcept { chunk_backlog_ = waiting; }
     // Streaming's last report from the world thread (RFC 0006).
-    void set_world_report(const WorldReport& report) noexcept { world_ = report; }
+    void set_world_report(const WorldReport& report) noexcept {
+        world_ = report;
+        reported_ = true;
+    }
+    // The view distance the world holds, as streaming last reported it, in
+    // chunks: none before its first report.
+    [[nodiscard]] std::optional<std::int32_t> held_view_distance() const noexcept;
+    // RFC 0013's fog: on, unless its switch turns it off, as 26.2 can turn
+    // its own off for debugging.
+    [[nodiscard]] bool fog() const noexcept { return fog_; }
 
 private:
     // A measure's last samples, in milliseconds, for its graph.
@@ -176,6 +186,8 @@ private:
     MovementReport movement_;
     std::size_t chunk_backlog_ = 0;
     WorldReport world_;
+    bool reported_ = false;
+    bool fog_ = true;
     // The Render Distance slider's value while it is dragged, 0 otherwise:
     // the distance changes once it is let go.
     std::int32_t dragged_distance_ = 0;

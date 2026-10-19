@@ -5,6 +5,7 @@
 #include <vx/core/vec3d.hpp>
 #include <vx/mesh/player_model.hpp>
 #include <vx/render/camera.hpp>
+#include <vx/render/fog.hpp>
 #include <vx/render/renderer.hpp>
 #include <vx/world/skin.hpp>
 
@@ -130,9 +131,10 @@ vx::Result<vx::render::Renderer> body_renderer(std::span<const vx::Skin> skins) 
 }
 
 std::vector<std::uint8_t> draw(vx::render::Renderer& renderer, const vx::render::Camera& camera,
-                               std::span<const vx::PlayerPose> players) {
+                               std::span<const vx::PlayerPose> players,
+                               const std::optional<vx::render::Fog>& fog = std::nullopt) {
     const vx::render::FrameInputs inputs = {
-        .sky = sky, .camera = camera, .cubes = {}, .players = players};
+        .sky = sky, .camera = camera, .cubes = {}, .players = players, .fog = fog};
     REQUIRE(renderer.render(inputs).has_value());
     vx::Result<std::vector<std::uint8_t>> pixels = renderer.capture();
     REQUIRE(pixels.has_value());
@@ -277,4 +279,25 @@ TEST_CASE("a frame draws at most 64 bodies") {
         renderer.value().render({.sky = sky, .camera = camera, .cubes = {}, .players = players});
     REQUIRE_FALSE(frame.has_value());
     CHECK(frame.error().message == "a frame draws at most 64 bodies, not 65");
+}
+
+TEST_CASE("full fog turns a body the fog color, as 26.2's entity shader fogs it") {
+    const std::array skins = {test_skin()};
+    vx::Result<vx::render::Renderer> renderer = body_renderer(skins);
+    INFO((renderer.has_value() ? std::string() : renderer.error().message));
+    REQUIRE(renderer.has_value());
+    const std::array players = {standing(0)};
+    vx::render::Camera front;
+    front.position = {0.5, 65.0, 3.5};
+    const vx::render::Fog full{
+        .color = {.r = 64, .g = 128, .b = 192},
+        .ramps = {.haze_end = 0.01F, .band_start = 100.0F, .band_end = 200.0F}};
+    const std::vector<std::uint8_t> seen = draw(renderer.value(), front, players, full);
+    for (const OnImage at : {project(front, {.x = 0.5, .y = 65.64, .z = 0.73}),
+                             project(front, {.x = 0.5, .y = 65.05, .z = 0.62})}) {
+        CHECK(near(pixel_at(seen, at.x, at.y), {64, 128, 192, 255}));
+    }
+    // The sky is not fogged: it is cleared, not drawn.
+    CHECK(near(pixel_at(seen, 2, 2), sky_pixel));
+    CHECK(renderer.value().context().instance().validation_counts().errors == 0);
 }
