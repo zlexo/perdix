@@ -10,6 +10,7 @@
 #include <vx/core/wake_event.hpp>
 #include <vx/mesh/mesh_chunk.hpp>
 #include <vx/mesh/padded_chunk.hpp>
+#include <vx/mesh/quad.hpp>
 #include <vx/world/backlog.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
@@ -48,6 +49,17 @@ struct MeshUpdate {
     std::uint32_t generation = 0;
     std::array<std::uint32_t, 12> counts{}; // by pass, then face
     MeshBuffer quads;
+    // RFC 0011's border sets, toward each axis's side on the chunk's parent's
+    // boundary, its positive side where its position on that axis is odd:
+    // `border` counts the main mesh's quads in its outermost slice that way,
+    // by axis x, y, z, then pass, which a coarser neighbor drawn there
+    // replaces with the second set, made against that coarser chunk's cells.
+    // `coarser_sides` has a bit for each axis whose second set came: its
+    // quads follow the main ranges', by axis, then pass, `coarser` counting
+    // them.
+    std::array<std::uint32_t, 6> border{};
+    std::array<std::uint32_t, 6> coarser{};
+    std::uint8_t coarser_sides = 0;
 };
 
 // What a sample request asks for (RFC 0006's flythrough): whether the region
@@ -236,6 +248,7 @@ struct WorldLoopSettings {
 struct MeshWorkerScratch {
     PaddedChunk padded;
     MeshScratch mesh;
+    std::vector<Quad> joined; // a mesh's quads and its border sets, back to back
 };
 
 // RFC 0005's world loop, which owns every chunk: it takes the main thread's
@@ -334,6 +347,7 @@ private:
         std::uint32_t batch = 0;      // the pending edit batch it is in, 0 for none
         JobHandle job;
         JobRecord* pins = nullptr;
+        JobRecord* coarser = nullptr; // on the next level's streamer
     };
 
     // An edit's remeshes, of level 0's records, sent together once every
@@ -371,6 +385,7 @@ private:
     struct MeshResult {
         MeshUpdate update;
         JobRecord* pins = nullptr;
+        JobRecord* coarser = nullptr; // the next level's streamer's, if any
     };
 
     struct MeshContext {
@@ -388,6 +403,10 @@ private:
         std::uint8_t level;
         std::uint32_t generation;
         MeshOptions options; // the job's own: the loop's may change while it runs
+        // RFC 0011's coarser chunks across the chunk's sides on its parent's
+        // boundary, by axis, pinned where `coarser_sides` has the axis's bit.
+        JobRecord* coarser;
+        std::uint8_t coarser_sides;
         void operator()(JobContext& job) const noexcept;
     };
 
@@ -424,6 +443,9 @@ private:
     // know it.
     [[nodiscard]] LodReady readiness(LodPos pos);
     bool start_mesh(Level& level, std::uint32_t index, std::uint32_t key);
+    // A mesh job's pins on the next level's streamer (RFC 0011's border
+    // sets) go back, when it held any.
+    void release_coarser(const Level& level, JobRecord* coarser) noexcept;
     // What a sample request is answered with, now, once the streamer's
     // events are followed. A full one walks every record and starts the next
     // longest step and pass: a few times a second, or each frame of a check.

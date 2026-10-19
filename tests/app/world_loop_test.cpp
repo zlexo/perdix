@@ -26,6 +26,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
@@ -1752,6 +1753,12 @@ public:
         std::uint32_t generation = 0;
         std::uint64_t bytes = 0; // a hash of the counts and quads
         bool empty = true;
+        // RFC 0011's border sets, as the update brought them, and every quad.
+        std::array<std::uint32_t, 12> counts{};
+        std::array<std::uint32_t, 6> border{};
+        std::array<std::uint32_t, 6> coarser{};
+        std::uint8_t coarser_sides = 0;
+        std::vector<vx::Quad> quads;
     };
     std::map<LevelChunk, Held> held;
     std::set<int> unloads; // the levels unloads came for
@@ -1789,6 +1796,21 @@ private:
         slot.empty =
             std::ranges::all_of(update.counts, [](std::uint32_t count) { return count == 0; });
         slot.bytes = mesh_hash(update.counts, update.quads.data());
+        slot.counts = update.counts;
+        slot.border = update.border;
+        slot.coarser = update.coarser;
+        slot.coarser_sides = update.coarser_sides;
+        std::size_t total = 0;
+        for (const std::uint32_t count : update.counts) {
+            total += count;
+        }
+        for (const std::uint32_t count : update.coarser) {
+            total += count;
+        }
+        slot.quads.resize(total);
+        if (total > 0) {
+            std::memcpy(slot.quads.data(), update.quads.data(), total * sizeof(vx::Quad));
+        }
     }
 };
 
@@ -2323,4 +2345,146 @@ TEST_CASE("with levels off the loop sends no swaps") {
     main.receive(messages);
     CHECK(main.swaps == 0);
     CHECK(loop.drawn().empty());
+}
+
+namespace {
+
+// RFC 0011's second border set toward a chunk's side along `axis` on its
+// parent's boundary, worked out apart from the loop: the chunk's padded
+// blocks from its level's streamer, the face toward that side from the
+// coarser chunk across it, 2 by 2, meshed for that side alone; with the main
+// mesh's border counts that way. None when that coarser chunk is not ready.
+struct BorderSet {
+    std::array<std::vector<vx::Quad>, 2> quads; // by pass
+    std::array<std::uint32_t, 2> main_border{};
+};
+
+std::optional<BorderSet> border_set(const WorldLoop& loop, LevelChunk chunk, int axis,
+                                    std::span<const vx::BlockVisual> visuals) {
+    const auto [level, x, y, z] = chunk;
+    const auto at = static_cast<std::uint8_t>(level);
+    const std::array<std::int32_t, 3> pos{x, y, z};
+    const bool positive = (pos.at(static_cast<std::size_t>(axis)) & 1) != 0;
+    constexpr std::array<std::array<vx::Face, 2>, 3> faces = {{{vx::Face::neg_x, vx::Face::pos_x},
+                                                               {vx::Face::neg_y, vx::Face::pos_y},
+                                                               {vx::Face::neg_z, vx::Face::pos_z}}};
+    const vx::Face side = faces.at(static_cast<std::size_t>(axis)).at(positive ? 1 : 0);
+    std::array<std::int32_t, 3> across{x >> 1, y >> 1, z >> 1};
+    across.at(static_cast<std::size_t>(axis)) += positive ? 1 : -1;
+    const vx::ChunkRecord* coarse = loop.streamer(static_cast<std::uint8_t>(at + 1))
+                                        .find({.x = across[0], .y = across[1], .z = across[2]});
+    if (coarse == nullptr || !vx::counts_as_ready(coarse->state)) {
+        return std::nullopt;
+    }
+    // The chunk's 27, as the mesh job reads them.
+    std::array<vx::ChunkStorage, 27> uniform;
+    const auto chunk_at = [&](int dx, int dy, int dz) -> const vx::ChunkStorage* {
+        const vx::ChunkRecord* record =
+            loop.streamer(at).find({.x = x + dx, .y = y + dy, .z = z + dz});
+        REQUIRE(record != nullptr);
+        if (record->blocks != nullptr) {
+            return &record->blocks->value();
+        }
+        vx::ChunkStorage& made =
+            uniform.at(static_cast<std::size_t>((dx + 1) + (3 * (dz + 1)) + (9 * (dy + 1))));
+        made = vx::ChunkStorage::uniform(record->uniform);
+        return &made;
+    };
+    vx::ChunkNeighborhood neighborhood(*chunk_at(0, 0, 0));
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dz = -1; dz <= 1; ++dz) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (dx != 0 || dy != 0 || dz != 0) {
+                    neighborhood.set(dx, dy, dz, chunk_at(dx, dy, dz));
+                }
+            }
+        }
+    }
+    auto padded = std::make_unique<vx::PaddedChunk>();
+    vx::assemble_padded(neighborhood, *padded);
+    vx::MeshScratch scratch;
+    const vx::MeshOptions options{.merge = true, .occlusion = level == 0};
+    BorderSet set;
+    const vx::ChunkMesh main = vx::mesh_chunk(*padded, visuals, scratch, options);
+    for (std::size_t pass = 0; pass < 2; ++pass) {
+        set.main_border.at(pass) = main.border.at(pass).at(static_cast<std::size_t>(side));
+    }
+    // copy_face's axes: z then y on an x face, x then z on a y face, x then
+    // y on a z face; a coarser chunk's half is 16 of its cells.
+    const auto half = [](std::int32_t coordinate) { return (coordinate & 1) * 16; };
+    const std::array<std::array<int, 2>, 3> offsets = {
+        {{half(z), half(y)}, {half(x), half(z)}, {half(x), half(y)}}};
+    const vx::ChunkStorage coarse_uniform = vx::ChunkStorage::uniform(coarse->uniform);
+    vx::coarser_border(coarse->blocks != nullptr ? coarse->blocks->value() : coarse_uniform, side,
+                       offsets.at(static_cast<std::size_t>(axis)), *padded);
+    const vx::ChunkMesh border = vx::mesh_border(*padded, visuals, scratch, side, options);
+    for (std::size_t pass = 0; pass < 2; ++pass) {
+        const std::span<const vx::Quad> quads = border.range(static_cast<vx::Pass>(pass), side);
+        set.quads.at(pass).assign(quads.begin(), quads.end());
+    }
+    return set;
+}
+
+} // namespace
+
+TEST_CASE("below the top level a mesh carries a second border set toward each side on its "
+          "parent's boundary, made against the coarser chunk there") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool,
+                   {.region = eight, .lod = small_window(), .unuploaded_limit = 1'000'000});
+    move_camera(loop, above_hills);
+    loop.settle();
+    std::vector<ToMain> messages;
+    loop.take(messages);
+    LevelMeshes main;
+    main.receive(messages);
+    std::size_t compared = 0;
+    std::size_t whole = 0; // meshes with all three sets
+    std::size_t faces = 0; // quads in the sets compared
+    for (const auto& [chunk, mesh] : main.held) {
+        const auto level = std::get<0>(chunk);
+        // The top level has no coarser one. A mesh of no faces can still
+        // have a border set: a solid chunk beside a coarser one that is air
+        // where they meet.
+        if (level == vx::max_lod_level) {
+            CHECK(mesh.coarser_sides == 0);
+            continue;
+        }
+        std::size_t start = 0;
+        for (const std::uint32_t count : mesh.counts) {
+            start += count;
+        }
+        whole += mesh.coarser_sides == 0b111 ? 1 : 0;
+        for (int axis = 0; axis < 3; ++axis) {
+            INFO("level " << level << " axis " << axis);
+            const std::optional<BorderSet> expected = border_set(loop, chunk, axis, table);
+            const auto at = static_cast<std::size_t>(axis);
+            if (expected) {
+                CHECK(mesh.border.at(at * 2) == expected->main_border[0]);
+                CHECK(mesh.border.at((at * 2) + 1) == expected->main_border[1]);
+            }
+            if ((mesh.coarser_sides & (1U << at)) == 0) {
+                continue;
+            }
+            REQUIRE(expected.has_value());
+            for (std::size_t pass = 0; pass < 2; ++pass) {
+                const std::uint32_t count = mesh.coarser.at((at * 2) + pass);
+                REQUIRE(start + count <= mesh.quads.size());
+                const std::vector<vx::Quad> sent(
+                    mesh.quads.begin() + static_cast<std::ptrdiff_t>(start),
+                    mesh.quads.begin() + static_cast<std::ptrdiff_t>(start + count));
+                CHECK(sent == expected->quads.at(pass));
+                start += count;
+                faces += count;
+            }
+            ++compared;
+        }
+        CHECK(start == mesh.quads.size());
+    }
+    CHECK(compared > 50);
+    CHECK(whole > 10);
+    CHECK(faces > 100);
 }

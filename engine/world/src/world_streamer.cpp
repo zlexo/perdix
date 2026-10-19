@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -1293,6 +1294,24 @@ JobRecord* WorldStreamer::pin_neighborhood(ChunkPos pos, std::uint32_t sequence)
                                 record != nullptr ? record->blocks : nullptr,
                                 record != nullptr ? record->uniform : BlockState::air);
     });
+    return pins;
+}
+
+JobRecord* WorldStreamer::pin_chunks(std::span<const ChunkPos> positions,
+                                     std::uint32_t& ready) noexcept {
+    ready = 0;
+    JobRecord* pins = job_records_.acquire(0, 0);
+    if (pins == nullptr) {
+        return nullptr;
+    }
+    for (std::size_t at = 0; at < positions.size(); ++at) {
+        const std::optional<std::uint32_t> index = chunks_.find(positions[at]);
+        if (!index || !counts_as_ready(chunks_[*index].state)) {
+            continue;
+        }
+        job_records_.read_chunk(*pins, at, chunks_[*index].blocks, chunks_[*index].uniform);
+        ready |= 1U << at;
+    }
     return pins;
 }
 
