@@ -84,11 +84,20 @@ vx::render::ArenaSpace make_space(std::uint32_t quads) {
     return std::move(space).value();
 }
 
-ToMain unload_of(ChunkPos pos) {
+ToMain unload_of(ChunkPos pos, std::uint8_t level = 0) {
     ToMain unload;
     unload.kind = ToMain::Kind::unload;
     unload.pos = pos;
+    unload.level = level;
     return unload;
+}
+
+// A mesh as mesh_of makes it, on RFC 0011's `level`.
+MeshUpdate mesh_on(vx::MeshResultPool& pool, std::uint8_t level, ChunkPos pos,
+                   std::uint32_t generation, const std::array<std::uint32_t, 12>& counts) {
+    MeshUpdate update = mesh_of(pool, pos, generation, counts);
+    update.level = level;
+    return update;
 }
 
 ToMain batch_of(std::vector<MeshUpdate>&& meshes) {
@@ -435,4 +444,110 @@ TEST_CASE("samples go to their reader in order: after the meshes before them, be
     // The rest stay for the caller.
     REQUIRE(messages.size() == 1);
     CHECK(messages.front().kind == ToMain::Kind::player);
+}
+
+TEST_CASE("a chunk is its position and its level: each level's mesh is its own, and an unload "
+          "takes only its level's") {
+    vx::MeshResultPool pool;
+    vx::app::StreamedMeshes meshes;
+    Arena arena;
+    arena.uploads.set_budget(std::chrono::hours(1));
+    constexpr ChunkPos at{.x = 2, .y = 1, .z = -3};
+    std::vector<ToMain> messages;
+    messages.push_back(message_of(mesh_on(pool, 0, at, 1, {2})));
+    messages.push_back(message_of(mesh_on(pool, 1, at, 2, {3})));
+    messages.push_back(message_of(mesh_on(pool, 5, at, 3, {1})));
+    meshes.receive(messages);
+    arena.offer(meshes);
+    REQUIRE(arena.uploads.find(at, 0) != nullptr);
+    REQUIRE(arena.uploads.find(at, 1) != nullptr);
+    REQUIRE(arena.uploads.find(at, 5) != nullptr);
+    CHECK(arena.uploads.find(at, 1)->level == 1);
+    // Level 1's unload, and a level-5 mesh that came before level 0's: the
+    // level-1 chunk goes, the others stay, the level-5 mesh is shown.
+    messages.push_back(message_of(mesh_on(pool, 5, at, 4, {2})));
+    messages.push_back(unload_of(at, 1));
+    messages.push_back(message_of(mesh_on(pool, 0, at, 5, {1})));
+    messages.push_back(unload_of(at, 0));
+    meshes.receive(messages);
+    arena.offer(meshes);
+    CHECK(meshes.waiting() == 0);
+    CHECK(arena.uploads.find(at, 1) == nullptr);
+    CHECK(arena.uploads.find(at, 0) == nullptr);
+    REQUIRE(arena.uploads.find(at, 5) != nullptr);
+    CHECK(arena.uploads.find(at, 5)->generation == 4);
+    // Every mesh sent alone is done: four written, one dropped.
+    CHECK(meshes.done() == 5);
+}
+
+TEST_CASE("an unload takes its own level's chunk out of a waiting batch, not another level's") {
+    vx::MeshResultPool pool;
+    vx::app::StreamedMeshes meshes;
+    Arena arena;
+    arena.uploads.set_budget(std::chrono::hours(1));
+    constexpr ChunkPos at{.x = 4};
+    std::vector<ToMain> messages;
+    std::vector<MeshUpdate> batch;
+    batch.push_back(mesh_on(pool, 0, at, 1, {1}));
+    batch.push_back(mesh_on(pool, 0, {.x = 5}, 1, {1}));
+    messages.push_back(batch_of(std::move(batch)));
+    messages.push_back(unload_of(at, 2));
+    meshes.receive(messages);
+    arena.offer(meshes);
+    CHECK(arena.uploads.find(at, 0) != nullptr);
+    CHECK(arena.uploads.find({.x = 5}, 0) != nullptr);
+}
+
+TEST_CASE("the holes a coarse mesh leaves count its own box: in view and near at its level's "
+          "size") {
+    vx::MeshResultPool pool;
+    Arena arena;
+    vx::app::StreamedMeshes meshes;
+    constexpr std::array<std::uint32_t, 12> some{1};
+    // At the middle of chunk 0, looking along +x.
+    vx::Viewer viewer = vx::viewer_at({});
+    viewer.view = vx::Frustum({.x = 1.0, .y = 0.0, .z = 0.0}, {.x = 0.0, .y = 0.0, .z = 1.0},
+                              {.x = 0.0, .y = 1.0, .z = 0.0}, 0.7, 16.0 / 9.0, 0.05);
+    arena.uploads.set_budget(std::chrono::hours(1));
+    // On screen: a level-0 mesh at x = 3.
+    std::vector<ToMain> messages;
+    messages.push_back(message_of(mesh_on(pool, 0, {.x = 3}, 1, some)));
+    meshes.receive(messages);
+    arena.offer(meshes);
+    REQUIRE(arena.uploads.find({.x = 3}, 0) != nullptr);
+    // Waiting at the same position, two more chunks, neither newer than the
+    // other nor covered by the level-0 mesh on screen: level 1's spans 192
+    // to 256 blocks ahead, near; level 2's spans 384 to 512 ahead, in view
+    // and not near, where its level-0 namesake is 96 ahead and near.
+    messages.push_back(message_of(mesh_on(pool, 2, {.x = 3}, 1, some)));
+    messages.push_back(message_of(mesh_on(pool, 1, {.x = 3}, 2, some)));
+    meshes.receive(messages);
+    const vx::app::Holes waiting =
+        meshes.holes(arena.uploads, viewer, vx::app::near_holes_distance);
+    CHECK(waiting.all == 2);
+    CHECK(waiting.near == 1);
+}
+
+TEST_CASE("an edit's batch waiting for room holds back its own chunks' meshes, not another "
+          "level's at the same position") {
+    vx::MeshResultPool pool;
+    vx::app::StreamedMeshes meshes;
+    Arena arena(100);
+    constexpr ChunkPos at{.x = 1};
+    std::vector<ToMain> messages;
+    // A batch too big for the arena waits for room.
+    std::vector<MeshUpdate> batch;
+    batch.push_back(mesh_on(pool, 0, at, 1, {60}));
+    batch.push_back(mesh_on(pool, 0, {.x = 2}, 1, {60}));
+    messages.push_back(batch_of(std::move(batch)));
+    messages.push_back(message_of(mesh_on(pool, 1, at, 2, {10})));
+    meshes.receive(messages);
+    arena.offer(meshes);
+    CHECK(arena.uploads.find(at, 0) == nullptr);
+    CHECK(arena.uploads.find(at, 1) != nullptr);
+    // Level 0's mesh of a batch member waits behind the batch.
+    messages.push_back(message_of(mesh_on(pool, 0, at, 3, {10})));
+    meshes.receive(messages);
+    arena.offer(meshes);
+    CHECK(arena.uploads.find(at, 0) == nullptr);
 }
