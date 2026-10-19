@@ -92,6 +92,7 @@ add_library(vx_render STATIC
     src/device_report.cpp
     src/device_selection.cpp
     src/feature_floor.cpp
+    src/fog.cpp
     src/gpu_timer.cpp
     src/image.cpp
     src/instance.cpp
