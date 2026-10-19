@@ -175,6 +175,9 @@ public:
             case ToMain::Kind::report:
                 reports.push_back(message.report);
                 break;
+            case ToMain::Kind::swap:
+                ++swaps;
+                break;
             }
         }
     }
@@ -209,6 +212,7 @@ public:
     std::vector<bool> landings;
     std::vector<vx::app::WorldSample> samples;
     std::vector<vx::app::WorldReport> reports;
+    std::size_t swaps = 0;
 
 private:
     void take(const vx::app::MeshUpdate& update) {
@@ -1732,7 +1736,11 @@ public:
                 break;
             case ToMain::Kind::unload:
                 held.erase(level_chunk_of(message.level, message.pos));
+                shown.erase(level_chunk_of(message.level, message.pos));
                 unloads.insert(int{message.level});
+                break;
+            case ToMain::Kind::swap:
+                swap(message);
                 break;
             default:
                 break;
@@ -1747,8 +1755,31 @@ public:
     };
     std::map<LevelChunk, Held> held;
     std::set<int> unloads; // the levels unloads came for
+    // RFC 0011's swaps, applied as they come: the chunks drawn, and the
+    // chunks shown with no mesh with faces held when their swap came.
+    std::set<LevelChunk> shown;
+    std::size_t swaps = 0;
+    std::size_t shown_bare = 0;
+    std::vector<LevelChunk> hidden; // by the swaps since the caller cleared it
 
 private:
+    void swap(const ToMain& message) {
+        ++swaps;
+        for (const vx::LodPos chunk : message.hide) {
+            const LevelChunk at =
+                level_chunk_of(chunk.level, {.x = chunk.x, .y = chunk.y, .z = chunk.z});
+            shown.erase(at);
+            hidden.push_back(at);
+        }
+        for (const vx::LodPos chunk : message.show) {
+            const LevelChunk at =
+                level_chunk_of(chunk.level, {.x = chunk.x, .y = chunk.y, .z = chunk.z});
+            const auto mesh = held.find(at);
+            shown_bare += mesh == held.end() || mesh->second.empty ? 1 : 0;
+            shown.insert(at);
+        }
+    }
+
     void take(const vx::app::MeshUpdate& update) {
         Held& slot = held[level_chunk_of(update.level, update.pos)];
         if (update.generation < slot.generation) {
@@ -2052,4 +2083,244 @@ TEST_CASE("the loop goes with every level's meshes queued, or done and not taken
             jobs.run_until_idle(); // done, their results not taken in
         }
     }
+}
+
+namespace {
+
+// Whether a chunk around `chunk` is drawn too.
+bool under_shown(const std::set<LevelChunk>& shown, LevelChunk chunk) {
+    auto [level, x, y, z] = chunk;
+    while (level < vx::max_lod_level) {
+        x >>= 1;
+        y >>= 1;
+        z >>= 1;
+        ++level;
+        if (shown.contains({level, x, y, z})) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// What a chunk offers the swaps, worked out apart from the loop: a chunk its
+// level draws with a mesh held, empty or with faces; none yet; or nothing to
+// draw, outside its level's drawn region once its column is known.
+vx::LodReady ready_now(const WorldLoop& loop, const LevelMeshes& main, LevelChunk chunk) {
+    const auto [level, x, y, z] = chunk;
+    const vx::WorldStreamer& streamer = loop.streamer(static_cast<std::uint8_t>(level));
+    const vx::ChunkRecord* record = streamer.find({.x = x, .y = y, .z = z});
+    if (record != nullptr && record->drawn) {
+        const auto mesh = main.held.find(chunk);
+        if (mesh == main.held.end()) {
+            return vx::LodReady::waiting;
+        }
+        return mesh->second.empty ? vx::LodReady::empty : vx::LodReady::mesh;
+    }
+    return streamer.band({.x = x, .z = z}).has_value() ? vx::LodReady::empty
+                                                       : vx::LodReady::waiting;
+}
+
+// Whether a chunk in view is drawn: itself, a chunk around it, or each of its
+// children in view, where one with nothing to draw counts. A chunk around it
+// with nothing to draw at its level, where its place calls for that level,
+// draws it too: there that level shows nothing. With `any_level`, so does
+// one around it with nothing to draw at any level: what finer levels hold
+// there comes once all of it can be drawn.
+bool covered_now(const WorldLoop& loop, const LevelMeshes& main, const vx::LodRings& rings,
+                 const vx::Vec3d& eye, LevelChunk chunk, bool any_level = false) {
+    if (main.shown.contains(chunk) || under_shown(main.shown, chunk)) {
+        return true;
+    }
+    const auto [level, x, y, z] = chunk;
+    const vx::LodPos pos{.x = x, .y = y, .z = z, .level = static_cast<std::uint8_t>(level)};
+    for (vx::LodPos around = pos; around.level < vx::max_lod_level;) {
+        around = vx::parent(around);
+        const LevelChunk at =
+            level_chunk_of(around.level, {.x = around.x, .y = around.y, .z = around.z});
+        if ((any_level || rings.drawn(eye, around)) &&
+            ready_now(loop, main, at) == vx::LodReady::empty) {
+            return true;
+        }
+    }
+    if (level == 0) {
+        return false;
+    }
+    return std::ranges::all_of(vx::children(pos), [&](vx::LodPos child) {
+        const LevelChunk at =
+            level_chunk_of(child.level, {.x = child.x, .y = child.y, .z = child.z});
+        return !rings.in_view(eye, child) || ready_now(loop, main, at) == vx::LodReady::empty ||
+               covered_now(loop, main, rings, eye, at, any_level);
+    });
+}
+
+// The chunks the view wants that wait for their mesh while a chunk around
+// them is ready with faces, and yet nothing draws them: after a teleport the
+// view fills coarse first, never with holes the coarse levels could fill.
+std::size_t unfilled(const WorldLoop& loop, const LevelMeshes& main, const vx::LodRings& rings,
+                     const vx::Vec3d& eye) {
+    std::size_t count = 0;
+    for (const vx::LodPos target : vx::lod_cover(rings, eye, -8, 40)) {
+        const LevelChunk at =
+            level_chunk_of(target.level, {.x = target.x, .y = target.y, .z = target.z});
+        if (ready_now(loop, main, at) != vx::LodReady::waiting) {
+            continue;
+        }
+        bool coarser_ready = false;
+        for (vx::LodPos up = target; up.level < vx::max_lod_level;) {
+            up = vx::parent(up);
+            coarser_ready =
+                coarser_ready ||
+                ready_now(loop, main,
+                          level_chunk_of(up.level, {.x = up.x, .y = up.y, .z = up.z})) ==
+                    vx::LodReady::mesh;
+        }
+        count += coarser_ready && !covered_now(loop, main, rings, eye, at, true) ? 1 : 0;
+    }
+    return count;
+}
+
+// A small window's rings over a region 8 chunks out: levels 0, 1 and 2 drawn
+// near the hills.
+vx::LodRings small_window() {
+    vx::LodRings rings;
+    rings.framebuffer_height = 480;
+    rings.pixels_per_cell = 8.0;
+    return rings;
+}
+
+constexpr vx::RegionSettings eight{
+    .view_distance = 8, .near_distance = 1, .near_height = 1, .hysteresis = 2};
+
+} // namespace
+
+TEST_CASE("with RFC 0011's rings, once settled the swaps sent draw lod_cover's chunks that have "
+          "faces, on several levels") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool,
+                   {.region = eight, .lod = small_window(), .unuploaded_limit = 1'000'000});
+    LevelMeshes main;
+    std::vector<ToMain> messages;
+    // Above the hills, far east, and 8 chunks from a spire 640 blocks tall,
+    // past level 0's 7: only coarser levels draw it, up to row 19.
+    for (const ChunkPos camera :
+         {above_hills, ChunkPos{.x = 3 + 300, .y = 2, .z = 3}, ChunkPos{.x = 8, .y = 2, .z = 16}}) {
+        move_camera(loop, camera);
+        loop.settle();
+        // The next frame's camera, after the last mesh: the selection runs.
+        move_camera(loop, camera);
+        loop.pass();
+        loop.take(messages);
+        main.receive(messages);
+        const vx::Vec3d eye = vx::viewer_at(camera).eye;
+        std::set<LevelChunk> expected;
+        for (const vx::LodPos chunk :
+             vx::lod_cover(rings_for(small_window(), eight), eye, -8, 40)) {
+            const LevelChunk at =
+                level_chunk_of(chunk.level, {.x = chunk.x, .y = chunk.y, .z = chunk.z});
+            const auto mesh = main.held.find(at);
+            if (mesh != main.held.end() && !mesh->second.empty) {
+                expected.insert(at);
+            }
+        }
+        CHECK(main.shown == expected);
+        std::set<int> levels;
+        for (const LevelChunk& chunk : main.shown) {
+            levels.insert(std::get<0>(chunk));
+        }
+        CHECK(levels.size() >= 2);
+        // The loop's own record of what it sent agrees.
+        CHECK(loop.drawn().size() == main.shown.size());
+    }
+    CHECK(main.shown_bare == 0);
+}
+
+TEST_CASE("while the world streams in and the camera walks, a swap shows only chunks whose mesh "
+          "with faces came first, and never a chunk with a chunk around it") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    // A frame's worth of jobs: 64 at a time.
+    WorldLoop loop(
+        generator, table, jobs, pool,
+        {.region = eight, .lod = small_window(), .queue_limit = 64, .unuploaded_limit = 1'000'000});
+    LevelMeshes main;
+    std::vector<ToMain> messages;
+    const vx::LodRings rings = rings_for(small_window(), eight);
+    std::size_t overlaps = 0;
+    std::size_t hidden = 0;     // hidden while still in view and streamed
+    std::size_t uncovered = 0;  // of them, left with nothing drawing them
+    std::size_t teleported = 0; // frames after the teleport with a chunk to fill
+    std::size_t holes = 0;      // chunks a coarser one could have drawn
+    std::size_t walked = 0;     // chunks drawn at the walk's end
+    for (int frame = 0; frame < 140; ++frame) {
+        // A walk east, a chunk every 3 frames; a jump 6 chunks on, and 6
+        // back; then a teleport 60 chunks on, where the view fills anew.
+        std::int32_t east = 3 + (std::min(frame, 72) / 3);
+        if (frame >= 72) {
+            east += frame < 92 ? 6 : 0;
+        }
+        east += frame >= 112 ? 60 : 0;
+        const ChunkPos camera{.x = east, .y = 2, .z = 3};
+        move_camera(loop, camera);
+        loop.pass();
+        loop.take(messages);
+        main.receive(messages);
+        for (const LevelChunk& chunk : main.shown) {
+            overlaps += under_shown(main.shown, chunk) ? 1 : 0;
+        }
+        // Never neither: what a swap hid, still in view and streamed, is
+        // drawn by something else, or has nothing left to draw.
+        const vx::Vec3d eye = vx::viewer_at(camera).eye;
+        for (const LevelChunk& chunk : main.hidden) {
+            const auto [level, x, y, z] = chunk;
+            const vx::LodPos pos{.x = x, .y = y, .z = z, .level = static_cast<std::uint8_t>(level)};
+            if (!rings.in_view(eye, pos) ||
+                loop.streamer(static_cast<std::uint8_t>(level)).find({.x = x, .y = y, .z = z}) ==
+                    nullptr) {
+                continue;
+            }
+            ++hidden;
+            uncovered += covered_now(loop, main, rings, eye, chunk) ? 0 : 1;
+        }
+        main.hidden.clear();
+        if (frame == 71) {
+            walked = main.shown.size();
+        }
+        if (frame >= 112) {
+            const std::size_t open = unfilled(loop, main, rings, eye);
+            holes += open;
+            teleported += 1;
+        }
+        jobs.run_until_idle();
+    }
+    CHECK(teleported > 0);
+    CHECK(holes == 0);
+    CHECK(main.swaps > 20);
+    CHECK(walked > 20);
+    CHECK(main.shown_bare == 0);
+    CHECK(overlaps == 0);
+    CHECK(hidden > 10);
+    CHECK(uncovered == 0);
+}
+
+TEST_CASE("with levels off the loop sends no swaps") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool, {.region = small});
+    MainThread main;
+    move_camera(loop, above_hills);
+    loop.settle();
+    move_camera(loop, above_hills);
+    loop.pass();
+    std::vector<ToMain> messages;
+    loop.take(messages);
+    main.receive(messages);
+    CHECK(main.swaps == 0);
+    CHECK(loop.drawn().empty());
 }

@@ -123,6 +123,7 @@ struct ToMain {
         landed, // whether the noclip camera's landing worked
         sample, // what the main thread asked for with ToWorld::Kind::sample
         report, // what it asked for with ToWorld::Kind::report
+        swap,   // RFC 0011: chunks to `show` and to `hide`, together
     };
     Kind kind = Kind::mesh;
     ChunkPos pos;           // the unloaded chunk
@@ -137,6 +138,10 @@ struct ToMain {
     bool landed = false;
     WorldSample sample{};
     WorldReport report{};
+    // A swap's chunks, each meshed and sent before it: drawn from the frame
+    // every one shown with faces is uploaded, in the frame the hidden go.
+    std::vector<LodPos> show{}; // NOLINT(readability-redundant-member-init)
+    std::vector<LodPos> hide{}; // NOLINT(readability-redundant-member-init)
 };
 
 // What the main thread tells the world thread.
@@ -282,6 +287,9 @@ public:
     }
     // The levels streamed: 1, or with RFC 0011's rings all of them.
     [[nodiscard]] std::size_t levels() const noexcept { return levels_.size(); }
+    // With RFC 0011's rings, the chunks to draw as last sent, in order of
+    // level, then x, y and z.
+    [[nodiscard]] std::span<const LodPos> drawn() const noexcept { return drawn_; }
     // Streaming meshes sent but not yet uploaded.
     [[nodiscard]] std::uint64_t unuploaded() const noexcept { return sent_ - uploaded_; }
     // Mesh jobs queued or running.
@@ -318,6 +326,7 @@ private:
         std::uint32_t load_id = 0;
         std::uint32_t generation = 0; // the last mesh job's: from one counter, never reused
         std::uint32_t forwarded = 0;  // the last generation sent, 0 for none
+        bool faces = false;           // the last mesh sent has quads
         std::uint32_t batch = 0;      // the pending edit batch it is in, 0 for none
         JobHandle job;
         JobRecord* pins = nullptr;
@@ -382,6 +391,10 @@ private:
     static std::vector<std::unique_ptr<Level>> make_levels(const Generator& generator,
                                                            JobSystem& jobs, WakeEvent& wake,
                                                            const WorldLoopSettings& settings);
+    // RFC 0011's rings under these limits: the settings' rings with the
+    // region's terrain disc and near cylinder.
+    [[nodiscard]] static LodRings lod_rings(const WorldLoopSettings& settings,
+                                            RegionLimits limits) noexcept;
     // A level's region settings under these limits: level 0's region, or a
     // coarse level's disc with no near cylinder, each as far out as its level
     // streams.
@@ -404,6 +417,12 @@ private:
     void feed();
     // A level's streaming meshes, then its streamer's jobs, in `room`.
     void feed(Level& level, std::size_t& room);
+    // RFC 0011's swaps: the chunks to draw now, from the levels' meshes
+    // sent, and what changed since the last, to the main thread.
+    void select();
+    // What a chunk offers the swaps, as its level's streamer and mesh half
+    // know it.
+    [[nodiscard]] LodReady readiness(LodPos pos);
     bool start_mesh(Level& level, std::uint32_t index, std::uint32_t key);
     // What a sample request is answered with, now, once the streamer's
     // events are followed. A full one walks every record and starts the next
@@ -470,7 +489,8 @@ private:
     std::uint32_t next_batch_ = 1;
     std::uint32_t next_generation_ = 1;
     std::vector<ChunkEvent> events_;
-    WakeEvent main_wake_; // the main thread polls each frame and never waits on it
+    std::vector<LodPos> drawn_; // RFC 0011's, as last sent, sorted
+    WakeEvent main_wake_;       // the main thread polls each frame and never waits on it
     Inbox<ToMain> to_main_;
     std::optional<ChunkPos> camera_;
     std::optional<Viewer> viewer_; // where the camera looks, for the holes in view
@@ -501,7 +521,8 @@ private:
     // spent answering samples, which it leaves out.
     std::chrono::nanoseconds longest_pass_{0};
     std::chrono::nanoseconds answering_{0};
-    bool behind_ = false; // the streamer has results left from its last step
+    bool behind_ = false;     // the streamer has results left from its last step
+    bool select_due_ = false; // a camera came since the last selection
     bool stopping_ = false;
     bool arena_full_ = false; // whether full, as the main thread last said
     MemoryBudget budget_;
