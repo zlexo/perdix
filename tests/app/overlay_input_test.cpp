@@ -514,3 +514,82 @@ TEST_CASE("the god panel's clicks set Perdix's mode, bring him and choose skins,
     CHECK(renderer.context().instance().validation_counts().errors == 0);
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }
+
+TEST_CASE("the overlay's Fog switch turns the fog off and on, and it reports the held distance") {
+    const DummyWindow window;
+    INFO(std::string(SDL_GetError()));
+    REQUIRE(window.get() != nullptr);
+    vx::app::Overlay overlay(window.get(), true, true);
+    vx::Result<vx::render::Renderer> created =
+        vx::render::Renderer::create({.surface = std::nullopt,
+                                      .framebuffer = window_size,
+                                      .validation = true,
+                                      .present_mode = vx::render::PresentMode::fifo,
+                                      .overlay = overlay.context(),
+                                      .block_textures = {}});
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    vx::app::ChunkMeshing meshing;
+    bool bobbing = true;
+    vx::app::RenderDistance distance;
+    const vx::render::Camera camera;
+    const auto frame = [&] {
+        ImDrawData* const drawn =
+            overlay.build(renderer, camera, false, meshing, bobbing, distance);
+        REQUIRE(renderer
+                    .render({.sky = {.r = 0.0F, .g = 0.0F, .b = 0.0F, .a = 1.0F},
+                             .camera = camera,
+                             .cubes = {},
+                             .overlay = drawn})
+                    .has_value());
+    };
+    const auto hover = [&](ImVec2 at) {
+        overlay.take_event(motion(window.id(), at), false);
+        frame();
+    };
+    const auto click = [&](ImVec2 at) {
+        hover(at);
+        overlay.take_event(left_button(window.id(), true, at), false);
+        frame();
+        overlay.take_event(left_button(window.id(), false, at), false);
+        frame();
+    };
+
+    // No distance held before streaming's first report; then the report's.
+    CHECK_FALSE(overlay.held_view_distance().has_value());
+    vx::app::WorldReport report;
+    report.limits.view_distance = 24;
+    overlay.set_world_report(report);
+    REQUIRE(overlay.held_view_distance().has_value());
+    CHECK(*overlay.held_view_distance() == 24);
+
+    // The switch shares View bobbing's row.
+    frame();
+    const ImGuiWindow* const overlay_window = ImGui::FindWindowByName("Overlay");
+    REQUIRE(overlay_window != nullptr);
+    const auto id = [&](const char* label) { return ImHashStr(label, 0, overlay_window->ID); };
+    ImVec2 bob(28.0F, -1.0F);
+    for (float y = 20.0F; y < static_cast<float>(window_size.height) && bob.y < 0.0F; y += 3.0F) {
+        hover(ImVec2(bob.x, y));
+        if (GImGui->HoveredId == id("View bobbing")) {
+            bob.y = y;
+        }
+    }
+    REQUIRE(bob.y >= 0.0F);
+    ImVec2 fog(-1.0F, bob.y);
+    for (float x = bob.x; x < static_cast<float>(window_size.width) && fog.x < 0.0F; x += 6.0F) {
+        hover(ImVec2(x, bob.y));
+        if (GImGui->HoveredId == id("Fog")) {
+            fog.x = x;
+        }
+    }
+    REQUIRE(fog.x >= 0.0F);
+    CHECK(overlay.fog());
+    click(fog);
+    CHECK_FALSE(overlay.fog());
+    CHECK(bobbing);
+    click(fog);
+    CHECK(overlay.fog());
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+}

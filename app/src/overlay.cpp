@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cstdint>
 #include <numeric>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -404,6 +405,13 @@ void Overlay::draw_validation(const render::Context& context) const {
     }
 }
 
+std::optional<std::int32_t> Overlay::held_view_distance() const noexcept {
+    if (!reported_) {
+        return std::nullopt;
+    }
+    return world_.limits.view_distance;
+}
+
 void Overlay::draw_render_distance(RenderDistance& distance) {
     // While dragged, the slider shows the value under the cursor; let go, it
     // changes the distance, so that the world thread makes its region again
@@ -485,6 +493,9 @@ void Overlay::draw_overlay(render::Renderer& renderer, const render::Camera& cam
         draw_render_distance(distance);
         draw_streaming();
         ImGui::Checkbox("View bobbing", &bobbing);
+        // RFC 0013's fog, off to see the terrain's own colors.
+        ImGui::SameLine();
+        ImGui::Checkbox("Fog", &fog_);
         ImGui::Separator();
         draw_validation(renderer.context());
     }
