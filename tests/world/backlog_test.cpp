@@ -62,6 +62,26 @@ TEST_CASE("the 27 chunks around the camera score 0, and the rest by squared dist
     CHECK(vx::chunk_score({.x = 60'000'000, .y = 0, .z = 0}, origin, eye, view) > 1'000'000'000U);
 }
 
+TEST_CASE("on a coarse level a chunk scores by that level's chunks, and its view test uses that "
+          "level's box") {
+    const vx::Frustum view = looking_north();
+    // The eye in the middle of level-2 chunk (0, 0, 0), 128 blocks a side.
+    constexpr vx::Vec3d middle{.x = 64.0, .y = 64.0, .z = 64.0};
+    for (std::int32_t dz = -1; dz <= 1; ++dz) {
+        CHECK(vx::chunk_score({.x = 1, .y = -1, .z = dz}, origin, middle, view, 2) == 0);
+    }
+    // Two level-2 chunks ahead: the square of the distance in them.
+    CHECK(vx::chunk_score({.x = 0, .y = 0, .z = -2}, origin, middle, view, 2) == 4);
+    // Two behind: the box grown by a level-2 chunk spans 64 to 448 blocks
+    // behind the eye, so doubled. Taken as a level-0 box, the same chunk
+    // would span 32 ahead to 64 behind and rank as in view.
+    CHECK(vx::chunk_score({.x = 0, .y = 0, .z = 2}, origin, middle, view, 2) == 16);
+    CHECK(vx::chunk_score({.x = 0, .y = 0, .z = 2}, origin, middle, view) == 4);
+    // At the world's edge on the top level, no overflow.
+    CHECK(vx::chunk_score({.x = -2'097'152, .y = 0, .z = 0}, origin, middle, view, 5) >
+          1'000'000'000U);
+}
+
 TEST_CASE("a backlog gives its lowest key first, ties to the lower index") {
     Backlog backlog;
     std::mt19937 random(5);

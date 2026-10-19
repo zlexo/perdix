@@ -16,8 +16,11 @@ namespace vx {
 // camera's chunk in chunks, doubled when its box grown by a chunk is outside
 // the view (so the neighbors a visible chunk needs rank as visible), and 0 for
 // the 27 chunks around the camera. Squared, as a job key: lower runs first.
+// On RFC 0011's `level` the chunks, the camera's included, are that level's,
+// 32 x 2^level blocks a side, and the eye stays in blocks: a distance in a
+// level's own chunks ranks by size on screen, so the levels' keys compare.
 [[nodiscard]] std::uint32_t chunk_score(ChunkPos chunk, ChunkPos camera, Vec3d eye,
-                                        const Frustum& view) noexcept;
+                                        const Frustum& view, std::uint8_t level = 0) noexcept;
 // The same for a column's surface job, by its horizontal distance.
 [[nodiscard]] std::uint32_t column_score(std::int32_t x, std::int32_t z, ChunkPos camera) noexcept;
 

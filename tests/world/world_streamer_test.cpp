@@ -2166,6 +2166,14 @@ TEST_CASE("a streamer on an RFC 0011 coarse level makes the generator's coarse c
     }
     CHECK(drawn > 100);
     CHECK(complete >= drawn);
+    // Its jobs rank by its level's chunks and boxes: looking east from the
+    // middle of the camera's chunk, 128 blocks a side, the chunk 2 to the
+    // east is in view, which its level-0 namesake, 256 blocks and more west
+    // of the eye, would not be.
+    vx::Viewer viewer = looking_east(camera);
+    viewer.eye = {.x = 448.0, .y = 64.0, .z = -192.0};
+    streamer.set_viewer(viewer);
+    CHECK(streamer.score({.x = camera.x + 2, .y = camera.y, .z = camera.z}) == 4);
     // Deep in the hole no surface is asked: the camera's own column's
     // square of reach lies inside it.
     CHECK_FALSE(streamer.surface({.x = camera.x, .z = camera.z}).has_value());
