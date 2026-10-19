@@ -147,8 +147,9 @@ public:
         return {.view_distance = settings_.view_distance, .hysteresis = settings_.hysteresis};
     }
     // Submits the jobs that can start, at most `room` of them: surfaces
-    // first, then plans and builds, each lowest score first.
-    void feed(std::size_t room = std::numeric_limits<std::size_t>::max());
+    // first, then plans and builds, each lowest score first. Returns the
+    // room it left.
+    std::size_t feed(std::size_t room = std::numeric_limits<std::size_t>::max());
     // Takes in the results the jobs sent back, one step at a time (RFC
     // 0006): it stops once a step's length has passed after a result, a
     // surface's including the records its column brings, so a burst such

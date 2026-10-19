@@ -834,13 +834,14 @@ void WorldStreamer::rescore() {
     rebuilds_backlog_.rescore(chunk);
 }
 
-void WorldStreamer::feed(std::size_t room) {
+std::size_t WorldStreamer::feed(std::size_t room) {
     if (generator_->version() != version_) {
         begin_regeneration();
     }
     feed_surfaces(room);
     unpark();
     feed_chunks(room);
+    return room;
 }
 
 void WorldStreamer::feed_surfaces(std::size_t& room) {
