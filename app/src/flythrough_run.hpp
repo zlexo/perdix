@@ -165,7 +165,8 @@ struct FlythroughHeader {
 // broken, a wait for the region that ran into its cap, or chunk data after
 // the teleport more than 5% off its level after the load. Empty when all is
 // well.
-[[nodiscard]] std::vector<std::string> flythrough_problems(std::span<const PhaseResult> results);
+[[nodiscard]] std::vector<std::string> flythrough_problems(std::span<const PhaseResult> results,
+                                                           std::int32_t view_distance);
 
 // RFC 0006's Markdown block, for pull requests and benchmark results.
 [[nodiscard]] std::string flythrough_report(const FlythroughHeader& header,

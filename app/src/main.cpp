@@ -630,8 +630,9 @@ vx::app::FlythroughHeader flythrough_header(const vx::render::Renderer& renderer
 
 // A checked flythrough's result: what it found wrong, each said, then the
 // validation's (RFC 0006's CI run).
-int checked(std::span<const vx::app::PhaseResult> results, const vx::render::Context& context) {
-    const std::vector<std::string> problems = vx::app::flythrough_problems(results);
+int checked(std::span<const vx::app::PhaseResult> results, std::int32_t view_distance,
+            const vx::render::Context& context) {
+    const std::vector<std::string> problems = vx::app::flythrough_problems(results, view_distance);
     for (const std::string& problem : problems) {
         std::cerr << "error: " << problem << '\n';
     }
@@ -668,7 +669,7 @@ int fly(const vx::app::FlythroughPlan& plan, vx::app::Window& window,
                                                                       window.framebuffer_size(),
                                                                       plan.view_distance, workers),
                                                     run.results());
-            return plan.check ? checked(run.results(), renderer.context())
+            return plan.check ? checked(run.results(), plan.view_distance, renderer.context())
                               : validation_result(renderer.context());
         }
         camera.position = {pose->eye.x, pose->eye.y, pose->eye.z};

@@ -525,34 +525,45 @@ TEST_CASE("a checked run's problems: invariants broken, a wait that hit its cap,
         result.chunk_bytes_end = chunk_bytes;
         return result;
     };
+    // At the quick plan's own view distance, as CI runs it.
+    const std::int32_t quick = FlythroughPlan::quick().view_distance;
     std::vector<vx::app::PhaseResult> results;
     for (const Phase which : vx::app::flythrough_phases) {
         results.push_back(phase(which, 100 * 1024 * 1024));
     }
-    CHECK(vx::app::flythrough_problems(results).empty());
+    CHECK(vx::app::flythrough_problems(results, quick).empty());
     // 4% more after the teleport is still the same level; 6% is not.
     results.back().chunk_bytes_end = 104 * 1024 * 1024;
-    CHECK(vx::app::flythrough_problems(results).empty());
+    CHECK(vx::app::flythrough_problems(results, quick).empty());
     results.back().chunk_bytes_end = 106 * 1024 * 1024;
-    REQUIRE(vx::app::flythrough_problems(results).size() == 1);
-    CHECK(vx::app::flythrough_problems(results).front().find("more than 5% off") !=
+    REQUIRE(vx::app::flythrough_problems(results, quick).size() == 1);
+    CHECK(vx::app::flythrough_problems(results, quick).front().find("more than 5% off") !=
           std::string::npos);
+    // Farther, the same; nearer than the quick plan's distance the terrain
+    // alone moves chunk data that much, and the level is left out.
+    CHECK(vx::app::flythrough_problems(results, 64).size() == 1);
+    CHECK(vx::app::flythrough_problems(results, FlythroughPlan::level_check_distance).size() == 1);
+    CHECK(vx::app::flythrough_problems(results, FlythroughPlan::level_check_distance - 1).empty());
     results.back().chunk_bytes_end = 100 * 1024 * 1024;
     // A broken invariant names its phase.
     results[2].broken = 3;
-    REQUIRE(vx::app::flythrough_problems(results).size() == 1);
-    CHECK(vx::app::flythrough_problems(results).front() ==
+    REQUIRE(vx::app::flythrough_problems(results, quick).size() == 1);
+    CHECK(vx::app::flythrough_problems(results, quick).front() ==
           "cruise: 3 invariants broken over its samples");
+    // Nearer, the invariants still count.
+    CHECK(vx::app::flythrough_problems(results, FlythroughPlan::level_check_distance - 1).size() ==
+          1);
     results[2].broken = 0;
     // A wait that ran into its cap says so, and the comparison is skipped.
     results.front().capped = true;
     results.front().chunk_bytes_end = 1;
-    REQUIRE(vx::app::flythrough_problems(results).size() == 1);
-    CHECK(vx::app::flythrough_problems(results).front() ==
+    REQUIRE(vx::app::flythrough_problems(results, quick).size() == 1);
+    CHECK(vx::app::flythrough_problems(results, quick).front() ==
           "load: the region was not complete by the wait's cap, 1 s");
     // A run that stopped before the teleport cannot compare.
     results.front().capped = false;
     results.pop_back();
-    REQUIRE(vx::app::flythrough_problems(results).size() == 1);
-    CHECK(vx::app::flythrough_problems(results).front() == "the run ended before the teleport");
+    REQUIRE(vx::app::flythrough_problems(results, quick).size() == 1);
+    CHECK(vx::app::flythrough_problems(results, quick).front() ==
+          "the run ended before the teleport");
 }

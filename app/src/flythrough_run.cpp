@@ -260,7 +260,8 @@ void FlythroughRun::finish_phase(Clock::time_point now, bool capped) {
     }
 }
 
-std::vector<std::string> flythrough_problems(std::span<const PhaseResult> results) {
+std::vector<std::string> flythrough_problems(std::span<const PhaseResult> results,
+                                             std::int32_t view_distance) {
     std::vector<std::string> problems;
     const PhaseResult* load = nullptr;
     const PhaseResult* teleport = nullptr;
@@ -279,7 +280,8 @@ std::vector<std::string> flythrough_problems(std::span<const PhaseResult> result
     }
     if (load == nullptr || teleport == nullptr) {
         problems.emplace_back("the run ended before the teleport");
-    } else if (!load->capped && !teleport->capped) {
+    } else if (!load->capped && !teleport->capped &&
+               view_distance >= FlythroughPlan::level_check_distance) {
         const auto before = static_cast<double>(load->chunk_bytes_end);
         const auto after = static_cast<double>(teleport->chunk_bytes_end);
         if (before <= 0.0 || std::abs(after - before) > 0.05 * before) {

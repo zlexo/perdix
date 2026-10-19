@@ -46,6 +46,10 @@ struct FlythroughPlan {
     // broken one, on a wait that ran into its cap, or on chunk data after
     // the teleport more than 5% off its level after the load.
     bool check = false;
+    // That 5% was set at the quick plan's view distance: in a smaller region
+    // the terrain alone moves chunk data more than that (23% at 8 chunks),
+    // so a run nearer than this leaves the level out of its checks.
+    static constexpr std::int32_t level_check_distance = 16;
 
     [[nodiscard]] static FlythroughPlan full() noexcept;
     [[nodiscard]] static FlythroughPlan quick() noexcept;
