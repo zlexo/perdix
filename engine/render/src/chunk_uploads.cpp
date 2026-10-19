@@ -24,14 +24,47 @@ namespace {
 
 constexpr std::array<Pass, 2> passes = {Pass::opaque, Pass::cutout};
 
-std::uint32_t total_quads(const ChunkMesh& mesh) noexcept {
+// The update's quads: its twelve groups, then RFC 0011's open border sets.
+std::uint32_t total_quads(const ChunkMeshUpdate& update) noexcept {
     std::size_t total = 0;
-    for (const auto& faces : mesh.ranges) {
+    for (const auto& faces : update.mesh.ranges) {
         for (const std::span<const Quad> range : faces) {
             total += range.size();
         }
     }
+    for (const auto& faces : update.open) {
+        for (const std::span<const Quad> set : faces) {
+            total += set.size();
+        }
+    }
     return static_cast<std::uint32_t>(total);
+}
+
+// RFC 0011's open border sets, written from `first` on in the arena's order,
+// their counts and the mesh's border counts kept in that order.
+Result<void> write_open_sets(const ChunkMeshUpdate& update, std::uint32_t& first,
+                             std::array<std::uint16_t, 12>& border,
+                             std::array<std::uint16_t, 12>& open, QuadWriter& writer) {
+    std::size_t set = 0;
+    for (const Pass pass : passes) {
+        for (const Face face : arena_faces) {
+            const auto from = (static_cast<std::size_t>(pass) * 6) + static_cast<std::size_t>(face);
+            const std::span<const Quad> quads =
+                update.open.at(static_cast<std::size_t>(pass)).at(static_cast<std::size_t>(face));
+            assert(quads.size() <= 32'768 && update.border.at(from) <= 32'768);
+            border.at(set) = static_cast<std::uint16_t>(update.border.at(from));
+            open.at(set) = static_cast<std::uint16_t>(quads.size());
+            ++set;
+            if (quads.empty()) {
+                continue;
+            }
+            if (const Result<void> written = writer.write(first, quads); !written.has_value()) {
+                return written.error();
+            }
+            first += static_cast<std::uint32_t>(quads.size());
+        }
+    }
+    return {};
 }
 
 } // namespace
@@ -59,7 +92,7 @@ Result<Uploaded> ChunkUploads::upload(const ChunkMeshUpdate& update, QuadWriter&
         return Uploaded::dropped;
     }
     // An empty mesh writes nothing: it costs none of the budget.
-    const std::uint32_t quads = total_quads(update.mesh);
+    const std::uint32_t quads = total_quads(update);
     if (quads == 0) {
         empty(update);
         return Uploaded::removed;
@@ -88,7 +121,7 @@ Result<Uploaded> ChunkUploads::upload_batch(std::span<const ChunkMeshUpdate> bat
     std::vector<std::uint32_t> quads(batch.size());
     std::vector<std::size_t> order(batch.size());
     for (std::size_t at = 0; at < batch.size(); ++at) {
-        quads[at] = total_quads(batch[at].mesh);
+        quads[at] = total_quads(batch[at]);
         order[at] = at;
     }
     std::ranges::stable_sort(order, std::ranges::greater{},
@@ -260,6 +293,14 @@ Result<Uploaded> ChunkUploads::place(const ChunkMeshUpdate& update, const ArenaR
             first += static_cast<std::uint32_t>(quads.size());
         }
     }
+    // RFC 0011's open border sets, after the twelve groups.
+    std::array<std::uint16_t, 12> border{};
+    std::array<std::uint16_t, 12> open{};
+    if (const Result<void> written = write_open_sets(update, first, border, open, writer);
+        !written.has_value()) {
+        space_->retire(range, slot_);
+        return written.error();
+    }
     if (const std::optional<std::uint32_t> at = index_[update.level].find(update.pos)) {
         ChunkMeshRecord& record = records_[*at];
         space_->retire(record.range, slot_);
@@ -267,6 +308,8 @@ Result<Uploaded> ChunkUploads::place(const ChunkMeshUpdate& update, const ArenaR
         record.generation = update.generation;
         record.range = range;
         record.count = count;
+        record.border = border;
+        record.open = open;
     } else {
         index_[update.level].insert(update.pos, static_cast<std::uint32_t>(records_.size()));
         records_.push_back({.pos = update.pos,
@@ -274,7 +317,9 @@ Result<Uploaded> ChunkUploads::place(const ChunkMeshUpdate& update, const ArenaR
                             .range = range,
                             .count = count,
                             .level = update.level,
-                            .shown = !swaps_ || shown_[update.level].find(update.pos).has_value()});
+                            .shown = !swaps_ || shown_[update.level].find(update.pos).has_value(),
+                            .border = border,
+                            .open = open});
         emptied_[update.level].erase(update.pos);
         ++stats_.meshes;
     }

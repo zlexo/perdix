@@ -30,6 +30,101 @@ void add_command(std::uint32_t first, std::uint32_t quads, std::uint32_t origin,
                    .firstInstance = origin});
 }
 
+// Quads at `first` in the arena, `quads` of them.
+struct Segment {
+    std::uint32_t first = 0;
+    std::uint32_t quads = 0;
+};
+
+// A command for each run of segments, a segment joining the run before it
+// when it starts where that run ends and `merge` is on.
+void append_segments(std::span<const Segment> segments, std::uint32_t origin, bool merge,
+                     std::vector<VkDrawIndexedIndirectCommand>& out) {
+    std::uint32_t run_first = 0;
+    std::uint32_t run_quads = 0;
+    for (const Segment& segment : segments) {
+        if (segment.quads == 0) {
+            continue;
+        }
+        if (merge && run_quads > 0 && segment.first == run_first + run_quads) {
+            run_quads += segment.quads;
+            continue;
+        }
+        if (run_quads > 0) {
+            add_command(run_first, run_quads, origin, out);
+        }
+        run_first = segment.first;
+        run_quads = segment.quads;
+    }
+    if (run_quads > 0) {
+        add_command(run_first, run_quads, origin, out);
+    }
+}
+
+// RFC 0011: the arena groups (bit g for arena_faces[g]) toward which a
+// chunk's own level's neighbor is not drawn.
+std::uint8_t open_sides(const ChunkMeshRecord& record, std::uint8_t facing,
+                        const DrawnAt& drawn_at) {
+    std::uint8_t open = 0;
+    for (std::size_t group = 0; group < 6; ++group) {
+        if ((facing & (1U << group)) == 0 ||
+            (record.open.at(group) == 0 && record.open.at(group + 6) == 0 &&
+             record.border.at(group) == 0 && record.border.at(group + 6) == 0)) {
+            continue;
+        }
+        const Face face = arena_faces.at(group);
+        const std::size_t axis = static_cast<std::size_t>(face) / 2;
+        const std::int32_t step = static_cast<std::size_t>(face) % 2 == 0 ? 1 : -1;
+        std::array<std::int32_t, 3> at{record.pos.x, record.pos.y, record.pos.z};
+        at.at(axis) += step;
+        if (!drawn_at({.x = at[0], .y = at[1], .z = at[2]}, record.level)) {
+            open = static_cast<std::uint8_t>(open | (1U << group));
+        }
+    }
+    return open;
+}
+
+// One pass of a chunk with sides open (bits of `open`): each group facing the
+// camera, the slice toward an open side left out, then those sides' open
+// sets. Returns the quads it adds less those it leaves out.
+std::int64_t append_open(const ChunkMeshRecord& record, std::size_t pass, std::uint8_t facing,
+                         std::uint8_t open, std::uint32_t origin, bool merge,
+                         std::vector<VkDrawIndexedIndirectCommand>& out) {
+    std::array<Segment, 12> segments{};
+    std::size_t used = 0;
+    std::int64_t change = 0;
+    std::uint32_t at = record.range.first_quad;
+    for (std::size_t group = 0; group < 12; ++group) {
+        const Segment whole{.first = at, .quads = record.count.at(group)};
+        at += whole.quads;
+        const std::size_t side = group % 6;
+        if (group / 6 != pass || (facing & (1U << side)) == 0) {
+            continue;
+        }
+        Segment segment = whole;
+        if ((open & (1U << side)) != 0) {
+            const std::uint32_t border = record.border.at(group);
+            segment.quads -= border;
+            change -= border;
+            if (side >= 3) {
+                segment.first += border; // a negative face's slice comes first
+            }
+        }
+        segments.at(used++) = segment;
+    }
+    // The open sets, after the twelve groups, in the same order.
+    for (std::size_t set = 0; set < 12; ++set) {
+        const std::uint32_t quads = record.open.at(set);
+        if (set / 6 == pass && (open & (1U << (set % 6))) != 0) {
+            segments.at(used++) = {.first = at, .quads = quads};
+            change += quads;
+        }
+        at += quads;
+    }
+    append_segments(std::span(segments).first(used), origin, merge, out);
+    return change;
+}
+
 } // namespace
 
 std::uint8_t facing_mask(const glm::i64vec3& corner, std::int64_t span) noexcept {
@@ -78,7 +173,7 @@ void append_runs(std::span<const std::uint16_t, 6> counts, std::uint8_t drawn,
 
 void build_draw_lists(std::span<const ChunkMeshRecord> records, const glm::i64vec3& camera_block,
                       const glm::vec3& camera_fraction, const Frustum& view,
-                      const DrawSwitches& switches, DrawLists& lists) {
+                      const DrawSwitches& switches, DrawLists& lists, const DrawnAt& drawn_at) {
     lists.origins.clear();
     lists.opaque.clear();
     lists.cutout.clear();
@@ -120,10 +215,22 @@ void build_draw_lists(std::span<const ChunkMeshRecord> records, const glm::i64ve
         }
         const auto origin = static_cast<std::uint32_t>(lists.origins.size());
         const std::size_t before = lists.opaque.size() + lists.cutout.size();
-        append_runs(count.first<6>(), facing, record.range.first_quad, origin, switches.merge,
-                    lists.opaque);
-        append_runs(count.last<6>(), facing, record.range.first_quad + opaque_quads, origin,
-                    switches.merge, lists.cutout);
+        // RFC 0011: open toward the sides whose own level's neighbor is not
+        // drawn.
+        const std::uint8_t open =
+            record.level > 0 && drawn_at ? open_sides(record, facing, drawn_at) : 0;
+        if (open == 0) {
+            append_runs(count.first<6>(), facing, record.range.first_quad, origin, switches.merge,
+                        lists.opaque);
+            append_runs(count.last<6>(), facing, record.range.first_quad + opaque_quads, origin,
+                        switches.merge, lists.cutout);
+        } else {
+            const std::int64_t change =
+                append_open(record, 0, facing, open, origin, switches.merge, lists.opaque) +
+                append_open(record, 1, facing, open, origin, switches.merge, lists.cutout);
+            lists.stats.quads =
+                static_cast<std::uint64_t>(static_cast<std::int64_t>(lists.stats.quads) + change);
+        }
         if (lists.opaque.size() + lists.cutout.size() > before) {
             // The fourth component is the level, for the shader's scale.
             lists.origins.emplace_back(static_cast<float>(corner.x), static_cast<float>(corner.y),

@@ -56,6 +56,29 @@ ChunkPos on_level(ChunkPos chunk, std::uint8_t level) noexcept {
     return {.x = chunk.x >> level, .y = chunk.y >> level, .z = chunk.z >> level};
 }
 
+// RFC 0011's open border sets of a mesh job's chunk: the main mesh's border
+// counts toward each face, then each face's outermost slice meshed with the
+// border that way all air, appended to the scratch's quads. `mesh` points
+// into the scratch, so it is read first.
+void add_open_sets(const ChunkMesh& mesh, std::span<const BlockVisual> visuals, MeshOptions options,
+                   MeshWorkerScratch& scratch, MeshUpdate& update) {
+    for (std::size_t pass = 0; pass < 2; ++pass) {
+        for (std::size_t face = 0; face < 6; ++face) {
+            update.border.at((pass * 6) + face) = mesh.border.at(pass).at(face);
+        }
+    }
+    for (std::size_t face = 0; face < 6; ++face) {
+        const auto side = static_cast<Face>(face);
+        open_border(side, scratch.padded);
+        const ChunkMesh set = mesh_border(scratch.padded, visuals, scratch.mesh, side, options);
+        for (std::size_t pass = 0; pass < 2; ++pass) {
+            const std::span<const Quad> quads = set.range(static_cast<Pass>(pass), side);
+            scratch.joined.insert(scratch.joined.end(), quads.begin(), quads.end());
+            update.open.at((face * 2) + pass) = static_cast<std::uint32_t>(quads.size());
+        }
+    }
+}
+
 } // namespace
 
 ChunkSight chunk_sight(const Viewer& viewer, ChunkPos pos, double near,
@@ -115,10 +138,18 @@ void WorldLoop::MeshJob::operator()(JobContext& job) const noexcept {
                 static_cast<std::uint32_t>(mesh.ranges[pass][face].size());
         }
     }
+    // The main mesh's quads first: the open border sets, above level 0 and
+    // only for a mesh with faces, reuse the scratch.
+    std::vector<Quad>& joined = scratch.joined;
     const std::span<const Quad> quads = mesh.all();
-    if (!quads.empty()) {
-        result.update.quads = context->pool->allocate(quads.size_bytes());
-        std::memcpy(result.update.quads.data(), quads.data(), quads.size_bytes());
+    joined.assign(quads.begin(), quads.end());
+    if (open && !quads.empty()) {
+        add_open_sets(mesh, context->visuals, options, scratch, result.update);
+    }
+    if (!joined.empty()) {
+        const std::size_t bytes = joined.size() * sizeof(Quad);
+        result.update.quads = context->pool->allocate(bytes);
+        std::memcpy(result.update.quads.data(), joined.data(), bytes);
     }
     context->results->push(std::move(result));
 }
@@ -1149,7 +1180,8 @@ bool WorldLoop::start_mesh(Level& level, std::uint32_t index, std::uint32_t key)
                                                  .pos = pos,
                                                  .level = level.level,
                                                  .generation = generation,
-                                                 .options = options});
+                                                 .options = options,
+                                                 .open = level.level > 0});
     if (!record.job) {
         level.streamer.release(*pins);
         return false;

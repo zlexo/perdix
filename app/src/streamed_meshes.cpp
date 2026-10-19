@@ -48,8 +48,26 @@ render::ChunkMeshUpdate chunk_update(const MeshUpdate& update) noexcept {
             }
         }
     }
-    return {
+    render::ChunkMeshUpdate out{
         .pos = update.pos, .generation = update.generation, .mesh = mesh, .level = update.level};
+    // RFC 0011's open border sets follow the twelve ranges, by face then pass.
+    out.border = update.border;
+    if (!update.quads.empty()) {
+        const Quad* const quads =
+            std::launder(reinterpret_cast<const Quad*>(update.quads.data())); // NOLINT
+        std::size_t at = 0;
+        for (const std::uint32_t count : update.counts) {
+            at += count;
+        }
+        for (std::size_t face = 0; face < 6; ++face) {
+            for (std::size_t pass = 0; pass < 2; ++pass) {
+                const std::uint32_t count = update.open.at((face * 2) + pass);
+                out.open.at(pass).at(face) = std::span<const Quad>(quads + at, count);
+                at += count;
+            }
+        }
+    }
+    return out;
 }
 
 Viewer camera_viewer(const render::Camera& camera, float aspect) {

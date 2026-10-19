@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <random>
+#include <set>
 #include <span>
 #include <utility>
 #include <vector>
@@ -340,4 +341,54 @@ TEST_CASE("a mesh RFC 0011's swaps hide is not drawn, nor counted, nor culled") 
     for (const auto& command : lists.opaque) {
         CHECK(command.vertexOffset < 4U * 300U);
     }
+}
+
+TEST_CASE("toward a side whose own level's neighbor is not drawn, a coarse chunk draws its open "
+          "set in place of its outermost slice that way") {
+    // A level-1 chunk around the camera, so every group faces it: +x holds
+    // quads 100 to 103, the last 2 its outermost slice; -x 104 to 106, the
+    // first its slice. The open sets follow: +x's 107 to 109, -x's 110, 111.
+    std::array<ChunkMeshRecord, 1> records{};
+    ChunkMeshRecord& record = records[0];
+    record.pos = {.x = 0, .y = 0, .z = 0};
+    record.level = 1;
+    record.range.first_quad = 100;
+    record.count = {4, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0};
+    record.border = {2, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
+    record.open = {3, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0};
+    const glm::i64vec3 camera_block(10, 10, 10);
+    const glm::vec3 camera(0.5F, 0.5F, 0.5F);
+    std::set<std::array<std::int32_t, 3>> missing{{1, 0, 0}};
+    const vx::render::DrawnAt drawn_at = [&missing](vx::ChunkPos pos, std::uint8_t level) {
+        CHECK(level == 1);
+        return !missing.contains({pos.x, pos.y, pos.z});
+    };
+    DrawLists lists;
+    // +x's neighbor is not drawn: its slice out, its open set in.
+    vx::render::build_draw_lists(records, camera_block, camera, {}, {}, lists, drawn_at);
+    CHECK(drawn_quads(lists.opaque) ==
+          std::vector<std::uint32_t>{100, 101, 104, 105, 106, 107, 108, 109});
+    CHECK(lists.opaque.size() == 2); // 104 to 109 run on
+    CHECK(lists.stats.quads == 8);
+    // -x's too.
+    missing.insert({-1, 0, 0});
+    vx::render::build_draw_lists(records, camera_block, camera, {}, {}, lists, drawn_at);
+    CHECK(drawn_quads(lists.opaque) ==
+          std::vector<std::uint32_t>{100, 101, 105, 106, 107, 108, 109, 110, 111});
+    CHECK(lists.stats.quads == 9);
+    // Every neighbor drawn, or no one to ask: the twelve groups as made.
+    missing.clear();
+    vx::render::build_draw_lists(records, camera_block, camera, {}, {}, lists, drawn_at);
+    CHECK(drawn_quads(lists.opaque) ==
+          std::vector<std::uint32_t>{100, 101, 102, 103, 104, 105, 106});
+    missing.insert({1, 0, 0});
+    vx::render::build_draw_lists(records, camera_block, camera, {}, {}, lists);
+    CHECK(drawn_quads(lists.opaque) ==
+          std::vector<std::uint32_t>{100, 101, 102, 103, 104, 105, 106});
+    // Level 0 has no finer level beside it: never open.
+    record.level = 0;
+    vx::render::build_draw_lists(records, glm::i64vec3(10, 10, 10), camera, {}, {}, lists,
+                                 [](vx::ChunkPos, std::uint8_t) { return false; });
+    CHECK(drawn_quads(lists.opaque) ==
+          std::vector<std::uint32_t>{100, 101, 102, 103, 104, 105, 106});
 }

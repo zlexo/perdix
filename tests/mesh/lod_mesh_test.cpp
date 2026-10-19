@@ -284,3 +284,72 @@ TEST_CASE("against a coarser neighbor a border face shows where the coarse cell 
         }
     }
 }
+
+TEST_CASE("an open border makes a face for every opaque block of the outermost slice that way, "
+          "and leaves the rest") {
+    const std::vector<vx::BlockVisual> visuals = visual_table();
+    vx::MeshScratch scratch;
+    auto padded = std::make_unique<vx::PaddedChunk>();
+    std::mt19937 random(0x0BE);
+    for (const Face side : all_faces) {
+        fill_with_boxes(*padded, random, 40);
+        // At least one opaque block in the outermost slice that way.
+        const vx::FaceAxes slice = vx::face_axes(side);
+        std::array<int, 3> seed{16, 16, 16};
+        seed.at(static_cast<std::size_t>(slice.normal)) = positive(side) ? vx::chunk_size : 1;
+        padded->blocks[vx::padded_index(seed[0], seed[1], seed[2])] = stone;
+        const vx::PaddedChunk before = *padded;
+        vx::open_border(side, *padded);
+        // Only the face layer toward `side` changed, and it is air.
+        const vx::FaceAxes axes = vx::face_axes(side);
+        const int layer = positive(side) ? vx::padded_size - 1 : 0;
+        std::size_t changed_elsewhere = 0;
+        for (int y = 0; y < vx::padded_size; ++y) {
+            for (int z = 0; z < vx::padded_size; ++z) {
+                for (int x = 0; x < vx::padded_size; ++x) {
+                    const std::array<int, 3> at{x, y, z};
+                    const bool on_face =
+                        at[static_cast<std::size_t>(axes.normal)] == layer &&
+                        at[static_cast<std::size_t>(axes.width)] >= 1 &&
+                        at[static_cast<std::size_t>(axes.width)] <= vx::chunk_size &&
+                        at[static_cast<std::size_t>(axes.height)] >= 1 &&
+                        at[static_cast<std::size_t>(axes.height)] <= vx::chunk_size;
+                    const vx::BlockState now = padded->blocks[vx::padded_index(x, y, z)];
+                    if (on_face) {
+                        CHECK(now == vx::BlockState::air);
+                    } else {
+                        changed_elsewhere +=
+                            now == before.blocks[vx::padded_index(x, y, z)] ? 0 : 1;
+                    }
+                }
+            }
+        }
+        CHECK(changed_elsewhere == 0);
+        // Each opaque block of the outermost slice shows its face that way.
+        std::set<std::array<int, 3>> expected;
+        const int edge = positive(side) ? vx::chunk_size - 1 : 0;
+        const auto normal = static_cast<std::size_t>(axes.normal);
+        for (int b = 0; b < vx::chunk_size; ++b) {
+            for (int a = 0; a < vx::chunk_size; ++a) {
+                std::array<int, 3> block{};
+                block.at(normal) = edge;
+                block.at(static_cast<std::size_t>(axes.width)) = a;
+                block.at(static_cast<std::size_t>(axes.height)) = b;
+                if (padded->blocks[vx::padded_index(block[0] + 1, block[1] + 1, block[2] + 1)] !=
+                    vx::BlockState::air) {
+                    expected.insert(block);
+                }
+            }
+        }
+        const vx::ChunkMesh border =
+            vx::mesh_border(*padded, visuals, scratch, side, {.merge = false});
+        std::set<std::array<int, 3>> shown;
+        for (const vx::Quad quad : border.all()) {
+            const vx::QuadFields fields = vx::decode_quad(quad);
+            CHECK(fields.face == side);
+            shown.insert({fields.block.x, fields.block.y, fields.block.z});
+        }
+        CHECK(shown == expected);
+        CHECK_FALSE(expected.empty());
+    }
+}

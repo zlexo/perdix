@@ -155,4 +155,12 @@ void coarser_border(const ChunkStorage& coarser, Face side, std::array<int, 2> o
     place_face(dx, dy, dz, fine, out);
 }
 
+void open_border(Face side, PaddedChunk& out) noexcept {
+    const int sign = (static_cast<int>(side) % 2 == 0) ? 1 : -1; // pos_x, pos_y, pos_z first
+    const int axis = static_cast<int>(side) / 2;
+    std::array<BlockState, chunk_area> air{};
+    air.fill(BlockState::air);
+    place_face(axis == 0 ? sign : 0, axis == 1 ? sign : 0, axis == 2 ? sign : 0, air, out);
+}
+
 } // namespace vx

@@ -82,4 +82,12 @@ void assemble_padded(const ChunkNeighborhood& neighborhood, PaddedChunk& out) no
 void coarser_border(const ChunkStorage& coarser, Face side, std::array<int, 2> offset,
                     PaddedChunk& out) noexcept;
 
+// RFC 0011's open border: the border toward `side` all air, as if nothing
+// were drawn across it, so mesh_border then makes a face for each opaque
+// block of the chunk's outermost slice that way. A coarse chunk draws that
+// set toward a side where its own level's neighbor is not drawn, the finer
+// chunks there being nearer the camera than the face between them. The
+// edges and corners stay.
+void open_border(Face side, PaddedChunk& out) noexcept;
+
 } // namespace vx
