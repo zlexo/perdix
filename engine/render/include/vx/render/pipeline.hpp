@@ -40,6 +40,9 @@ struct GraphicsPipelineDesc {
     // where the target still holds a depth, as the sky (RFC 0013) does
     // where nothing was drawn.
     VkCompareOp depth_compare = VK_COMPARE_OP_GREATER;
+    // Samples a pixel of the target takes (RFC 0013's MSAA): the
+    // attachments' own count.
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     // Push constants from offset 0, and the stages that read them.
     std::uint32_t push_constant_size = 0;
     VkShaderStageFlags push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT;
