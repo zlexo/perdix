@@ -1523,6 +1523,19 @@ void send_arena(WorldLoop& loop, std::uint64_t full_frames, double share, bool f
     loop.to_world().push(std::move(message));
 }
 
+vx::app::WorldSample ask_sample(WorldLoop& loop, MainThread& main) {
+    ToWorld message;
+    message.kind = ToWorld::Kind::sample;
+    message.sample_kind = SampleKind::full;
+    loop.to_world().push(std::move(message));
+    loop.pass();
+    std::vector<ToMain> messages;
+    loop.take(messages);
+    main.receive(messages);
+    REQUIRE_FALSE(main.samples.empty());
+    return main.samples.back();
+}
+
 vx::app::WorldReport ask_report(WorldLoop& loop, MainThread& main) {
     ToWorld message;
     message.kind = ToWorld::Kind::report;
@@ -1554,6 +1567,9 @@ TEST_CASE("over its memory budget the loop lowers the streamer's hysteresis, the
     MainThread main;
     // The first pass checked: chunk data was already over one byte.
     CHECK(loop.streamer().limits() == vx::RegionLimits{.view_distance = 6, .hysteresis = 1});
+    // A sample says the view distance the streamer holds (the flythrough's
+    // report checks it).
+    CHECK(ask_sample(loop, main).view_distance == 6);
     // No further check before 250 ms have passed on the loop's clock.
     loop.pass();
     CHECK(loop.streamer().limits().hysteresis == 1);
@@ -1566,6 +1582,7 @@ TEST_CASE("over its memory budget the loop lowers the streamer's hysteresis, the
         loop.settle();
         CHECK(loop.streamer().limits() == limits);
     }
+    CHECK(ask_sample(loop, main).view_distance == 4);
     const vx::app::WorldReport report = ask_report(loop, main);
     CHECK(report.limits == vx::RegionLimits{.view_distance = 4, .hysteresis = 0});
     CHECK(report.chosen == vx::RegionLimits{.view_distance = 6, .hysteresis = 2});

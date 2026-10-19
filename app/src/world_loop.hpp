@@ -92,6 +92,9 @@ struct WorldSample {
     std::uint32_t near_holes = 0;
     // The chunk data held, in bytes.
     std::size_t chunk_bytes = 0;
+    // The streamer's view distance, which RFC 0006's memory budget lowers
+    // when chunk data or the GPU's meshes run out of room.
+    std::int32_t view_distance = 0;
     // Streaming is idle, and every chunk of the drawn region has its mesh
     // sent or is known empty.
     bool complete = false;

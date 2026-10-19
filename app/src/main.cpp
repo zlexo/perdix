@@ -530,6 +530,7 @@ vx::app::FlythroughSample flythrough_sample(const vx::app::WorldSample& world,
             .mesh_bytes =
                 (std::uint64_t{arena.live} + arena.retired) * vx::render::ChunkArena::quad_bytes,
             .footprint_bytes = vx::app::process_footprint(),
+            .view_distance = world.view_distance,
             .complete = complete,
             .broken = world.broken};
 }
@@ -623,7 +624,8 @@ vx::app::FlythroughHeader flythrough_header(const vx::render::Renderer& renderer
             .driver = device.driver_name + " " + device.driver_info,
             .settings = std::to_string(size.width) + "x" + std::to_string(size.height) +
                         ", view distance " + std::to_string(view_distance) + ", " + workers + ", " +
-                        (immediate ? "immediate" : "FIFO") + " present"};
+                        (immediate ? "immediate" : "FIFO") + " present",
+            .view_distance = view_distance};
 }
 
 // A checked flythrough's result: what it found wrong, each said, then the

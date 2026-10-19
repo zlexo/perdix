@@ -428,6 +428,28 @@ TEST_CASE("a phase's rates run between its first and last samples, with holes at
     CHECK_FALSE(run.results().at(1).generated_per_second.has_value());
 }
 
+TEST_CASE("a phase's view distance is the world's lowest at its own full samples and at the one "
+          "that closes it") {
+    const Clock::time_point start{};
+    FlythroughRun run(FlythroughPlan::full(), start);
+    const std::uint32_t id = next_sample(run, start);
+    run.add({.id = id, .at = start, .view_distance = 32, .complete = true});
+    const Clock::time_point cruise = start + 10s + 1ms;
+    REQUIRE(run.frame(start + 1ms).has_value());
+    REQUIRE(run.frame(cruise).has_value());
+    REQUIRE(run.phase() == Phase::cruise);
+    // The cruise's first sample closes the hover, which had none of its own;
+    // the cruise's own two follow.
+    for (const std::int32_t chunks : {20, 30, 26}) {
+        run.add({.id = next_sample(run, cruise), .at = cruise, .view_distance = chunks});
+    }
+    REQUIRE(run.frame(cruise + 30s).has_value());
+    REQUIRE(run.phase() == Phase::turns);
+    CHECK(run.results().at(0).least_view_distance == 32);
+    CHECK(run.results().at(1).least_view_distance == 20);
+    CHECK(run.results().at(2).least_view_distance == 26);
+}
+
 TEST_CASE("the report opens with what was run, then a row for each phase") {
     vx::app::PhaseResult load;
     load.phase = Phase::load;
@@ -461,6 +483,37 @@ TEST_CASE("the report opens with what was run, then a row for each phase") {
                       "8765 | 0 / 0 | 100.0 / 101.0 MiB |") != std::string::npos);
     CHECK(report.find("| teleport | 30.00 s (cap) |") != std::string::npos);
     CHECK(report.find("| - / - / - |") != std::string::npos);
+}
+
+TEST_CASE("under the table the report says whether the world held the view distance, and where "
+          "it did not") {
+    const auto phase = [](Phase which, std::int32_t least) {
+        vx::app::PhaseResult result;
+        result.phase = which;
+        result.least_view_distance = least;
+        return result;
+    };
+    const vx::app::FlythroughHeader header{.engine = "0.0.0 (c3a3bff)",
+                                           .build = "release",
+                                           .device = "Apple M3 (integrated GPU)",
+                                           .driver = "KosmicKrisp",
+                                           .settings = "2560x1440, view distance 64",
+                                           .view_distance = 64};
+    CHECK(vx::app::flythrough_report(
+              header,
+              std::vector{phase(Phase::load, 64), phase(Phase::hover, 0), phase(Phase::cruise, 64)})
+              .ends_with("|\n\nThe world held view distance 64 at every sample.\n"));
+    CHECK(vx::app::flythrough_report(header,
+                                     std::vector{phase(Phase::load, 64), phase(Phase::cruise, 48),
+                                                 phase(Phase::sprint, 40)})
+              .ends_with("|\n\nThe world's view distance fell below 64: cruise to 48, sprint to "
+                         "40.\n"));
+    // No sample, no claim; nor without a distance to check.
+    CHECK(vx::app::flythrough_report(header, std::vector{phase(Phase::load, 0)}).ends_with("|\n"));
+    vx::app::FlythroughHeader unplanned = header;
+    unplanned.view_distance = 0;
+    CHECK(vx::app::flythrough_report(unplanned, std::vector{phase(Phase::cruise, 48)})
+              .ends_with("|\n"));
 }
 
 TEST_CASE("a checked run's problems: invariants broken, a wait that hit its cap, and chunk data "
