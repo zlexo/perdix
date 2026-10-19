@@ -865,10 +865,10 @@ TEST_CASE("fed with room for a few jobs, the streamer queues no more, and still 
     vx::WakeEvent wake;
     WorldStreamer streamer(generator, jobs, wake, small);
     streamer.set_camera(above_hills);
-    streamer.feed(5);
+    CHECK(streamer.feed(5) == 0); // the room it left
     CHECK(streamer.stats().jobs_in_flight == 5);
     CHECK(jobs.queued(vx::JobLevel::normal) == 5);
-    streamer.feed(0);
+    CHECK(streamer.feed(0) == 0);
     CHECK(jobs.queued(vx::JobLevel::normal) == 5);
     for (int pass = 0; pass < 10'000 && streamer.stats().jobs_in_flight > 0; ++pass) {
         jobs.run_until_idle();
@@ -880,6 +880,8 @@ TEST_CASE("fed with room for a few jobs, the streamer queues no more, and still 
     CHECK(streamer.stats().jobs_in_flight == 0);
     CHECK(count(streamer, ChunkState::queued) == 0);
     CHECK(streamer.stats().surfaces_known == streamer.stats().columns);
+    // Nothing left to start: the room comes back whole.
+    CHECK(streamer.feed(5) == 5);
     const ChunkRecord* own = streamer.find(above_hills);
     REQUIRE(own != nullptr);
     CHECK(own->state == ChunkState::complete);

@@ -113,11 +113,11 @@ void WorldLoop::MeshJob::operator()(JobContext& job) const noexcept {
 
 WorldLoop::WorldLoop(const Generator& generator, std::span<const BlockVisual> visuals,
                      JobSystem& jobs, MeshResultPool& pool, const WorldLoopSettings& settings)
-    : streamer_(generator, jobs, wake_, settings.region), jobs_(&jobs), settings_(settings),
+    : levels_(make_levels(generator, jobs, wake_, settings)), jobs_(&jobs), settings_(settings),
       from_main_(64, wake_), mesh_results_(std::size_t{2} * jobs.slot_count(), wake_),
       scratch_(std::max<std::uint32_t>(1, jobs.worker_count())),
       context_{.visuals = visuals, .pool = &pool, .results = &mesh_results_, .scratch = nullptr},
-      to_main_(1'024, main_wake_), boxes_(streamer_, settings.physics),
+      to_main_(1'024, main_wake_), boxes_(levels_.front()->streamer, settings.physics),
       budget_(settings.memory_budget,
               {.view_distance = settings.region.view_distance,
                .hysteresis = settings.region.hysteresis},
@@ -125,7 +125,9 @@ WorldLoop::WorldLoop(const Generator& generator, std::span<const BlockVisual> vi
       chosen_hysteresis_(settings.region.hysteresis) {
     context_.scratch = scratch_.data();
     if (settings.clock != nullptr) {
-        streamer_.set_clock(*settings.clock);
+        for (const std::unique_ptr<Level>& level : levels_) {
+            level->streamer.set_clock(*settings.clock);
+        }
     }
     if (settings.player) {
         walking_.emplace(settings.player->spawn, settings.player->lowest);
@@ -142,17 +144,35 @@ WorldLoop::WorldLoop(const Generator& generator, std::span<const BlockVisual> vi
     }
 }
 
+std::vector<std::unique_ptr<WorldLoop::Level>>
+WorldLoop::make_levels(const Generator& generator, JobSystem& jobs, WakeEvent& wake,
+                       const WorldLoopSettings& settings) {
+    std::vector<std::unique_ptr<Level>> levels;
+    levels.push_back(std::make_unique<Level>(generator, jobs, wake, settings.region));
+    return levels;
+}
+
+WorldLoop::MeshRecord& WorldLoop::Level::record(std::uint32_t index) {
+    if (index >= meshes.size()) {
+        meshes.resize(std::size_t{index} + 1);
+    }
+    return meshes[index];
+}
+
 WorldLoop::~WorldLoop() {
     // RFC 0005's shutdown: what is queued never runs, what runs reports
     // back, and only then do the chunks go.
-    for (const MeshRecord& record : meshes_) {
-        if (record.job && jobs_->cancel(record.job) && record.pins != nullptr) {
-            streamer_.release(*record.pins);
+    for (const std::unique_ptr<Level>& level : levels_) {
+        for (const MeshRecord& record : level->meshes) {
+            if (record.job && jobs_->cancel(record.job) && record.pins != nullptr) {
+                level->streamer.release(*record.pins);
+            }
         }
+        level->streamer.cancel_queued();
     }
-    streamer_.cancel_queued();
     jobs_->wait_until_idle();
-    mesh_results_.drain([this](MeshResult&& result) { streamer_.release(*result.pins); });
+    mesh_results_.drain(
+        [this](MeshResult&& result) { levels_.front()->streamer.release(*result.pins); });
 }
 
 bool WorldLoop::pass() {
@@ -160,17 +180,29 @@ bool WorldLoop::pass() {
     answering_ = std::chrono::nanoseconds{0};
     // RFC 0005's plots, as each pass finds the loop: what waits in each inbox
     // before the drains. A tick, right after a pass, would find them empty.
+    // RFC 0011's levels together.
+    [[maybe_unused]] std::size_t results_waiting = 0;
+    [[maybe_unused]] std::uint64_t pins = 0;
+    [[maybe_unused]] std::uint64_t copies = 0;
+    for (const std::unique_ptr<Level>& level : levels_) {
+        results_waiting += level->streamer.results_waiting();
+        pins += level->streamer.pins();
+        copies += level->streamer.copies();
+    }
     TracyPlot("Inbox: from main", static_cast<std::int64_t>(from_main_.size()));
     TracyPlot("Inbox: meshes", static_cast<std::int64_t>(mesh_results_.size()));
-    TracyPlot("Inbox: chunks", static_cast<std::int64_t>(streamer_.results_waiting()));
-    TracyPlot("Pins", static_cast<std::int64_t>(streamer_.pins()));
-    TracyPlot("Copies on write", static_cast<std::int64_t>(streamer_.copies()));
+    TracyPlot("Inbox: chunks", static_cast<std::int64_t>(results_waiting));
+    TracyPlot("Pins", static_cast<std::int64_t>(pins));
+    TracyPlot("Copies on write", static_cast<std::int64_t>(copies));
     TracyPlot("Meshes not uploaded", static_cast<std::int64_t>(unuploaded()));
     from_main_.drain([this](ToWorld&& message) { handle(message); });
     if (stopping_) {
         return false;
     }
-    behind_ = streamer_.integrate();
+    behind_ = false;
+    for (const std::unique_ptr<Level>& level : levels_) {
+        behind_ = level->streamer.integrate() || behind_;
+    }
     follow_events();
     mesh_results_.drain([this](MeshResult&& result) { integrate_mesh(result); });
     send_ready_batches();
@@ -186,7 +218,10 @@ void WorldLoop::settle() {
     // Once a stop arrived, results are no longer taken in, so nothing would
     // ever settle: the destructor waits for the jobs instead.
     while (pass()) {
-        if (streamer_.stats().jobs_in_flight == 0 && meshes_in_flight_ == 0) {
+        const bool idle = std::ranges::all_of(levels_, [](const std::unique_ptr<Level>& level) {
+            return level->streamer.stats().jobs_in_flight == 0;
+        });
+        if (idle && meshes_in_flight_ == 0) {
             return;
         }
         jobs_->wait_until_idle();
@@ -263,6 +298,7 @@ bool WorldLoop::missing_near_camera() {
     const ChunkPos camera = *camera_;
     const RegionSettings& region = settings_.region;
     const std::int32_t near = region.near_distance;
+    Level& ground = *levels_.front();
     for (std::int32_t dz = -near; dz <= near; ++dz) {
         for (std::int32_t dx = -near; dx <= near; ++dx) {
             if ((dx * dx) + (dz * dz) > near * near) {
@@ -270,8 +306,8 @@ bool WorldLoop::missing_near_camera() {
             }
             for (std::int32_t dy = -region.near_height; dy <= region.near_height; ++dy) {
                 const ChunkPos pos{.x = camera.x + dx, .y = camera.y + dy, .z = camera.z + dz};
-                const std::optional<std::uint32_t> index = streamer_.records().find(pos);
-                if (!index || mesh_record(*index).forwarded == 0) {
+                const std::optional<std::uint32_t> index = ground.streamer.records().find(pos);
+                if (!index || ground.record(*index).forwarded == 0) {
                     return true;
                 }
             }
@@ -285,8 +321,10 @@ void WorldLoop::handle(ToWorld& message) {
     case ToWorld::Kind::camera:
         camera_ = message.camera.chunk;
         viewer_ = message.camera;
-        if (streamer_.set_viewer(message.camera)) {
-            rescore_meshes();
+        for (const std::unique_ptr<Level>& level : levels_) {
+            if (level->streamer.set_viewer(message.camera)) {
+                level->rescore();
+            }
         }
         follow_events();
         break;
@@ -358,7 +396,10 @@ void WorldLoop::keep_memory(std::chrono::steady_clock::time_point now) {
         return;
     }
     next_memory_check_ = now + memory_check_interval;
-    chunk_bytes_ = streamer_.chunk_bytes();
+    chunk_bytes_ = 0;
+    for (const std::unique_ptr<Level>& level : levels_) {
+        chunk_bytes_ += level->streamer.chunk_bytes();
+    }
     TracyPlot("Chunk data (MiB)", static_cast<double>(chunk_bytes_) / (1024.0 * 1024.0));
     // Full in a frame since the last check: a count, so a flag left from
     // frames no longer drawn, such as a minimized window's, adds nothing; and
@@ -374,11 +415,13 @@ void WorldLoop::keep_memory(std::chrono::steady_clock::time_point now) {
 }
 
 void WorldLoop::apply_limits() {
-    streamer_.set_limits(budget_.limits());
+    for (const std::unique_ptr<Level>& level : levels_) {
+        level->streamer.set_limits(budget_.limits());
+    }
     follow_events();
 }
 
-RegionSettings WorldLoop::region_settings() const noexcept {
+RegionSettings WorldLoop::region_settings([[maybe_unused]] const Level& level) const noexcept {
     RegionSettings region = settings_.region;
     region.view_distance = budget_.limits().view_distance;
     region.hysteresis = budget_.limits().hysteresis;
@@ -386,7 +429,14 @@ RegionSettings WorldLoop::region_settings() const noexcept {
 }
 
 WorldReport WorldLoop::report() const {
-    const StreamingStats stats = streamer_.stats();
+    StreamingStats stats;
+    for (const std::unique_ptr<Level>& level : levels_) {
+        const StreamingStats one = level->streamer.stats();
+        for (std::size_t state = 0; state < stats.chunks.size(); ++state) {
+            stats.chunks.at(state) += one.chunks.at(state);
+        }
+        stats.waiting += one.waiting;
+    }
     return {.chunks = stats.chunks,
             .waiting = stats.waiting,
             .chunk_bytes = chunk_bytes_,
@@ -402,9 +452,12 @@ void WorldLoop::remesh(MeshOptions options) {
     }
     meshing_ = options;
     // An empty mesh is empty with any options.
-    for (std::uint32_t index = 0; index < meshes_.size(); ++index) {
-        if (meshes_[index].state != MeshRecord::State::none && !known_empty(index)) {
-            queue_mesh(index, false);
+    for (const std::unique_ptr<Level>& level : levels_) {
+        for (std::uint32_t index = 0; index < level->meshes.size(); ++index) {
+            if (level->meshes[index].state != MeshRecord::State::none &&
+                !known_empty(*level, index)) {
+                queue_mesh(*level, index, false);
+            }
         }
     }
 }
@@ -504,22 +557,23 @@ void WorldLoop::send_player(std::chrono::steady_clock::time_point at) {
 
 void WorldLoop::edit(BlockPos block, BlockState state) {
     follow_events();
-    if (!streamer_.set_block(block, state)) {
+    Level& ground = *levels_.front();
+    if (!ground.streamer.set_block(block, state)) {
         return;
     }
-    streamer_.take_events(events_);
+    ground.streamer.take_events(events_);
     // The chunks the edit changed, and those of any batch one of them is in
     // already: one batch, sent once all are remeshed.
     Batch batch{.id = next_batch_++, .members = {}};
     const auto join = [&](std::uint32_t index) {
         const bool known = std::ranges::any_of(
             batch.members, [index](const Batch::Member& member) { return member.record == index; });
-        if (known || mesh_record(index).state == MeshRecord::State::none) {
+        if (known || ground.record(index).state == MeshRecord::State::none) {
             return;
         }
         // Any job started from now on reads the edit.
         batch.members.push_back({.record = index,
-                                 .load_id = mesh_record(index).load_id,
+                                 .load_id = ground.record(index).load_id,
                                  .wanted = next_generation_,
                                  .mesh = {},
                                  .done = false});
@@ -528,7 +582,7 @@ void WorldLoop::edit(BlockPos block, BlockState state) {
         if (event.kind != ChunkEvent::Kind::changed) {
             continue;
         }
-        const std::uint32_t old_batch = mesh_record(event.record).batch;
+        const std::uint32_t old_batch = ground.record(event.record).batch;
         join(event.record);
         if (old_batch != 0) {
             const auto merged = std::ranges::find(batches_, old_batch, &Batch::id);
@@ -545,43 +599,42 @@ void WorldLoop::edit(BlockPos block, BlockState state) {
         return;
     }
     for (const Batch::Member& member : batch.members) {
-        mesh_record(member.record).batch = batch.id;
-        queue_mesh(member.record, true);
+        ground.record(member.record).batch = batch.id;
+        queue_mesh(ground, member.record, true);
     }
     batches_.push_back(std::move(batch));
 }
 
 void WorldLoop::follow_events() {
-    streamer_.take_events(events_);
+    for (const std::unique_ptr<Level>& level : levels_) {
+        follow_events(*level);
+    }
+}
+
+void WorldLoop::follow_events(Level& level) {
+    level.streamer.take_events(events_);
     for (const ChunkEvent& event : events_) {
         switch (event.kind) {
         case ChunkEvent::Kind::shown:
-            mesh_record(event.record).load_id = streamer_.records()[event.record].load_id;
-            queue_mesh(event.record, false);
+            level.record(event.record).load_id = level.streamer.records()[event.record].load_id;
+            queue_mesh(level, event.record, false);
             break;
         case ChunkEvent::Kind::changed:
-            if (mesh_record(event.record).state != MeshRecord::State::none) {
-                queue_mesh(event.record, false);
+            if (level.record(event.record).state != MeshRecord::State::none) {
+                queue_mesh(level, event.record, false);
             }
             break;
         case ChunkEvent::Kind::hidden:
         case ChunkEvent::Kind::freed:
-            drop_mesh(event.record, event.pos);
+            drop_mesh(level, event.record, event.pos);
             break;
         }
     }
     events_.clear();
 }
 
-WorldLoop::MeshRecord& WorldLoop::mesh_record(std::uint32_t index) {
-    if (index >= meshes_.size()) {
-        meshes_.resize(std::size_t{index} + 1);
-    }
-    return meshes_[index];
-}
-
-void WorldLoop::queue_mesh(std::uint32_t index, bool urgent) {
-    MeshRecord& record = mesh_record(index);
+void WorldLoop::queue_mesh(Level& level, std::uint32_t index, bool urgent) {
+    MeshRecord& record = level.record(index);
     switch (record.state) {
     case MeshRecord::State::none:
     case MeshRecord::State::sent:
@@ -590,9 +643,9 @@ void WorldLoop::queue_mesh(std::uint32_t index, bool urgent) {
         if (urgent) {
             waiting_urgent_.push_back(index);
         } else {
-            waiting_meshes_.push({.key = streamer_.score(streamer_.records()[index].pos),
-                                  .index = index,
-                                  .load_id = record.load_id});
+            level.waiting.push({.key = level.streamer.score(level.streamer.records()[index].pos),
+                                .index = index,
+                                .load_id = record.load_id});
         }
         break;
     case MeshRecord::State::queued:
@@ -610,13 +663,13 @@ void WorldLoop::queue_mesh(std::uint32_t index, bool urgent) {
     }
 }
 
-void WorldLoop::drop_mesh(std::uint32_t index, ChunkPos pos) {
-    MeshRecord& record = mesh_record(index);
+void WorldLoop::drop_mesh(Level& level, std::uint32_t index, ChunkPos pos) {
+    MeshRecord& record = level.record(index);
     if (record.state == MeshRecord::State::none) {
         return;
     }
     if (record.job && jobs_->cancel(record.job)) {
-        streamer_.release(*record.pins);
+        level.streamer.release(*record.pins);
         --meshes_in_flight_;
     }
     if (record.forwarded != 0) {
@@ -634,15 +687,16 @@ void WorldLoop::drop_mesh(std::uint32_t index, ChunkPos pos) {
 }
 
 void WorldLoop::integrate_mesh(MeshResult& result) {
-    streamer_.release(*result.pins);
+    Level& level = *levels_.front();
+    level.streamer.release(*result.pins);
     --meshes_in_flight_;
     ++meshes_made_;
-    const std::optional<std::uint32_t> found = streamer_.records().find(result.update.pos);
+    const std::optional<std::uint32_t> found = level.streamer.records().find(result.update.pos);
     if (!found) {
         return; // freed: the buffer goes back to the pool
     }
     const std::uint32_t index = *found;
-    MeshRecord& record = mesh_record(index);
+    MeshRecord& record = level.record(index);
     if (record.state == MeshRecord::State::none || record.load_id != result.update.load_id) {
         return;
     }
@@ -653,7 +707,7 @@ void WorldLoop::integrate_mesh(MeshResult& result) {
         if (record.dirty) {
             record.dirty = false;
             record.state = MeshRecord::State::sent; // so queue_mesh queues it
-            queue_mesh(index, record.urgent);
+            queue_mesh(level, index, record.urgent);
         } else {
             record.state = MeshRecord::State::sent;
             record.urgent = false;
@@ -662,12 +716,12 @@ void WorldLoop::integrate_mesh(MeshResult& result) {
     // Newer than the last one sent: on its way, even if a newer job runs, so
     // steady edits cannot starve the chunk (RFC 0006).
     if (result.update.generation > record.forwarded) {
-        forward(index, std::move(result.update));
+        forward(level, index, std::move(result.update));
     }
 }
 
-void WorldLoop::forward(std::uint32_t index, MeshUpdate&& update) {
-    MeshRecord& record = mesh_record(index);
+void WorldLoop::forward(Level& level, std::uint32_t index, MeshUpdate&& update) {
+    MeshRecord& record = level.record(index);
     record.forwarded = update.generation;
     if (record.batch != 0) {
         const auto batch = std::ranges::find(batches_, record.batch, &Batch::id);
@@ -694,7 +748,7 @@ void WorldLoop::send_ready_batches() {
         }
         ToMain message{.kind = ToMain::Kind::batch, .pos = {}, .mesh = {}, .batch = {}};
         for (Batch::Member& member : batch.members) {
-            MeshRecord& record = mesh_record(member.record);
+            MeshRecord& record = levels_.front()->record(member.record);
             record.batch = 0;
             // Still the chunk the edit changed.
             if (record.load_id == member.load_id && member.mesh.load_id == member.load_id) {
@@ -709,100 +763,126 @@ void WorldLoop::send_ready_batches() {
 }
 
 void WorldLoop::feed() {
-    // An edit's remeshes first, at the urgent level; then streaming meshes,
-    // unless too many sent wait to be uploaded; then the streamer's jobs.
-    // Each level's count is plotted where it is read (RFC 0005): how far the
-    // workers ran it down since the last pass, without another lock.
+    // An edit's remeshes first, at the urgent level; then each level's
+    // streaming meshes, unless too many sent wait to be uploaded, and its
+    // streamer's jobs. Each job level's count is plotted where it is read
+    // (RFC 0005): how far the workers ran it down since the last pass,
+    // without another lock.
     const auto room = [this](JobLevel level, [[maybe_unused]] const char* plot) {
         const std::uint32_t queued = jobs_->queued(level);
         TracyPlot(plot, static_cast<std::int64_t>(queued));
         return queued >= settings_.queue_limit ? 0U : settings_.queue_limit - queued;
     };
+    Level& ground = *levels_.front();
     std::size_t urgent_room = room(JobLevel::urgent, "Queued urgent");
     std::erase_if(waiting_urgent_, [&](std::uint32_t index) {
-        const MeshRecord& record = mesh_record(index);
+        const MeshRecord& record = ground.record(index);
         if (record.state != MeshRecord::State::queued || !record.urgent) {
             return true; // started, or dropped
         }
         // RFC 0006's fast path: a mesh known to be empty takes no job, and
         // no room in the queue. It goes at once, as a job's result would.
-        if (known_empty(index)) {
-            skip_mesh(index);
+        if (known_empty(ground, index)) {
+            skip_mesh(ground, index);
             return true;
         }
-        if (urgent_room == 0 || !start_mesh(index, 0)) {
+        if (urgent_room == 0 || !start_mesh(ground, index, 0)) {
             return false;
         }
         --urgent_room;
         return true;
     });
-    // A mesh known to be empty goes even while the jobs wait for room or
-    // for the main thread: it takes neither.
     std::size_t normal_room = room(JobLevel::normal, "Queued normal");
-    const bool held = unuploaded() >= settings_.unuploaded_limit;
-    while (!waiting_meshes_.empty()) {
-        const Backlog::Entry entry = waiting_meshes_.top();
-        const MeshRecord& record = mesh_record(entry.index);
-        if (record.state != MeshRecord::State::queued || record.urgent ||
-            record.load_id != entry.load_id) {
-            waiting_meshes_.pop(); // started, dropped, or an edit's now
-            continue;
-        }
-        if (known_empty(entry.index)) {
-            skip_mesh(entry.index);
-            waiting_meshes_.pop();
-            continue;
-        }
-        if (held || normal_room == 0 || !start_mesh(entry.index, entry.key)) {
-            break; // no room, or no job slot or record: it stays first in line
-        }
-        waiting_meshes_.pop();
-        --normal_room;
+    for (const std::unique_ptr<Level>& level : levels_) {
+        feed(*level, normal_room);
     }
-    streamer_.feed(normal_room);
 }
 
-void WorldLoop::rescore_meshes() {
-    waiting_meshes_.rescore([this](const Backlog::Entry& entry) -> std::optional<std::uint32_t> {
-        const MeshRecord& record = mesh_record(entry.index);
-        if (record.state != MeshRecord::State::queued || record.load_id != entry.load_id) {
+void WorldLoop::feed(Level& level, std::size_t& room) {
+    // A mesh known to be empty goes even while the jobs wait for room or
+    // for the main thread: it takes neither.
+    const bool held = unuploaded() >= settings_.unuploaded_limit;
+    while (!level.waiting.empty()) {
+        const Backlog::Entry entry = level.waiting.top();
+        const MeshRecord& record = level.record(entry.index);
+        if (record.state != MeshRecord::State::queued || record.urgent ||
+            record.load_id != entry.load_id) {
+            level.waiting.pop(); // started, dropped, or an edit's now
+            continue;
+        }
+        if (known_empty(level, entry.index)) {
+            skip_mesh(level, entry.index);
+            level.waiting.pop();
+            continue;
+        }
+        if (held || room == 0 || !start_mesh(level, entry.index, entry.key)) {
+            break; // no room, or no job slot or record: it stays first in line
+        }
+        level.waiting.pop();
+        --room;
+    }
+    room = level.streamer.feed(room);
+}
+
+void WorldLoop::Level::rescore() {
+    waiting.rescore([this](const Backlog::Entry& entry) -> std::optional<std::uint32_t> {
+        const MeshRecord& mesh = record(entry.index);
+        if (mesh.state != MeshRecord::State::queued || mesh.load_id != entry.load_id) {
             return std::nullopt;
         }
-        return streamer_.score(streamer_.records()[entry.index].pos);
+        return streamer.score(streamer.records()[entry.index].pos);
     });
 }
 
 WorldSample WorldLoop::sample(SampleKind kind) {
-    const StreamingStats stats = streamer_.stats();
-    const bool idle = stats.jobs_in_flight == 0 && stats.waiting == 0 && meshes_in_flight_ == 0;
+    // RFC 0011's levels together.
     WorldSample out{.id = 0,
                     .kind = kind,
                     .at = time(),
-                    .generated = stats.generated,
-                    .uniform = stats.uniform,
+                    .generated = 0,
+                    .uniform = 0,
                     .meshed = meshes_made_,
                     .skipped = meshes_skipped_};
-    const ChunkRecords& records = streamer_.records();
+    bool idle = meshes_in_flight_ == 0;
+    for (const std::unique_ptr<Level>& level : levels_) {
+        const StreamingStats stats = level->streamer.stats();
+        idle = idle && stats.jobs_in_flight == 0 && stats.waiting == 0;
+        out.generated += stats.generated;
+        out.uniform += stats.uniform;
+    }
     if (kind == SampleKind::completion) {
         bool complete = idle;
-        for (std::uint32_t index = 0; complete && index < records.end_index(); ++index) {
-            complete = !missing(index);
+        for (const std::unique_ptr<Level>& level : levels_) {
+            const ChunkRecords& records = level->streamer.records();
+            for (std::uint32_t index = 0; complete && index < records.end_index(); ++index) {
+                complete = !missing(*level, index);
+            }
         }
         if (!complete) {
             return out;
         }
         out.kind = SampleKind::full;
     }
-    out.longest_step = streamer_.take_longest_step();
     out.longest_pass = std::exchange(longest_pass_, std::chrono::nanoseconds{0});
-    out.chunk_bytes = streamer_.chunk_bytes();
-    out.view_distance = streamer_.limits().view_distance;
-    if (out.kind == SampleKind::checked) {
-        out.broken = broken_invariants(stats);
-    }
+    out.view_distance = levels_.front()->streamer.limits().view_distance;
     bool any_missing = false;
+    for (const std::unique_ptr<Level>& level : levels_) {
+        out.longest_step = std::max(out.longest_step, level->streamer.take_longest_step());
+        out.chunk_bytes += level->streamer.chunk_bytes();
+        if (out.kind == SampleKind::checked) {
+            out.broken += broken_invariants(*level, level->streamer.stats());
+        }
+        any_missing = count_holes(*level, out) || any_missing;
+    }
+    out.complete = idle && !any_missing;
+    return out;
+}
+
+bool WorldLoop::count_holes(Level& level, WorldSample& sample) {
+    bool any_missing = false;
+    const ChunkRecords& records = level.streamer.records();
     for (std::uint32_t index = 0; index < records.end_index(); ++index) {
-        if (!missing(index)) {
+        if (!missing(level, index)) {
             continue;
         }
         any_missing = true;
@@ -811,28 +891,27 @@ WorldSample WorldLoop::sample(SampleKind kind) {
         }
         const ChunkSight sight = chunk_sight(*viewer_, records[index].pos, near_holes_distance);
         if (sight.in_view) {
-            ++out.holes;
+            ++sample.holes;
         }
         if (sight.near) {
-            ++out.near_holes;
+            ++sample.near_holes;
         }
     }
-    out.complete = idle && !any_missing;
-    return out;
+    return any_missing;
 }
 
-bool WorldLoop::missing(std::uint32_t index) {
-    const ChunkRecords& records = streamer_.records();
+bool WorldLoop::missing(Level& level, std::uint32_t index) {
+    const ChunkRecords& records = level.streamer.records();
     if (!records.live(index)) {
         return false;
     }
     const ChunkRecord& chunk = records[index];
-    return chunk.drawn && mesh_record(index).forwarded == 0 &&
-           !(counts_as_ready(chunk.state) && known_empty(index));
+    return chunk.drawn && level.record(index).forwarded == 0 &&
+           !(counts_as_ready(chunk.state) && known_empty(level, index));
 }
 
-std::uint32_t WorldLoop::broken_invariants(const StreamingStats& stats) {
-    const ChunkRecords& records = streamer_.records();
+std::uint32_t WorldLoop::broken_invariants(Level& level, const StreamingStats& stats) {
+    const ChunkRecords& records = level.streamer.records();
     // Each record's counts and state, against its neighbors.
     std::uint32_t broken = records.broken();
     // Each record counted once, in its state.
@@ -845,20 +924,20 @@ std::uint32_t WorldLoop::broken_invariants(const StreamingStats& stats) {
     }
     // The mesh half holds a chunk exactly while the world half shows it:
     // complete, so with its 26 neighbors ready, and in the drawn region.
-    broken += records.disagreements([this](std::uint32_t index) {
-        return mesh_record(index).state != MeshRecord::State::none;
+    broken += records.disagreements([&level](std::uint32_t index) {
+        return level.record(index).state != MeshRecord::State::none;
     });
     // The region grown by the hysteresis, recomputed from the camera rather
     // than taken from the streamer: no record stays outside it.
     if (camera_) {
-        broken += records.outside(
-            Region(*camera_, region_settings()).grown(region_settings().hysteresis));
+        const RegionSettings region = region_settings(level);
+        broken += records.outside(Region(*camera_, region).grown(region.hysteresis));
     }
     return broken;
 }
 
-bool WorldLoop::known_empty(std::uint32_t index) const noexcept {
-    const ChunkRecord& chunk = streamer_.records()[index];
+bool WorldLoop::known_empty(const Level& level, std::uint32_t index) const noexcept {
+    const ChunkRecord& chunk = level.streamer.records()[index];
     if (chunk.blocks != nullptr) {
         return false;
     }
@@ -876,31 +955,32 @@ bool WorldLoop::known_empty(std::uint32_t index) const noexcept {
     constexpr std::array<std::array<std::int32_t, 3>, 6> sides = {
         {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}};
     return std::ranges::all_of(sides, [&](const std::array<std::int32_t, 3>& side) {
-        const ChunkRecord* neighbor = streamer_.find(
+        const ChunkRecord* neighbor = level.streamer.find(
             {.x = chunk.pos.x + side[0], .y = chunk.pos.y + side[1], .z = chunk.pos.z + side[2]});
         return neighbor != nullptr && neighbor->blocks == nullptr && opaque(neighbor->uniform);
     });
 }
 
-void WorldLoop::skip_mesh(std::uint32_t index) {
-    MeshRecord& record = mesh_record(index);
-    const ChunkPos pos = streamer_.records()[index].pos;
+void WorldLoop::skip_mesh(Level& level, std::uint32_t index) {
+    MeshRecord& record = level.record(index);
+    const ChunkPos pos = level.streamer.records()[index].pos;
     record.generation = next_generation_++;
     record.state = MeshRecord::State::sent;
     record.urgent = false;
     ++meshes_skipped_;
-    forward(index, MeshUpdate{.pos = pos,
-                              .load_id = record.load_id,
-                              .generation = record.generation,
-                              .counts = {},
-                              .quads = {}});
+    forward(level, index,
+            MeshUpdate{.pos = pos,
+                       .load_id = record.load_id,
+                       .generation = record.generation,
+                       .counts = {},
+                       .quads = {}});
 }
 
-bool WorldLoop::start_mesh(std::uint32_t index, std::uint32_t key) {
-    MeshRecord& record = mesh_record(index);
-    const ChunkPos pos = streamer_.records()[index].pos;
+bool WorldLoop::start_mesh(Level& level, std::uint32_t index, std::uint32_t key) {
+    MeshRecord& record = level.record(index);
+    const ChunkPos pos = level.streamer.records()[index].pos;
     const std::uint32_t generation = next_generation_;
-    JobRecord* pins = streamer_.pin_neighborhood(pos, generation);
+    JobRecord* pins = level.streamer.pin_neighborhood(pos, generation);
     if (pins == nullptr) {
         return false;
     }
@@ -912,7 +992,7 @@ bool WorldLoop::start_mesh(std::uint32_t index, std::uint32_t key) {
                                                  .generation = generation,
                                                  .options = meshing_});
     if (!record.job) {
-        streamer_.release(*pins);
+        level.streamer.release(*pins);
         return false;
     }
     ++next_generation_;

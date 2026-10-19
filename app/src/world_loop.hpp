@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -258,7 +259,10 @@ public:
 
     // The rest is the world thread's: read it there, or once it has stopped.
     [[nodiscard]] bool stopping() const noexcept { return stopping_; }
-    [[nodiscard]] const WorldStreamer& streamer() const noexcept { return streamer_; }
+    // Level 0's streamer: the world the player walks and edits.
+    [[nodiscard]] const WorldStreamer& streamer() const noexcept {
+        return levels_.front()->streamer;
+    }
     // Streaming meshes sent but not yet uploaded.
     [[nodiscard]] std::uint64_t unuploaded() const noexcept { return sent_ - uploaded_; }
     // Mesh jobs queued or running.
@@ -300,7 +304,8 @@ private:
         JobRecord* pins = nullptr;
     };
 
-    // An edit's remeshes, sent together once every member has reported.
+    // An edit's remeshes, of level 0's records, sent together once every
+    // member has reported.
     struct Batch {
         std::uint32_t id = 0;
         struct Member {
@@ -311,6 +316,22 @@ private:
             bool done = false;
         };
         std::vector<Member> members;
+    };
+
+    // One level's streaming (RFC 0011): its streamer, the mesh half's records
+    // by the streamer's record index, and its streaming meshes waiting for a
+    // job. Edits reach level 0 alone.
+    struct Level {
+        Level(const Generator& generator, JobSystem& jobs, WakeEvent& wake,
+              const RegionSettings& region)
+            : streamer(generator, jobs, wake, region) {}
+        WorldStreamer streamer;
+        std::vector<MeshRecord> meshes;
+        Backlog waiting;
+        // The mesh record at the streamer's record `index`, made if none is.
+        MeshRecord& record(std::uint32_t index);
+        // The streaming meshes waiting, ranked as the streamer ranks its jobs.
+        void rescore();
     };
 
     // A mesh job's result, back on the world thread.
@@ -336,22 +357,27 @@ private:
         void operator()(JobContext& job) const noexcept;
     };
 
+    // Each level's stream, level 0 first.
+    static std::vector<std::unique_ptr<Level>> make_levels(const Generator& generator,
+                                                           JobSystem& jobs, WakeEvent& wake,
+                                                           const WorldLoopSettings& settings);
     void handle(ToWorld& message);
     // New mesh options: every chunk that has a mesh, or waits for one,
     // meshed again with them.
     void remesh(MeshOptions options);
     void edit(BlockPos block, BlockState state);
+    // Every level's streamer events, followed by its mesh half.
     void follow_events();
-    MeshRecord& mesh_record(std::uint32_t index);
-    void queue_mesh(std::uint32_t index, bool urgent);
-    // The streaming meshes waiting, ranked as the streamer ranks its jobs.
-    void rescore_meshes();
-    void drop_mesh(std::uint32_t index, ChunkPos pos);
+    void follow_events(Level& level);
+    void queue_mesh(Level& level, std::uint32_t index, bool urgent);
+    void drop_mesh(Level& level, std::uint32_t index, ChunkPos pos);
     void integrate_mesh(MeshResult& result);
-    void forward(std::uint32_t index, MeshUpdate&& update);
+    void forward(Level& level, std::uint32_t index, MeshUpdate&& update);
     void send_ready_batches();
     void feed();
-    bool start_mesh(std::uint32_t index, std::uint32_t key);
+    // A level's streaming meshes, then its streamer's jobs, in `room`.
+    void feed(Level& level, std::size_t& room);
+    bool start_mesh(Level& level, std::uint32_t index, std::uint32_t key);
     // What a sample request is answered with, now, once the streamer's
     // events are followed. A full one walks every record and starts the next
     // longest step and pass: a few times a second, or each frame of a check.
@@ -359,19 +385,22 @@ private:
     // once the region is complete.
     [[nodiscard]] WorldSample sample(SampleKind kind);
     // RFC 0006's invariants the flythrough's checks count, as
-    // WorldSample::broken says.
-    [[nodiscard]] std::uint32_t broken_invariants(const StreamingStats& stats);
+    // WorldSample::broken says, on one level.
+    [[nodiscard]] std::uint32_t broken_invariants(Level& level, const StreamingStats& stats);
     // A chunk of the drawn region with no mesh sent and not known empty.
-    [[nodiscard]] bool missing(std::uint32_t index);
+    [[nodiscard]] bool missing(Level& level, std::uint32_t index);
+    // A level's chunks missing a mesh, counted into the sample's holes in
+    // view and near ones; true when there is any.
+    bool count_holes(Level& level, WorldSample& sample);
     [[nodiscard]] std::chrono::steady_clock::time_point time() const noexcept {
         return settings_.clock != nullptr ? settings_.clock->now()
                                           : std::chrono::steady_clock::now();
     }
     // Uniform air, or an opaque state among six uniform opaque neighbors:
     // no face of it can show.
-    [[nodiscard]] bool known_empty(std::uint32_t index) const noexcept;
+    [[nodiscard]] bool known_empty(const Level& level, std::uint32_t index) const noexcept;
     // Sends a known empty mesh, as a job's result would go.
-    void skip_mesh(std::uint32_t index);
+    void skip_mesh(Level& level, std::uint32_t index);
     // A tick in Tracy: a frame of its own set, and a zone. `due` is when it
     // fell due on the loop's clock.
     void tick(std::chrono::steady_clock::time_point due);
@@ -395,13 +424,13 @@ private:
     void keep_memory(std::chrono::steady_clock::time_point now);
     // The budget's limits, to the streamer.
     void apply_limits();
-    // The region's settings with the budget's limits, which the checks
+    // A level's region settings with the budget's limits, which the checks
     // recompute the region from, as the streamer applies them.
-    [[nodiscard]] RegionSettings region_settings() const noexcept;
+    [[nodiscard]] RegionSettings region_settings(const Level& level) const noexcept;
     [[nodiscard]] WorldReport report() const;
 
-    WakeEvent wake_; // before the inboxes that signal it
-    WorldStreamer streamer_;
+    WakeEvent wake_;                             // before the inboxes that signal it
+    std::vector<std::unique_ptr<Level>> levels_; // by level, from 0
     JobSystem* jobs_;
     WorldLoopSettings settings_;
     Inbox<ToWorld> from_main_;
@@ -409,9 +438,7 @@ private:
     std::vector<MeshWorkerScratch> scratch_;
     MeshContext context_;
 
-    std::vector<MeshRecord> meshes_; // by the streamer's record index
-    std::vector<std::uint32_t> waiting_urgent_;
-    Backlog waiting_meshes_;
+    std::vector<std::uint32_t> waiting_urgent_; // level 0's records
     std::vector<Batch> batches_;
     std::uint32_t next_batch_ = 1;
     std::uint32_t next_generation_ = 1;
