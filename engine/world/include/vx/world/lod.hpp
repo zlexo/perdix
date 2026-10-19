@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vx/core/vec3d.hpp>
 #include <vx/world/coordinates.hpp>
 
 #include <array>
@@ -86,5 +87,34 @@ struct LodBox {
             .max_y = y + size,
             .max_z = z + size};
 }
+
+// Which level is drawn where (RFC 0011): pure functions of the camera and
+// these settings, for the streamer and the tests.
+struct LodRings {
+    double pixels_per_cell = 4.0;             // k, the quality: 2 sharp to 8 fast
+    std::uint32_t framebuffer_height = 1'440; // in pixels
+    double fov_y = 1.2217304763960306;        // 70 degrees, in radians
+    std::int32_t view_distance = 512;         // the terrain disc's radius, in chunks
+    std::int32_t near_distance = 8;           // RFC 0006's near cylinder, in chunks,
+    std::int32_t near_height = 8;             // always drawn at level 0
+
+    // The distance at which a block spans k pixels on screen: level L
+    // starts at 2^L times it. Never below the floor at which chunks drawn
+    // side by side could be two levels apart (lod.cpp says why).
+    [[nodiscard]] double unit() const noexcept;
+    // Where a level starts, in blocks: level 0 at 0.
+    [[nodiscard]] double radius(std::uint8_t level) const noexcept;
+    // The level a chunk's place calls for: 0 for a chunk reaching into the
+    // near cylinder, else the coarsest level whose ring starts at or before
+    // the nearest point of the chunk's box, in three dimensions.
+    [[nodiscard]] std::uint8_t level_at(const Vec3d& eye, LodPos chunk) const noexcept;
+    // Whether a chunk reaches into the terrain disc: one of its columns is
+    // within the view distance of the camera's, as RFC 0006 counts it.
+    [[nodiscard]] bool in_view(const Vec3d& eye, LodPos chunk) const noexcept;
+    // Whether a chunk is drawn: in view, its place calls for its level or a
+    // coarser one, and its parent's for a finer one (the top level has no
+    // parent to refine).
+    [[nodiscard]] bool drawn(const Vec3d& eye, LodPos chunk) const noexcept;
+};
 
 } // namespace vx
