@@ -45,10 +45,12 @@ public:
     // RFC 0011's coarse levels, all five. A cell takes the ground's height
     // at the middle of its column, without the smaller octave where its
     // 32-block hills are under two cells (level 5), whose mean stands in. A
-    // cell is solid when its middle is under the ground, and takes the block
-    // the top of its solid part has at level 0, so grass caps the hills. The
-    // 16-block spires are whole cells to level 4 and fall between the cells'
-    // middles at level 5. Level 0 by these rules is the calls above.
+    // cell is solid when its middle is under the ground. A column's top
+    // solid cell is grass, as the ground it stands for is, though its top
+    // can lie up to half a cell lower; a cell under it takes the block its
+    // top has at level 0. The 16-block spires are whole cells to level 4
+    // and fall between the cells' middles at level 5. Level 0 by these rules
+    // is the calls above.
     [[nodiscard]] std::uint8_t levels() const noexcept override { return lod_levels; }
     [[nodiscard]] ChunkRange lod_surface_range(ColumnPos column, std::uint8_t level,
                                                GenScratch& scratch) const override;
