@@ -12,7 +12,9 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <random>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -75,6 +77,40 @@ LodRings with(std::uint32_t height, double k) {
     rings.framebuffer_height = height;
     rings.pixels_per_cell = k;
     return rings;
+}
+
+// Chunks in a hash set.
+struct LodHash {
+    std::size_t operator()(const LodPos& pos) const noexcept {
+        std::uint64_t hash = 0xcbf2'9ce4'8422'2325ULL;
+        for (const std::uint64_t part :
+             {std::uint64_t{static_cast<std::uint32_t>(pos.x)},
+              std::uint64_t{static_cast<std::uint32_t>(pos.y)},
+              std::uint64_t{static_cast<std::uint32_t>(pos.z)}, std::uint64_t{pos.level}}) {
+            hash = (hash ^ part) * 0x100'0000'01B3ULL;
+        }
+        return static_cast<std::size_t>(hash);
+    }
+};
+using LodSet = std::unordered_set<LodPos, LodHash>;
+
+// The drawn chunk over `pos`, itself or an ancestor; none when finer chunks
+// cover it.
+std::optional<LodPos> drawn_over(const LodSet& drawn, LodPos pos) {
+    while (!drawn.contains(pos)) {
+        if (pos.level == vx::max_lod_level) {
+            return std::nullopt;
+        }
+        pos = vx::parent(pos);
+    }
+    return pos;
+}
+
+bool in_world(LodPos pos) {
+    constexpr std::int64_t edge = std::int64_t{1} << 31;
+    const LodBox box = vx::box_of(pos);
+    return box.max_x > -edge && box.min_x < edge && box.max_y > -edge && box.min_y < edge &&
+           box.max_z > -edge && box.min_z < edge;
 }
 
 } // namespace
@@ -279,4 +315,106 @@ TEST_CASE("levels hold at the far edges of the world") {
     const LodPos east = vx::lod_of({.x = 2'100'016'000, .y = 64, .z = -2'100'000'001}, 5);
     CHECK(rings.level_at(eye, east) == 5);
     CHECK(rings.drawn(eye, east));
+}
+
+TEST_CASE("the chunks drawn cover the view once, each within a level of its neighbors") {
+    std::mt19937 random(0xC0);
+    std::uniform_real_distribution<double> across(-5.0e5, 5.0e5);
+    std::uniform_real_distribution<double> height(-200.0, 3'000.0);
+    std::size_t pairs = 0;
+    const std::array<std::pair<LodRings, std::int32_t>, 5> cases{{{with(1'440, 4.0), 64},
+                                                                  {with(1'440, 4.0), 512},
+                                                                  {with(1'440, 2.0), 64},
+                                                                  {with(360, 8.0), 64},
+                                                                  {with(360, 8.0), 512}}};
+    for (const auto& [base, distance] : cases) {
+        LodRings rings = base;
+        rings.view_distance = distance;
+        for (int trial = 0; trial < 2; ++trial) {
+            const Vec3d eye{.x = across(random), .y = height(random), .z = across(random)};
+            const LodPos at = vx::lod_of({.x = static_cast<std::int32_t>(std::floor(eye.x)),
+                                          .y = static_cast<std::int32_t>(std::floor(eye.y)),
+                                          .z = static_cast<std::int32_t>(std::floor(eye.z))},
+                                         0);
+            const std::int32_t min_y = at.y - 8;
+            const std::int32_t max_y = at.y + 8;
+            const std::vector<LodPos> cover = vx::lod_cover(rings, eye, min_y, max_y);
+            const LodSet drawn(cover.begin(), cover.end());
+            REQUIRE(drawn.size() == cover.size());
+            std::size_t not_drawn = 0;
+            std::size_t under_coarser = 0;
+            std::size_t unbalanced = 0;
+            for (const LodPos chunk : cover) {
+                not_drawn += rings.drawn(eye, chunk) ? 0 : 1;
+                if (chunk.level < vx::max_lod_level &&
+                    drawn_over(drawn, vx::parent(chunk)).has_value()) {
+                    ++under_coarser;
+                }
+                // Each face's neighbor at the same level lies under a drawn
+                // chunk at most a level coarser, or finer ones cover it,
+                // which check this one from their side.
+                for (const std::array<std::int32_t, 3> step :
+                     {std::array{1, 0, 0}, std::array{-1, 0, 0}, std::array{0, 1, 0},
+                      std::array{0, -1, 0}, std::array{0, 0, 1}, std::array{0, 0, -1}}) {
+                    const LodPos next{.x = chunk.x + step[0],
+                                      .y = chunk.y + step[1],
+                                      .z = chunk.z + step[2],
+                                      .level = chunk.level};
+                    const LodBox box = vx::box_of(next);
+                    if (box.max_y <= std::int64_t{min_y} * 32 ||
+                        box.min_y > std::int64_t{max_y} * 32 || !in_world(next) ||
+                        !rings.in_view(eye, next)) {
+                        continue;
+                    }
+                    if (const std::optional<LodPos> over = drawn_over(drawn, next)) {
+                        unbalanced += over->level > chunk.level + 1 ? 1 : 0;
+                        ++pairs;
+                    }
+                }
+            }
+            CHECK(not_drawn == 0);
+            CHECK(under_coarser == 0);
+            CHECK(unbalanced == 0);
+            // Every level-0 chunk of the disc's columns and the rows is under
+            // exactly one drawn chunk; the near cylinder's are drawn
+            // themselves.
+            std::uniform_int_distribution<std::int32_t> columns(-distance, distance);
+            std::uniform_int_distribution<std::int32_t> rows(min_y, max_y);
+            std::size_t uncovered = 0;
+            std::size_t near_coarse = 0;
+            for (int i = 0; i < 1'000; ++i) {
+                const std::int32_t dx = columns(random);
+                const std::int32_t dz = columns(random);
+                if ((std::int64_t{dx} * dx) + (std::int64_t{dz} * dz) >
+                    std::int64_t{distance} * distance) {
+                    continue;
+                }
+                LodPos pos{.x = at.x + dx, .y = rows(random), .z = at.z + dz, .level = 0};
+                const bool near = (dx * dx) + (dz * dz) <= 64 && std::abs(pos.y - at.y) <= 8;
+                near_coarse += near && !drawn.contains(pos) ? 1 : 0;
+                int over = 0;
+                for (;;) {
+                    over += drawn.contains(pos) ? 1 : 0;
+                    if (pos.level == vx::max_lod_level) {
+                        break;
+                    }
+                    pos = vx::parent(pos);
+                }
+                uncovered += over == 1 ? 0 : 1;
+            }
+            CHECK(uncovered == 0);
+            CHECK(near_coarse == 0);
+        }
+    }
+    CHECK(pairs > 10'000);
+}
+
+TEST_CASE("the chunks drawn stop at the edge of the 32-bit world") {
+    const LodRings rings;
+    const Vec3d eye{.x = 2'147'483'000.5, .y = 64.0, .z = -2'147'483'000.5};
+    const std::vector<LodPos> cover = vx::lod_cover(rings, eye, 0, 4);
+    CHECK_FALSE(cover.empty());
+    for (const LodPos chunk : cover) {
+        CHECK(in_world(chunk));
+    }
 }

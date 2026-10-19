@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <numbers>
+#include <vector>
 
 namespace vx {
 namespace {
@@ -71,6 +72,13 @@ double nearest_distance(const Vec3d& eye, const LodBox& box) noexcept {
 // sqrt(3) x 32 x 2^(b+1) blocks, farther than P's. The first case needs a
 // unit under sqrt(3) x 32 blocks; the second, worst at b = 0, under (the
 // reach + sqrt(3) x 64) / 4. A block above both, neither can happen.
+// Whether any of a chunk's blocks are in the 32-bit world.
+bool in_world(const LodBox& box) noexcept {
+    constexpr std::int64_t edge = std::int64_t{1} << 31;
+    return box.max_x > -edge && box.min_x < edge && box.max_y > -edge && box.min_y < edge &&
+           box.max_z > -edge && box.min_z < edge;
+}
+
 double balance_floor(std::int32_t near_distance, std::int32_t near_height) noexcept {
     constexpr double root3 = std::numbers::sqrt3;
     const auto squares = static_cast<double>((std::int64_t{near_distance} * near_distance) +
@@ -117,6 +125,46 @@ bool LodRings::drawn(const Vec3d& eye, LodPos chunk) const noexcept {
         return false;
     }
     return chunk.level == max_lod_level || level_at(eye, parent(chunk)) <= chunk.level;
+}
+
+std::vector<LodPos> lod_cover(const LodRings& rings, const Vec3d& eye, std::int32_t min_y,
+                              std::int32_t max_y) {
+    std::vector<LodPos> drawn;
+    if (min_y > max_y) {
+        return drawn;
+    }
+    // The top level's chunks over the disc's square and the rows, then down
+    // through every chunk whose place calls for a finer level.
+    const EyeChunk at = eye_chunk(eye);
+    const std::int64_t reach = std::max(rings.view_distance, 0);
+    const auto top = [](std::int64_t chunk) {
+        return static_cast<std::int32_t>(chunk >> max_lod_level);
+    };
+    std::vector<LodPos> pending;
+    for (std::int32_t y = top(min_y); y <= top(max_y); ++y) {
+        for (std::int32_t z = top(at.z - reach); z <= top(at.z + reach); ++z) {
+            for (std::int32_t x = top(at.x - reach); x <= top(at.x + reach); ++x) {
+                pending.push_back({.x = x, .y = y, .z = z, .level = max_lod_level});
+            }
+        }
+    }
+    while (!pending.empty()) {
+        const LodPos chunk = pending.back();
+        pending.pop_back();
+        const Span rows = span(chunk.y, chunk.level);
+        if (rows.last < min_y || rows.first > max_y || !in_world(box_of(chunk)) ||
+            !rings.in_view(eye, chunk)) {
+            continue;
+        }
+        if (chunk.level == 0 || rings.level_at(eye, chunk) >= chunk.level) {
+            drawn.push_back(chunk);
+            continue;
+        }
+        for (const LodPos child : children(chunk)) {
+            pending.push_back(child);
+        }
+    }
+    return drawn;
 }
 
 } // namespace vx

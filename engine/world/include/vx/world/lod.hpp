@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace vx {
 
@@ -116,5 +117,11 @@ struct LodRings {
     // parent to refine).
     [[nodiscard]] bool drawn(const Vec3d& eye, LodPos chunk) const noexcept;
 };
+
+// Every chunk drawn (RFC 0011) between level-0 chunk rows `min_y` and
+// `max_y`, within the 32-bit world: a partition of those rows of the
+// terrain disc's columns, each chunk within a level of its neighbors.
+[[nodiscard]] std::vector<LodPos> lod_cover(const LodRings& rings, const Vec3d& eye,
+                                            std::int32_t min_y, std::int32_t max_y);
 
 } // namespace vx
