@@ -107,15 +107,20 @@ struct LodRings {
     [[nodiscard]] double unit() const noexcept;
     // Where a level starts, in blocks: level 0 at 0.
     [[nodiscard]] double radius(std::uint8_t level) const noexcept;
-    // The level a chunk's place calls for: 0 for a chunk reaching into the
-    // near cylinder, else the coarsest level whose ring starts at or before
-    // the nearest point of the chunk's box, in three dimensions.
+    // The level a chunk's place calls for, the same for every chunk of its
+    // column: 0 for a column reaching into the near cylinder, else the
+    // coarsest level whose ring starts at or before the column's nearest
+    // point, across. By column, not by the box's distance in three
+    // dimensions as RFC 0011 first had it: a coarse level's surface can lie
+    // a row below the finer one's, so a column drawn at two levels could
+    // draw its ground at neither.
     [[nodiscard]] std::uint8_t level_at(const Vec3d& eye, LodPos chunk) const noexcept;
     // Whether a chunk reaches into the terrain disc: one of its columns is
     // within the view distance of the camera's, as RFC 0006 counts it.
     [[nodiscard]] bool in_view(const Vec3d& eye, LodPos chunk) const noexcept;
-    // Whether a chunk reaches into the near cylinder, which is drawn at
-    // level 0 whatever the distance says.
+    // Whether a chunk's column reaches into the near cylinder, whose
+    // columns are drawn at level 0 at every height, whatever the distance
+    // says.
     [[nodiscard]] bool near(const Vec3d& eye, LodPos chunk) const noexcept;
     // Whether a chunk is drawn: in view, its place calls for its level or a
     // coarser one, and its parent's for a finer one (the top level has no
@@ -125,14 +130,15 @@ struct LodRings {
     // own chunks around the camera's chunk at the level, as RFC 0006's
     // region counts it, that holds every chunk of the level lod_cover can
     // draw, wherever the eye is in the camera's chunk and however high. A
-    // full disc, since a high camera draws coarse chunks straight below it;
-    // -1, no columns, for a negative view distance.
+    // full disc, simplest: with levels by column a ring would do, left for
+    // later; -1, no columns, for a negative view distance.
     [[nodiscard]] std::int32_t stream_distance(std::uint8_t level) const noexcept;
 };
 
 // Every chunk drawn (RFC 0011) between level-0 chunk rows `min_y` and
 // `max_y`, within the 32-bit world: a partition of those rows of the
-// terrain disc's columns, each chunk within a level of its neighbors.
+// terrain disc's columns, each column at one level, each chunk within a
+// level of its neighbors.
 [[nodiscard]] std::vector<LodPos> lod_cover(const LodRings& rings, const Vec3d& eye,
                                             std::int32_t min_y, std::int32_t max_y);
 
@@ -146,15 +152,19 @@ enum class LodReady : std::uint8_t {
 
 // RFC 0011's swaps: the chunks to draw now for lod_cover's chunks between
 // the same rows, among those `ready` says can be, given the chunks drawn
-// before, `drawn`. Top down from the top level: a chunk whose place calls
-// for a finer level gives way to its 8 children once all of them can be
-// drawn, and until then stays, when ready; a chunk at its level is drawn
-// once ready. Where neither can be, what was drawn there before stays, if
-// all of it still can be: so a coarse chunk goes only with all of its
-// children that have faces, and children go only once their parent can be
-// drawn, however far the camera moved. A chunk outside its level's terrain
-// ends the descent. The chunks with faces are listed; with every chunk
-// ready they are lod_cover's.
+// before, `drawn`. A column at a time, every row of it at once: a coarse
+// level's surface can lie a row below the finer one's (its cells are solid
+// when their middles are under the ground), so chunks swapped one at a
+// time could leave the ground drawn by neither for a while. Top down from
+// the top level: a column whose place calls for a finer level gives way to
+// its 4 children once all of their chunks can be drawn, and until then
+// stays, when all of its own can be; a column at its level is drawn once
+// all its chunks can be. Where neither can be, what was drawn there before
+// stays, if all of it still can be: so a coarse column goes only with all
+// of its children's chunks that have faces, and children go only once
+// their parent can be drawn, however far the camera moved. A column whose
+// chunks are all outside its level's terrain ends the descent. The chunks
+// with faces are listed; with every chunk ready they are lod_cover's.
 [[nodiscard]] std::vector<LodPos> lod_select(const LodRings& rings, const Vec3d& eye,
                                              std::int32_t min_y, std::int32_t max_y,
                                              const std::function<LodReady(LodPos)>& ready,

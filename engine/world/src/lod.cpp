@@ -4,8 +4,11 @@
 #include <vx/world/coordinates.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <numbers>
 #include <span>
 #include <unordered_set>
@@ -52,15 +55,15 @@ bool reaches(const EyeChunk& eye, LodPos chunk, std::int32_t radius) noexcept {
     return (dx * dx) + (dz * dz) <= std::int64_t{radius} * radius;
 }
 
-// The distance from the eye to the nearest point of a box, in blocks.
-double nearest_distance(const Vec3d& eye, const LodBox& box) noexcept {
+// The distance from the eye to the nearest point of a box's column,
+// across, in blocks: the height left out.
+double across_distance(const Vec3d& eye, const LodBox& box) noexcept {
     const auto gap = [](double v, std::int64_t min, std::int64_t max) {
         return std::max({static_cast<double>(min) - v, 0.0, v - static_cast<double>(max)});
     };
     const double x = gap(eye.x, box.min_x, box.max_x);
-    const double y = gap(eye.y, box.min_y, box.max_y);
     const double z = gap(eye.z, box.min_z, box.max_z);
-    return std::sqrt((x * x) + (y * y) + (z * z));
+    return std::sqrt((x * x) + (z * z));
 }
 
 // The floor under unit(), above which chunks drawn side by side differ by
@@ -102,17 +105,14 @@ double LodRings::radius(std::uint8_t level) const noexcept {
 }
 
 bool LodRings::near(const Vec3d& eye, LodPos chunk) const noexcept {
-    const EyeChunk at = eye_chunk(eye);
-    const Span rows = span(chunk.y, chunk.level);
-    return rows.first <= at.y + near_height && rows.last >= at.y - near_height &&
-           reaches(at, chunk, near_distance);
+    return reaches(eye_chunk(eye), chunk, near_distance);
 }
 
 std::uint8_t LodRings::level_at(const Vec3d& eye, LodPos chunk) const noexcept {
     if (near(eye, chunk)) {
         return 0;
     }
-    const double distance = nearest_distance(eye, box_of(chunk));
+    const double distance = across_distance(eye, box_of(chunk));
     const double base = unit();
     std::uint8_t level = 0;
     while (level < max_lod_level &&
@@ -209,9 +209,68 @@ struct LodHash {
 };
 using LodSet = std::unordered_set<LodPos, LodHash>;
 
-// lod_select's walk: whether a chunk's part of the region can be drawn,
-// appending the chunks that draw it; when not, appending nothing. Its
-// recursion goes a level down per call, so at most 6 deep.
+// A column of one level's chunks between the rows: lod_select's unit. A
+// column changes level whole, every row at once (RFC 0011, as built): a
+// coarse level's surface can lie a row below the finer one's, so rows
+// swapped one at a time could leave the ground drawn by neither.
+struct LodColumn {
+    std::int32_t x = 0;
+    std::int32_t z = 0;
+    std::uint8_t level = 0;
+
+    friend constexpr bool operator==(const LodColumn&, const LodColumn&) = default;
+};
+
+constexpr LodColumn column_of(LodPos chunk) noexcept {
+    return {.x = chunk.x, .z = chunk.z, .level = chunk.level};
+}
+
+constexpr LodColumn parent_column(LodColumn column) noexcept {
+    return {.x = column.x >> 1,
+            .z = column.z >> 1,
+            .level = static_cast<std::uint8_t>(column.level + 1)};
+}
+
+// The 4 columns one level finer inside `column`, which is above level 0, x
+// fastest, as children() orders them.
+constexpr std::array<LodColumn, 4> child_columns(LodColumn column) noexcept {
+    std::array<LodColumn, 4> out{};
+    const auto level = static_cast<std::uint8_t>(column.level - 1);
+    for (std::int32_t i = 0; i < 4; ++i) {
+        out[static_cast<std::size_t>(i)] = {
+            .x = (column.x << 1) | (i & 1), .z = (column.z << 1) | ((i >> 1) & 1), .level = level};
+    }
+    return out;
+}
+
+struct LodColumnHash {
+    std::size_t operator()(const LodColumn& column) const noexcept {
+        return LodHash{}({.x = column.x, .y = 0, .z = column.z, .level = column.level});
+    }
+};
+using LodColumnSet = std::unordered_set<LodColumn, LodColumnHash>;
+
+// The top level's columns over the terrain disc's square, from which
+// lod_select goes down.
+std::vector<LodColumn> top_columns(const LodRings& rings, const Vec3d& eye) {
+    std::vector<LodColumn> top;
+    const EyeChunk at = eye_chunk(eye);
+    const std::int64_t reach = std::max(rings.view_distance, 0);
+    const auto shifted = [](std::int64_t chunk) {
+        return static_cast<std::int32_t>(chunk >> max_lod_level);
+    };
+    for (std::int32_t z = shifted(at.z - reach); z <= shifted(at.z + reach); ++z) {
+        for (std::int32_t x = shifted(at.x - reach); x <= shifted(at.x + reach); ++x) {
+            top.push_back({.x = x, .z = z, .level = max_lod_level});
+        }
+    }
+    return top;
+}
+
+// lod_select's walk, a column at a time: whether a column's part of the
+// region can be drawn, appending the chunks that draw it; when not,
+// appending nothing. Its recursion goes a level down per call, so at most 6
+// deep.
 class Selection {
 public:
     Selection(const LodRings& rings, const Vec3d& eye, std::int32_t min_y, std::int32_t max_y,
@@ -219,29 +278,33 @@ public:
               std::vector<LodPos>& out)
         : rings_(&rings), eye_(&eye), min_y_(min_y), max_y_(max_y), ready_(&ready), out_(&out),
           before_(before.begin(), before.end()) {
-        // Every chunk with something drawn below it, to find what was drawn
-        // inside a chunk without walking all of it.
-        for (LodPos chunk : before) {
-            while (chunk.level < max_lod_level) {
-                chunk = parent(chunk);
-                if (!above_.insert(chunk).second) {
+        // Every column drawn before, and every column with one drawn
+        // somewhere below it, to find what was drawn inside a column
+        // without walking all of it.
+        for (const LodPos chunk : before) {
+            LodColumn column = column_of(chunk);
+            drawn_.insert(column);
+            while (column.level < max_lod_level) {
+                column = parent_column(column);
+                if (!above_.insert(column).second) {
                     break;
                 }
             }
         }
     }
 
-    bool pick(LodPos chunk) { // NOLINT(misc-no-recursion): a level down per call
-        if (!in_region(chunk)) {
+    bool pick(LodColumn column) { // NOLINT(misc-no-recursion): a level down per call
+        if (!in_region(column)) {
             return true; // nothing of the region to draw
         }
-        const LodReady state = (*ready_)(chunk);
-        const bool finer = chunk.level > 0 && rings_->level_at(*eye_, chunk) < chunk.level;
-        if (finer && state != LodReady::outside) {
+        const Scan scan = scan_rows(column);
+        const bool finer = column.level > 0 &&
+                           rings_->level_at(*eye_, at(column, first_row(column))) < column.level;
+        if (finer && !scan.outside) {
             // Its children once all can be drawn.
             const std::size_t mark = out_->size();
             bool all = true;
-            for (const LodPos child : children(chunk)) {
+            for (const LodColumn child : child_columns(column)) {
                 all = pick(child);
                 if (!all) {
                     break;
@@ -251,50 +314,95 @@ public:
                 return true;
             }
             out_->resize(mark);
-            // Until then itself, unless it draws nothing where finer chunks
-            // drawn before still can be.
-            if (state == LodReady::empty && keep(chunk)) {
+            // Until then itself, unless it draws nothing where finer
+            // columns drawn before still can be.
+            if (!scan.waiting && !scan.faces && keep(column)) {
                 return true;
             }
         }
-        if (state != LodReady::waiting) {
-            take(chunk, state);
+        if (!scan.waiting) {
+            take(column);
             return true;
         }
-        return keep(chunk);
+        return keep(column);
     }
 
 private:
-    [[nodiscard]] bool in_region(LodPos chunk) const noexcept {
-        return vx::in_region(*rings_, *eye_, min_y_, max_y_, chunk);
+    // What a column's rows offer, from the last scan_rows of its level.
+    struct Scan {
+        bool waiting = false; // a row's mesh is not ready
+        bool faces = false;   // a row has faces to draw
+        bool outside = true;  // every row is outside its level's terrain
+    };
+
+    [[nodiscard]] static LodPos at(LodColumn column, std::int32_t row) noexcept {
+        return {.x = column.x, .y = row, .z = column.z, .level = column.level};
+    }
+    // The column's rows that meet the rows lod_select draws.
+    [[nodiscard]] std::int32_t first_row(LodColumn column) const noexcept {
+        return min_y_ >> column.level;
+    }
+    [[nodiscard]] std::int32_t last_row(LodColumn column) const noexcept {
+        return max_y_ >> column.level;
+    }
+    [[nodiscard]] bool in_region(LodColumn column) const noexcept {
+        return vx::in_region(*rings_, *eye_, min_y_, max_y_, at(column, first_row(column)));
     }
 
-    void take(LodPos chunk, LodReady state) {
-        if (state == LodReady::mesh) {
-            out_->push_back(chunk);
+    // Each row's state, kept for take(): a column's children are a level
+    // down, so they keep theirs apart.
+    Scan scan_rows(LodColumn column) {
+        std::vector<LodReady>& states = states_.at(column.level);
+        states.clear();
+        Scan scan;
+        for (std::int32_t row = first_row(column); row <= last_row(column); ++row) {
+            const LodReady state = (*ready_)(at(column, row));
+            states.push_back(state);
+            scan.waiting = scan.waiting || state == LodReady::waiting;
+            scan.faces = scan.faces || state == LodReady::mesh;
+            scan.outside = scan.outside && state == LodReady::outside;
+        }
+        return scan;
+    }
+
+    // The column's rows with faces, as its level's last scan found them.
+    void take(LodColumn column) {
+        const std::vector<LodReady>& states = states_.at(column.level);
+        for (std::size_t row = 0; row < states.size(); ++row) {
+            if (states[row] == LodReady::mesh) {
+                out_->push_back(at(column, first_row(column) + static_cast<std::int32_t>(row)));
+            }
         }
     }
 
-    // What was drawn inside `chunk` before, if all of it can still be: none
-    // when nothing inside it was, as when a chunk around it drew it.
-    bool keep(LodPos chunk) { // NOLINT(misc-no-recursion): a level down per call
-        if (before_.contains(chunk)) {
-            const LodReady state = (*ready_)(chunk);
-            if (state == LodReady::waiting) {
-                return false;
+    // What was drawn inside `column` before, if all of it can still be:
+    // none when nothing inside it was, as when a column around it drew it.
+    bool keep(LodColumn column) { // NOLINT(misc-no-recursion): a level down per call
+        const std::size_t mark = out_->size();
+        if (drawn_.contains(column)) {
+            // The column again, once every row drawn before can be: with
+            // its rows that have faces now.
+            for (std::int32_t row = first_row(column); row <= last_row(column); ++row) {
+                const LodPos chunk = at(column, row);
+                const LodReady state = (*ready_)(chunk);
+                if (state == LodReady::waiting && before_.contains(chunk)) {
+                    out_->resize(mark);
+                    return false;
+                }
+                if (state == LodReady::mesh) {
+                    out_->push_back(chunk);
+                }
             }
-            take(chunk, state);
             return true;
         }
-        if (!above_.contains(chunk)) {
+        if (!above_.contains(column)) {
             return false;
         }
         // Something below it was drawn, so nothing around it was: each child
         // with nothing drawn inside had nothing to draw.
-        const std::size_t mark = out_->size();
         bool all = true;
-        for (const LodPos child : children(chunk)) {
-            if (in_region(child) && (before_.contains(child) || above_.contains(child))) {
+        for (const LodColumn child : child_columns(column)) {
+            if (in_region(child) && (drawn_.contains(child) || above_.contains(child))) {
                 all = keep(child);
                 if (!all) {
                     out_->resize(mark);
@@ -311,8 +419,10 @@ private:
     std::int32_t max_y_;
     const std::function<LodReady(LodPos)>* ready_;
     std::vector<LodPos>* out_;
-    LodSet before_; // drawn before
-    LodSet above_;  // with a chunk drawn before somewhere below
+    LodSet before_;      // chunks drawn before
+    LodColumnSet drawn_; // their columns
+    LodColumnSet above_; // columns with one drawn before somewhere below
+    std::array<std::vector<LodReady>, lod_levels> states_; // each level's last scan
 };
 
 } // namespace
@@ -351,7 +461,7 @@ std::vector<LodPos> lod_select(const LodRings& rings, const Vec3d& eye, std::int
         return drawn;
     }
     Selection selection(rings, eye, min_y, max_y, ready, drawn_before, drawn);
-    for (const LodPos top : top_chunks(rings, eye, min_y, max_y)) {
+    for (const LodColumn top : top_columns(rings, eye)) {
         selection.pick(top);
     }
     return drawn;
