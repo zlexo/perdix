@@ -73,4 +73,13 @@ private:
 // 8 corners block by block, 392 reads in all.
 void assemble_padded(const ChunkNeighborhood& neighborhood, PaddedChunk& out) noexcept;
 
+// RFC 0011's second border set: the border toward `side` taken from
+// `coarser`, the chunk one level coarser across that side, whose cells each
+// cover 2 by 2 of the chunk's on the face between them. `offset` is where
+// the chunk's face starts on the coarser chunk's face, in its cells, along
+// the axes copy_face orders a face by (z then y on an x face, x then z on a
+// y face, x then y on a z face): 0 or 16 each. The edges and corners stay.
+void coarser_border(const ChunkStorage& coarser, Face side, std::array<int, 2> offset,
+                    PaddedChunk& out) noexcept;
+
 } // namespace vx

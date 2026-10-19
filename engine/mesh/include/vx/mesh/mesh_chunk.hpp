@@ -23,6 +23,11 @@ struct ChunkMesh {
     // -z). The twelve lie back to back in that order: a pass's six are one
     // span (pass()), and all twelve are all().
     std::array<std::array<std::span<const Quad>, 6>, 2> ranges;
+    // RFC 0011's border sets: how many of ranges[pass][face] lie in the
+    // chunk's outermost slice that way, whose faces the neighbor across that
+    // side decides: the range's first ones for a negative face, its last
+    // ones for a positive face.
+    std::array<std::array<std::uint32_t, 6>, 2> border{};
 
     [[nodiscard]] std::span<const Quad> range(Pass pass, Face face) const noexcept {
         return ranges[static_cast<std::size_t>(pass)][static_cast<std::size_t>(face)];
@@ -37,6 +42,10 @@ struct MeshOptions {
     // Faces that look the same, side by side, become one quad. Off for the
     // overlay's toggle, to see and measure what merging saves (RFC 0003).
     bool merge = true;
+    // Corners darkened by the opaque blocks around them (RFC 0003). Off past
+    // level 0 (RFC 0011): a coarse cell's corners are too far apart for it
+    // to read as a contact shadow, and merging then keys on the texture.
+    bool occlusion = true;
 };
 
 // The mesher's working memory, reused from chunk to chunk: one for each
@@ -59,8 +68,13 @@ public:
     using SliceKeys = std::array<std::array<std::uint32_t, chunk_size>, chunk_size>;
 
 private:
+    std::size_t emit(const PaddedChunk& blocks, std::span<const BlockVisual> visuals,
+                     std::size_t pass, Face face, int depth, MeshOptions options,
+                     std::span<Quad> out) noexcept;
     friend ChunkMesh mesh_chunk(const PaddedChunk& blocks, std::span<const BlockVisual> visuals,
                                 MeshScratch& scratch, MeshOptions options) noexcept;
+    friend ChunkMesh mesh_border(const PaddedChunk& blocks, std::span<const BlockVisual> visuals,
+                                 MeshScratch& scratch, Face side, MeshOptions options) noexcept;
 
     std::unique_ptr<Rows> opaque_;
     std::unique_ptr<Rows> cutout_;
@@ -82,5 +96,13 @@ inline constexpr std::size_t max_chunk_quads = std::size_t{6} * chunk_volume; //
 // until the scratch's next use.
 [[nodiscard]] ChunkMesh mesh_chunk(const PaddedChunk& blocks, std::span<const BlockVisual> visuals,
                                    MeshScratch& scratch, MeshOptions options = {}) noexcept;
+
+// RFC 0011's second border set toward `side`: the quads of the chunk's
+// outermost slice that way alone, with `blocks`' border there taken from the
+// coarser neighbor (coarser_border). Every range but ranges[pass][side] is
+// empty, and border says the whole of each is the border.
+[[nodiscard]] ChunkMesh mesh_border(const PaddedChunk& blocks, std::span<const BlockVisual> visuals,
+                                    MeshScratch& scratch, Face side,
+                                    MeshOptions options = {}) noexcept;
 
 } // namespace vx

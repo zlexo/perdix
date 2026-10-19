@@ -304,6 +304,45 @@ MeshScratch::MeshScratch()
       // NOLINTNEXTLINE(modernize-avoid-c-arrays)
       quads_(std::make_unique<Quad[]>(max_chunk_quads)) {}
 
+namespace {
+
+// The depth of a face's slice at the chunk's edge that way: the slice whose
+// faces the neighbor across that side decides (RFC 0011).
+constexpr int border_depth(Face face) noexcept {
+    return static_cast<int>(face) % 2 == 0 ? chunk_size - 1 : 0;
+}
+
+constexpr std::array<std::uint8_t, 4> fully_lit{3, 3, 3, 3};
+
+} // namespace
+
+// The quads of slice `depth` of `face` in `pass`, from its plane in the
+// scratch, which it clears, into `out`: how many.
+std::size_t MeshScratch::emit(const PaddedChunk& blocks, std::span<const BlockVisual> visuals,
+                              std::size_t pass, Face face, int depth, MeshOptions options,
+                              std::span<Quad> out) noexcept {
+    const auto face_at = static_cast<std::size_t>(face);
+    auto& rows = (*planes_)[pass][face_at][static_cast<std::size_t>(depth)];
+    if (std::ranges::all_of(rows, [](std::uint32_t row) { return row == 0; })) {
+        return 0;
+    }
+    // What each visible face looks like: faces merge only where this is equal.
+    SliceKeys& keys = *keys_;
+    for (int v = 0; v < chunk_size; ++v) {
+        const auto v_at = static_cast<std::size_t>(v);
+        for (std::uint32_t left = rows[v_at]; left != 0; left &= left - 1) {
+            const int u = std::countr_zero(left);
+            const LocalPos block = slice_block(face, depth, u, v);
+            const BlockVisual& visual =
+                visual_of(visuals, blocks.at(block.x + 1, block.y + 1, block.z + 1));
+            keys[v_at][static_cast<std::size_t>(u)] = quad_material(
+                visual.texture[face_at],
+                options.occlusion ? face_occlusion(*opaque_, face, block) : fully_lit);
+        }
+    }
+    return emit_slice(face, depth, rows, keys, options.merge, out);
+}
+
 ChunkMesh mesh_chunk(const PaddedChunk& blocks, std::span<const BlockVisual> visuals,
                      MeshScratch& scratch, MeshOptions options) noexcept {
     build_rows(blocks, visuals, *scratch.opaque_, *scratch.cutout_);
@@ -311,36 +350,48 @@ ChunkMesh mesh_chunk(const PaddedChunk& blocks, std::span<const BlockVisual> vis
 
     ChunkMesh mesh{};
     const auto quads = std::span<Quad>(scratch.quads_.get(), max_chunk_quads);
-    SliceKeys& keys = *scratch.keys_;
     std::size_t written = 0;
     for (std::size_t pass = 0; pass < 2; ++pass) {
         for (std::size_t face_at = 0; face_at < 6; ++face_at) {
             const auto face = static_cast<Face>(face_at);
             const std::size_t range_first = written;
             for (int depth = 0; depth < chunk_size; ++depth) {
-                auto& rows = (*scratch.planes_)[pass][face_at][static_cast<std::size_t>(depth)];
-                if (std::ranges::all_of(rows, [](std::uint32_t row) { return row == 0; })) {
-                    continue;
+                const std::size_t made = scratch.emit(blocks, visuals, pass, face, depth, options,
+                                                      quads.subspan(written));
+                if (depth == border_depth(face)) {
+                    mesh.border[pass][face_at] = static_cast<std::uint32_t>(made);
                 }
-                // What each visible face looks like: faces merge only where
-                // this is equal.
-                for (int v = 0; v < chunk_size; ++v) {
-                    const auto v_at = static_cast<std::size_t>(v);
-                    for (std::uint32_t left = rows[v_at]; left != 0; left &= left - 1) {
-                        const int u = std::countr_zero(left);
-                        const LocalPos block = slice_block(face, depth, u, v);
-                        const BlockVisual& visual =
-                            visual_of(visuals, blocks.at(block.x + 1, block.y + 1, block.z + 1));
-                        keys[v_at][static_cast<std::size_t>(u)] = quad_material(
-                            visual.texture[face_at], face_occlusion(*scratch.opaque_, face, block));
-                    }
-                }
-                written +=
-                    emit_slice(face, depth, rows, keys, options.merge, quads.subspan(written));
+                written += made;
             }
             mesh.ranges[pass][face_at] = quads.subspan(range_first, written - range_first);
         }
     }
+    return mesh;
+}
+
+ChunkMesh mesh_border(const PaddedChunk& blocks, std::span<const BlockVisual> visuals,
+                      MeshScratch& scratch, Face side, MeshOptions options) noexcept {
+    build_rows(blocks, visuals, *scratch.opaque_, *scratch.cutout_);
+    cull(blocks, visuals, *scratch.opaque_, *scratch.cutout_, *scratch.planes_);
+
+    ChunkMesh mesh{};
+    const auto quads = std::span<Quad>(scratch.quads_.get(), max_chunk_quads);
+    std::size_t written = 0;
+    for (std::size_t pass = 0; pass < 2; ++pass) {
+        for (std::size_t face_at = 0; face_at < 6; ++face_at) {
+            const auto face = static_cast<Face>(face_at);
+            std::size_t made = 0;
+            if (face == side) {
+                made = scratch.emit(blocks, visuals, pass, face, border_depth(face), options,
+                                    quads.subspan(written));
+                mesh.border[pass][face_at] = static_cast<std::uint32_t>(made);
+            }
+            mesh.ranges[pass][face_at] = quads.subspan(written, made);
+            written += made;
+        }
+    }
+    // The other slices' planes are left as cull made them: the next mesh
+    // builds them again.
     return mesh;
 }
 

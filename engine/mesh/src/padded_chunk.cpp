@@ -134,4 +134,25 @@ void assemble_padded(const ChunkNeighborhood& neighborhood, PaddedChunk& out) no
     }
 }
 
+void coarser_border(const ChunkStorage& coarser, Face side, std::array<int, 2> offset,
+                    PaddedChunk& out) noexcept {
+    const int sign = (static_cast<int>(side) % 2 == 0) ? 1 : -1; // pos_x, pos_y, pos_z first
+    const int axis = static_cast<int>(side) / 2;
+    const int dx = axis == 0 ? sign : 0;
+    const int dy = axis == 1 ? sign : 0;
+    const int dz = axis == 2 ? sign : 0;
+    std::array<BlockState, chunk_area> layer{};
+    coarser.copy_face(facing_back(dx, dy, dz), layer);
+    std::array<BlockState, chunk_area> fine{};
+    const auto at = [](int first, int second) {
+        return static_cast<std::size_t>(first) + (static_cast<std::size_t>(second) * chunk_size);
+    };
+    for (int b = 0; b < chunk_size; ++b) {
+        for (int a = 0; a < chunk_size; ++a) {
+            fine[at(a, b)] = layer[at(offset[0] + (a / 2), offset[1] + (b / 2))];
+        }
+    }
+    place_face(dx, dy, dz, fine, out);
+}
+
 } // namespace vx
