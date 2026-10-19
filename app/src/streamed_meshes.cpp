@@ -99,6 +99,7 @@ void StreamedMeshes::take(std::vector<ToMain>& messages,
         case ToMain::Kind::landed:
         case ToMain::Kind::sample:
         case ToMain::Kind::report:
+        case ToMain::Kind::swap: // RFC 0011's, for the caller until levels are drawn
             if (kept != at) {
                 messages[kept] = std::move(message);
             }

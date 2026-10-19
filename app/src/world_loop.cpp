@@ -30,9 +30,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <numbers>
 #include <optional>
 #include <span>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -169,6 +171,16 @@ WorldLoop::make_levels(const Generator& generator, JobSystem& jobs, WakeEvent& w
     return levels;
 }
 
+LodRings WorldLoop::lod_rings(const WorldLoopSettings& settings, RegionLimits limits) noexcept {
+    // The rings' terrain disc is the region's, and their near cylinder too,
+    // so the levels drawn agree with what level 0 streams.
+    LodRings rings = settings.lod.value_or(LodRings{});
+    rings.view_distance = limits.view_distance;
+    rings.near_distance = settings.region.near_distance;
+    rings.near_height = settings.region.near_height;
+    return rings;
+}
+
 RegionSettings WorldLoop::level_region(const WorldLoopSettings& settings, std::uint8_t level,
                                        RegionLimits limits) noexcept {
     RegionSettings region = settings.region;
@@ -177,13 +189,7 @@ RegionSettings WorldLoop::level_region(const WorldLoopSettings& settings, std::u
     if (!settings.lod) {
         return region;
     }
-    // The rings' terrain disc is the region's, and their near cylinder too,
-    // so the levels drawn agree with what level 0 streams.
-    LodRings rings = *settings.lod;
-    rings.view_distance = limits.view_distance;
-    rings.near_distance = settings.region.near_distance;
-    rings.near_height = settings.region.near_height;
-    region.view_distance = rings.stream_distance(level);
+    region.view_distance = lod_rings(settings, limits).stream_distance(level);
     region.level = level;
     if (level > 0) {
         region.near_distance = -1;
@@ -247,6 +253,9 @@ bool WorldLoop::pass() {
     follow_events();
     mesh_results_.drain([this](MeshResult&& result) { integrate_mesh(result); });
     send_ready_batches();
+    if (select_due_) {
+        select();
+    }
     feed();
     keep_memory(start);
     // RFC 0006's flythrough reports the longest pass with the longest step:
@@ -371,6 +380,8 @@ void WorldLoop::handle(ToWorld& message) {
             }
         }
         follow_events();
+        // Once a frame: the main thread sends the camera each frame.
+        select_due_ = settings_.lod.has_value();
         break;
     case ToWorld::Kind::edit:
         edit(message.block, message.state);
@@ -772,6 +783,8 @@ void WorldLoop::integrate_mesh(MeshResult& result) {
 void WorldLoop::forward(Level& level, std::uint32_t index, MeshUpdate&& update) {
     MeshRecord& record = level.record(index);
     record.forwarded = update.generation;
+    record.faces =
+        std::ranges::any_of(update.counts, [](std::uint32_t count) { return count > 0; });
     if (record.batch != 0) {
         const auto batch = std::ranges::find(batches_, record.batch, &Batch::id);
         if (batch != batches_.end()) {
@@ -967,6 +980,76 @@ bool WorldLoop::count_holes(Level& level, WorldSample& sample) {
         }
     }
     return any_missing;
+}
+
+namespace {
+
+// RFC 0011's chunks in the order drawn_ keeps.
+bool before(const LodPos& a, const LodPos& b) noexcept {
+    return std::tuple(a.level, a.x, a.y, a.z) < std::tuple(b.level, b.x, b.y, b.z);
+}
+
+} // namespace
+
+void WorldLoop::select() {
+    select_due_ = false;
+    if (!settings_.lod || !viewer_) {
+        return;
+    }
+    const LodRings rings = lod_rings(settings_, budget_.limits());
+    // The rows any level's drawn chunks reach, in level-0 chunks, and the
+    // near cylinder's.
+    const Vec3d& eye = viewer_->eye;
+    const auto eye_row = static_cast<std::int64_t>(std::floor(eye.y)) >> chunk_bits;
+    std::int64_t low = eye_row - rings.near_height;
+    std::int64_t high = eye_row + rings.near_height;
+    for (const std::unique_ptr<Level>& level : levels_) {
+        const ChunkRecords& records = level->streamer.records();
+        for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+            if (records.live(index) && records[index].drawn) {
+                const std::int64_t row = records[index].pos.y;
+                low = std::min(low, row << level->level);
+                high = std::max(high, ((row + 1) << level->level) - 1);
+            }
+        }
+    }
+    const auto clamp_row = [](std::int64_t row) {
+        return static_cast<std::int32_t>(
+            std::clamp<std::int64_t>(row, lowest_chunk, highest_chunk));
+    };
+    std::vector<LodPos> chosen = lod_select(
+        rings, eye, clamp_row(low), clamp_row(high), [this](LodPos pos) { return readiness(pos); },
+        drawn_);
+    std::ranges::sort(chosen, before);
+    ToMain swap;
+    swap.kind = ToMain::Kind::swap;
+    std::ranges::set_difference(chosen, drawn_, std::back_inserter(swap.show), before);
+    std::ranges::set_difference(drawn_, chosen, std::back_inserter(swap.hide), before);
+    if (!swap.show.empty() || !swap.hide.empty()) {
+        to_main_.push(std::move(swap));
+    }
+    drawn_ = std::move(chosen);
+}
+
+LodReady WorldLoop::readiness(LodPos pos) {
+    Level& level = *levels_.at(pos.level);
+    const ChunkPos chunk{.x = pos.x, .y = pos.y, .z = pos.z};
+    const ChunkRecords& records = level.streamer.records();
+    const std::optional<std::uint32_t> index = records.find(chunk);
+    if (index && records[*index].drawn) {
+        const MeshRecord& mesh = level.record(*index);
+        if (mesh.forwarded == 0) {
+            return LodReady::waiting;
+        }
+        return mesh.faces ? LodReady::mesh : LodReady::empty;
+    }
+    // Not drawn: out of its level's terrain once its column's band is known.
+    // Until then it may be drawn yet, though its record can already be
+    // there, loaded for a neighbor. Never `outside`, which would end the
+    // descent: a coarse level's terrain is its cells', and the full-detail
+    // terrain can rise past it.
+    return level.streamer.band({.x = chunk.x, .z = chunk.z}).has_value() ? LodReady::empty
+                                                                         : LodReady::waiting;
 }
 
 bool WorldLoop::missing(Level& level, std::uint32_t index) {

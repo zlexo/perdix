@@ -202,6 +202,9 @@ public:
     // A column's surface range, once its job has reported: for tests and
     // the overlay.
     [[nodiscard]] std::optional<ChunkRange> surface(ColumnPos pos) const noexcept;
+    // A column's terrain band, once its surface and its four side
+    // neighbors' are known: where its drawn chunks lie, near cylinder aside.
+    [[nodiscard]] std::optional<ChunkRange> band(ColumnPos pos) const noexcept;
     [[nodiscard]] StreamingStats stats() const noexcept;
     // The chunk data held, in bytes: the blocks of every chunk loaded, and
     // the records, columns and maps that keep them (RFC 0006's flythrough
@@ -232,8 +235,6 @@ private:
     void add_column(ColumnPos pos);
     void remove_column(std::uint32_t index);
     [[nodiscard]] const Column* column(ColumnPos pos) const noexcept;
-    // The column's terrain band, if the surfaces it needs are known.
-    [[nodiscard]] std::optional<ChunkRange> band(ColumnPos pos) const noexcept;
     // Marks which of the column's chunks are drawn, once its band is known.
     void refresh(ColumnPos pos);
 
