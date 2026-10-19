@@ -904,3 +904,46 @@ TEST_CASE("with RFC 0011's swaps a mesh is drawn only while a swap shows its chu
     REQUIRE(uploads.upload(mesh.update(later, 1), arena, Time{}).value() == Uploaded::written);
     CHECK(uploads.find(later)->shown);
 }
+
+TEST_CASE("RFC 0011's open border sets go after a mesh's twelve groups, in arena order") {
+    ArenaSpace space = make_space(1'024, 3);
+    FakeArena arena(1'024);
+    ChunkUploads uploads(space);
+    uploads.begin_frame(0, Time{});
+    const TestMesh mesh(some, 7);
+    const TestMesh sets({{{1, 2, 3, 4, 5, 6}, {0, 0, 1, 0, 0, 2}}}, 9);
+    ChunkMeshUpdate update = mesh.update(here, 1);
+    update.level = 2;
+    // The open sets as the mesh's ranges hold them, by pass then face; the
+    // border counts likewise.
+    const ChunkMeshUpdate open_mesh = sets.update(here, 1);
+    update.open = open_mesh.mesh.ranges;
+    for (std::size_t at = 0; at < 12; ++at) {
+        update.border.at(at) = static_cast<std::uint32_t>(at % 3);
+    }
+    REQUIRE(uploads.upload(update, arena, Time{}).value() == Uploaded::written);
+    const vx::render::ChunkMeshRecord* record = uploads.find(here, 2);
+    REQUIRE(record != nullptr);
+    std::uint32_t main = 0;
+    for (const std::uint16_t count : record->count) {
+        main += count;
+    }
+    // In arena order: +x, +y, +z, -x, -y, -z, then the cutout pass.
+    std::uint32_t at = record->range.first_quad + main;
+    std::size_t set = 0;
+    for (std::size_t pass = 0; pass < 2; ++pass) {
+        for (const vx::Face face : vx::render::arena_faces) {
+            const std::span<const Quad> expected =
+                open_mesh.mesh.range(static_cast<vx::Pass>(pass), face);
+            CHECK(record->open.at(set) == expected.size());
+            CHECK(record->border.at(set) ==
+                  update.border.at((pass * 6) + static_cast<std::size_t>(face)));
+            for (std::size_t quad = 0; quad < expected.size(); ++quad) {
+                CHECK(arena.quads.at(at + quad) == expected[quad]);
+            }
+            at += static_cast<std::uint32_t>(expected.size());
+            ++set;
+        }
+    }
+    CHECK(at == record->range.first_quad + record->range.quads);
+}

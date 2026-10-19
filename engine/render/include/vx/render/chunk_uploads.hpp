@@ -31,6 +31,11 @@ struct ChunkMeshUpdate {
     // RFC 0011's level: `pos` is on that level's grid, and the mesh's quads
     // are in cells 2^level blocks wide.
     std::uint8_t level = 0;
+    // RFC 0011's open border sets, by pass then face (RFC 0003's order, as
+    // the mesh's ranges): how many of each range lie in the mesh's outermost
+    // slice that way, and that slice meshed as if nothing were drawn across.
+    std::array<std::uint32_t, 12> border{};
+    std::array<std::array<std::span<const Quad>, 6>, 2> open{};
 };
 
 // The order of a pass's six face groups in the arena: +x, +y, +z, -x, -y,
@@ -56,6 +61,12 @@ struct ChunkMeshRecord {
     // Drawn: always, unless the uploads take RFC 0011's swaps, then while a
     // swap shows the chunk.
     bool shown = true;
+    // RFC 0011's open border sets, in arena order, by pass: each group's
+    // quads in the mesh's outermost slice that way, at the end of a positive
+    // face's group and the start of a negative one's; and each open set's,
+    // back to back after the twelve groups.
+    std::array<std::uint16_t, 12> border{};
+    std::array<std::uint16_t, 12> open{};
 };
 
 // Where uploads put quads: the arena's buffer, or a stand-in in tests.

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -63,11 +64,20 @@ struct DrawLists {
     DrawStats stats;
 };
 
+// RFC 0011's open border sets: whether the chunk at a position on a level is
+// drawn, for the draw lists to pick each side's set.
+using DrawnAt = std::function<bool(ChunkPos pos, std::uint8_t level)>;
+
 // Fills `lists` for a camera at `camera_block` plus `camera_fraction`, which
-// sees through `view`, a frustum relative to the camera.
+// sees through `view`, a frustum relative to the camera. Toward each side
+// whose own level's neighbor `drawn_at` says is not drawn, a chunk with open
+// border sets draws that side's open set in place of its outermost slice
+// that way: where finer chunks are drawn across, they are nearer the camera
+// than the face between, and only the coarse chunk's faces can show. With no
+// `drawn_at`, no set opens.
 void build_draw_lists(std::span<const ChunkMeshRecord> records, const glm::i64vec3& camera_block,
                       const glm::vec3& camera_fraction, const Frustum& view,
-                      const DrawSwitches& switches, DrawLists& lists);
+                      const DrawSwitches& switches, DrawLists& lists, const DrawnAt& drawn_at = {});
 
 // Calls `draw(first, count)` for consecutive slices of `commands` commands,
 // at most `limit` a slice: a device's maxDrawIndirectCount bounds one call

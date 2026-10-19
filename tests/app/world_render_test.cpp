@@ -58,6 +58,25 @@ std::vector<vx::BlockVisual> visuals() {
     return {vx::BlockVisual{}, opaque(0), opaque(0), opaque(0)};
 }
 
+// Pinholes: sky pixels whose four neighbors are all something drawn, as a
+// crack between two chunks shows.
+std::size_t pinholes(const std::vector<std::uint8_t>& pixels) {
+    const auto is_sky = [&pixels](std::size_t x, std::size_t y) {
+        const std::size_t at = ((y * image_size.width) + x) * 4;
+        return pixels[at] == 0 && pixels[at + 1] == 255 && pixels[at + 2] == 255;
+    };
+    std::size_t count = 0;
+    for (std::size_t y = 1; y + 1 < image_size.height; ++y) {
+        for (std::size_t x = 1; x + 1 < image_size.width; ++x) {
+            if (is_sky(x, y) && !is_sky(x - 1, y) && !is_sky(x + 1, y) && !is_sky(x, y - 1) &&
+                !is_sky(x, y + 1)) {
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+
 // The sky's pixels from row `from_row` down.
 std::size_t sky_pixels(const std::vector<std::uint8_t>& pixels, std::size_t from_row) {
     std::size_t count = 0;
@@ -269,13 +288,26 @@ TEST_CASE("with RFC 0011's horizon on, the arena draws exactly the chunks the wo
     }
     CHECK(overlaps == 0);
     const std::uint32_t drawn = renderer.chunks().draw_lists().stats.chunks;
+    std::size_t opened = 0; // levels' sides drawn open: their neighbor is drawn finer
+    for (const vx::render::ChunkMeshRecord& record : renderer.chunks().uploads().records()) {
+        if (record.shown && record.level > 0) {
+            for (const std::uint16_t count : record.open) {
+                opened += count;
+            }
+        }
+    }
+    CHECK(opened > 0);
     CHECK(drawn > 0);
     CHECK(drawn <= shown.size());
 
     const vx::Result<std::vector<std::uint8_t>> pixels = renderer.capture();
     REQUIRE(pixels.has_value());
+    // No crack where two levels meet: the coarse chunk's open sides close
+    // them (3 pinholes here without).
+    CHECK(pinholes(pixels.value()) == 0);
     MESSAGE(renderer.chunks().uploads().records().size(), " meshes held, ", shown.size(),
             " shown on ", levels.size(), " levels, ", drawn,
             " drawn; sky in the lower half: ", sky_pixels(pixels.value(), image_size.height / 2),
-            " of ", image_size.width * image_size.height / 2);
+            " of ", image_size.width * image_size.height / 2, "; pinholes ",
+            pinholes(pixels.value()));
 }
