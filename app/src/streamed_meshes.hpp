@@ -8,8 +8,10 @@
 #include <vx/render/chunk_uploads.hpp>
 #include <vx/world/chunk_map.hpp>
 #include <vx/world/coordinates.hpp>
+#include <vx/world/lod.hpp>
 #include <vx/world/world_streamer.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -42,7 +44,8 @@ struct Holes {
 // dropped, so a chunk's own order holds, and a mesh that waits for room in
 // the arena never holds back the unloads that make it. What waits is the
 // overlay's backlog; what is done with the meshes sent alone tells the
-// world thread how far behind the main thread is.
+// world thread how far behind the main thread is. A chunk is its position
+// and RFC 0011's level: the same position on two levels is two chunks.
 class StreamedMeshes final : public render::ChunkChanges {
 public:
     // Takes the meshes, batches and unloads among `messages`, in order; the
@@ -67,9 +70,10 @@ public:
     }
     // The holes the meshes waiting here leave: chunks whose newest mesh
     // waiting has quads and that have none on screen in `uploads`, in
-    // `viewer`'s view, and of them those within `near` blocks. A world
-    // sample counts the chunks with no mesh sent; once every message before
-    // its answer was received, these are the rest (RFC 0006).
+    // `viewer`'s view, and of them those within `near` blocks, each at its
+    // level's size. A world sample counts the chunks with no mesh sent;
+    // once every message before its answer was received, these are the
+    // rest (RFC 0006).
     [[nodiscard]] Holes holes(const render::ChunkUploads& uploads, const Viewer& viewer,
                               double near) const;
 
@@ -79,24 +83,33 @@ private:
         MeshUpdate update;
     };
 
+    struct Unload {
+        ChunkPos pos;
+        std::uint8_t level = 0;
+    };
+
     // Takes `messages` as receive does, handing the samples to `sampled`
     // when it is set and leaving them for the caller when not.
     void take(std::vector<ToMain>& messages,
               const std::function<void(const WorldSample&)>& sampled);
     // The chunk's place in the batches waiting goes, and the meshes of it
     // waiting are dropped when they come up: they came before it.
-    void take_unload(ChunkPos pos);
+    void take_unload(Unload unload);
     // Whether `mesh` came before its chunk's last unload.
     [[nodiscard]] bool unloaded(const Mesh& mesh) const noexcept;
-    // Whether an edit's batch waiting for room holds the chunk at `pos`.
-    [[nodiscard]] bool in_waiting_batch(ChunkPos pos) const noexcept;
+    // Once no mesh waits that came before an unload, the unloads' orders go.
+    void forget_unloads() noexcept;
+    // Whether an edit's batch waiting for room holds the chunk at `pos` on
+    // `level`.
+    [[nodiscard]] bool in_waiting_batch(ChunkPos pos, std::uint8_t level) const noexcept;
 
     std::deque<Mesh> meshes_;
     std::deque<std::vector<MeshUpdate>> batches_;
-    std::vector<ChunkPos> unloads_; // since the last frame
+    std::vector<Unload> unloads_; // since the last frame
     // Each chunk's last unload, while a mesh that came before it may wait:
-    // the chunk's index into unload_orders_, the unload's order there.
-    ChunkMap last_unloads_;
+    // by level, the chunk's index into unload_orders_, the unload's order
+    // there.
+    std::array<ChunkMap, lod_levels> last_unloads_;
     std::vector<std::uint64_t> unload_orders_;
     std::uint64_t next_order_ = 0;
     std::vector<render::ChunkMeshUpdate> batch_; // reused for each batch

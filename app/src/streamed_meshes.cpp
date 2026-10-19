@@ -11,6 +11,7 @@
 #include <vx/render/chunk_uploads.hpp>
 #include <vx/world/chunk_map.hpp>
 #include <vx/world/coordinates.hpp>
+#include <vx/world/lod.hpp>
 #include <vx/world/world_streamer.hpp>
 
 #include <glm/vec3.hpp>
@@ -47,7 +48,8 @@ render::ChunkMeshUpdate chunk_update(const MeshUpdate& update) noexcept {
             }
         }
     }
-    return {.pos = update.pos, .generation = update.generation, .mesh = mesh};
+    return {
+        .pos = update.pos, .generation = update.generation, .mesh = mesh, .level = update.level};
 }
 
 Viewer camera_viewer(const render::Camera& camera, float aspect) {
@@ -90,7 +92,7 @@ void StreamedMeshes::take(std::vector<ToMain>& messages,
             batches_.push_back(std::move(message.batch));
             break;
         case ToMain::Kind::unload:
-            take_unload(message.pos);
+            take_unload({.pos = message.pos, .level = message.level});
             break;
         case ToMain::Kind::player:
         case ToMain::Kind::perdix:
@@ -108,27 +110,31 @@ void StreamedMeshes::take(std::vector<ToMain>& messages,
     messages.erase(messages.begin() + static_cast<std::ptrdiff_t>(kept), messages.end());
 }
 
-void StreamedMeshes::take_unload(ChunkPos pos) {
-    unloads_.push_back(pos);
+void StreamedMeshes::take_unload(Unload unload) {
+    unloads_.push_back(unload);
     for (std::vector<MeshUpdate>& batch : batches_) {
-        std::erase_if(batch, [pos](const MeshUpdate& update) { return update.pos == pos; });
+        std::erase_if(batch, [unload](const MeshUpdate& update) {
+            return update.pos == unload.pos && update.level == unload.level;
+        });
     }
     std::erase_if(batches_, [](const std::vector<MeshUpdate>& batch) { return batch.empty(); });
     if (meshes_.empty()) {
         return; // none came before it
     }
-    if (const std::optional<std::uint32_t> at = last_unloads_.find(pos)) {
+    ChunkMap& last = last_unloads_.at(unload.level);
+    if (const std::optional<std::uint32_t> at = last.find(unload.pos)) {
         unload_orders_[*at] = next_order_;
     } else {
-        last_unloads_.insert(pos, static_cast<std::uint32_t>(unload_orders_.size()));
+        last.insert(unload.pos, static_cast<std::uint32_t>(unload_orders_.size()));
         unload_orders_.push_back(next_order_);
     }
 }
 
-bool StreamedMeshes::in_waiting_batch(ChunkPos pos) const noexcept {
-    return std::ranges::any_of(batches_, [pos](const std::vector<MeshUpdate>& batch) {
-        return std::ranges::any_of(batch,
-                                   [pos](const MeshUpdate& update) { return update.pos == pos; });
+bool StreamedMeshes::in_waiting_batch(ChunkPos pos, std::uint8_t level) const noexcept {
+    return std::ranges::any_of(batches_, [pos, level](const std::vector<MeshUpdate>& batch) {
+        return std::ranges::any_of(batch, [pos, level](const MeshUpdate& update) {
+            return update.pos == pos && update.level == level;
+        });
     });
 }
 
@@ -138,13 +144,16 @@ Holes StreamedMeshes::holes(const render::ChunkUploads& uploads, const Viewer& v
     // newest, and an empty one leaves nothing to draw.
     struct Waiting {
         ChunkPos pos;
+        std::uint8_t level = 0;
         std::uint32_t generation = 0;
         bool quads = false;
     };
     std::vector<Waiting> waiting;
     const auto add = [&waiting](const MeshUpdate& update) {
-        waiting.push_back(
-            {.pos = update.pos, .generation = update.generation, .quads = !update.quads.empty()});
+        waiting.push_back({.pos = update.pos,
+                           .level = update.level,
+                           .generation = update.generation,
+                           .quads = !update.quads.empty()});
     };
     for (const Mesh& mesh : meshes_) {
         if (!unloaded(mesh)) {
@@ -155,16 +164,17 @@ Holes StreamedMeshes::holes(const render::ChunkUploads& uploads, const Viewer& v
         std::ranges::for_each(batch, add);
     }
     std::ranges::sort(waiting, {}, [](const Waiting& mesh) {
-        return std::tuple(mesh.pos.x, mesh.pos.y, mesh.pos.z, mesh.generation);
+        return std::tuple(mesh.level, mesh.pos.x, mesh.pos.y, mesh.pos.z, mesh.generation);
     });
     Holes holes;
     for (std::size_t at = 0; at < waiting.size(); ++at) {
         const Waiting& newest = waiting[at];
-        if ((at + 1 < waiting.size() && waiting[at + 1].pos == newest.pos) || !newest.quads ||
-            uploads.find(newest.pos) != nullptr) {
+        const bool newer_waits = at + 1 < waiting.size() && waiting[at + 1].pos == newest.pos &&
+                                 waiting[at + 1].level == newest.level;
+        if (newer_waits || !newest.quads || uploads.find(newest.pos, newest.level) != nullptr) {
             continue;
         }
-        const ChunkSight sight = chunk_sight(viewer, newest.pos, near);
+        const ChunkSight sight = chunk_sight(viewer, newest.pos, near, newest.level);
         if (sight.in_view) {
             ++holes.all;
         }
@@ -176,15 +186,16 @@ Holes StreamedMeshes::holes(const render::ChunkUploads& uploads, const Viewer& v
 }
 
 bool StreamedMeshes::unloaded(const Mesh& mesh) const noexcept {
-    const std::optional<std::uint32_t> at = last_unloads_.find(mesh.update.pos);
+    const std::optional<std::uint32_t> at =
+        last_unloads_.at(mesh.update.level).find(mesh.update.pos);
     return at.has_value() && mesh.order < unload_orders_[*at];
 }
 
 Result<void> StreamedMeshes::apply(render::ChunkUploader& uploader) {
     // The unloads first: the room they free is what a mesh that does not
     // fit waits for (RFC 0007).
-    for (const ChunkPos pos : unloads_) {
-        uploader.remove(pos);
+    for (const Unload& unload : unloads_) {
+        uploader.remove(unload.pos, unload.level);
     }
     unloads_.clear();
     // An edit's batches go ahead of the streaming meshes, each whole and
@@ -211,7 +222,7 @@ Result<void> StreamedMeshes::apply(render::ChunkUploader& uploader) {
     while (!meshes_.empty()) {
         const Mesh& mesh = meshes_.front();
         if (!unloaded(mesh)) {
-            if (in_waiting_batch(mesh.update.pos)) {
+            if (in_waiting_batch(mesh.update.pos, mesh.update.level)) {
                 return {};
             }
             const Result<render::Uploaded> uploaded = uploader.upload(chunk_update(mesh.update));
@@ -228,11 +239,20 @@ Result<void> StreamedMeshes::apply(render::ChunkUploader& uploader) {
         meshes_.pop_front();
     }
     // No mesh waits that came before an unload.
-    if (!last_unloads_.empty()) {
-        last_unloads_.clear();
-        unload_orders_.clear();
-    }
+    forget_unloads();
     return {};
+}
+
+void StreamedMeshes::forget_unloads() noexcept {
+    if (unload_orders_.empty()) {
+        return;
+    }
+    for (ChunkMap& last : last_unloads_) {
+        if (!last.empty()) {
+            last.clear();
+        }
+    }
+    unload_orders_.clear();
 }
 
 } // namespace vx::app
