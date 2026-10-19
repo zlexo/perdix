@@ -2114,3 +2114,69 @@ TEST_CASE("a smaller hysteresis lets go of the chunks only the larger one kept, 
     settle(fresh, jobs);
     CHECK(drawn_chunks(streamer) == drawn_chunks(fresh));
 }
+
+TEST_CASE("a streamer on an RFC 0011 coarse level makes the generator's coarse chunks in its "
+          "ring, and nothing in its hole") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    const vx::RegionSettings ring{.view_distance = 10,
+                                  .near_distance = -1,
+                                  .near_height = 0,
+                                  .hysteresis = 1,
+                                  .inner_distance = 5,
+                                  .level = 2};
+    WorldStreamer streamer(generator, jobs, wake, ring);
+    const ChunkPos camera{.x = 3, .y = 0, .z = -2};
+    streamer.set_camera(camera);
+    settle(streamer, jobs);
+    vx::GenScratch scratch;
+    std::vector<BlockState> made(vx::chunk_volume);
+    std::vector<BlockState> expected(vx::chunk_volume);
+    const vx::ChunkRecords& records = streamer.records();
+    std::size_t complete = 0;
+    std::size_t drawn = 0;
+    for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+        if (!records.live(index)) {
+            continue;
+        }
+        const ChunkRecord& record = records[index];
+        const std::int64_t dx = std::int64_t{record.pos.x} - camera.x;
+        const std::int64_t dz = std::int64_t{record.pos.z} - camera.z;
+        if (record.drawn) {
+            ++drawn;
+            CHECK((dx * dx) + (dz * dz) > 5 * 5);
+            CHECK((dx * dx) + (dz * dz) <= 10 * 10);
+        }
+        if (record.state != ChunkState::complete) {
+            continue;
+        }
+        ++complete;
+        // Every chunk it made is the generator's coarse chunk there.
+        const vx::ChunkStorage coarse = generator.lod_build(
+            {.x = record.pos.x, .y = record.pos.y, .z = record.pos.z, .level = 2}, scratch);
+        coarse.to_dense(std::span<BlockState, vx::chunk_volume>(expected));
+        if (record.blocks == nullptr) {
+            CHECK(coarse.is_uniform());
+            CHECK(expected.front() == record.uniform);
+        } else {
+            record.blocks->value().to_dense(std::span<BlockState, vx::chunk_volume>(made));
+            CHECK(made == expected);
+        }
+    }
+    CHECK(drawn > 100);
+    CHECK(complete >= drawn);
+    // Deep in the hole no surface is asked: the camera's own column's
+    // square of reach lies inside it.
+    CHECK_FALSE(streamer.surface({.x = camera.x, .z = camera.z}).has_value());
+    CHECK(streamer.surface({.x = camera.x + 8, .z = camera.z}).has_value());
+    // The surfaces it asked for are the coarse level's.
+    for (std::int32_t dz = -10; dz <= 10; ++dz) {
+        for (std::int32_t dx = -10; dx <= 10; ++dx) {
+            const vx::ColumnPos column{.x = camera.x + dx, .z = camera.z + dz};
+            if (const std::optional<vx::ChunkRange> known = streamer.surface(column)) {
+                CHECK(*known == generator.lod_surface_range(column, 2, scratch));
+            }
+        }
+    }
+}
