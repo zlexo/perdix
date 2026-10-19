@@ -321,3 +321,23 @@ TEST_CASE(
     REQUIRE(lists.origins.size() == 1);
     CHECK(lists.origins[0].w == 2.0F);
 }
+
+TEST_CASE("a mesh RFC 0011's swaps hide is not drawn, nor counted, nor culled") {
+    std::array<ChunkMeshRecord, 2> records{};
+    records[0].pos = {.x = 0, .y = 0, .z = 0};
+    records[0].range.first_quad = 100;
+    records[0].count = {1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0};
+    records[1] = records[0];
+    records[1].range.first_quad = 300;
+    records[1].level = 1;
+    records[1].shown = false;
+    DrawLists lists;
+    vx::render::build_draw_lists(records, glm::i64vec3(10, 10, 10), glm::vec3(0.5F), {}, {}, lists);
+    CHECK(lists.origins.size() == 1);
+    CHECK(lists.stats.chunks == 1);
+    CHECK(lists.stats.culled == 0);
+    CHECK(lists.stats.quads == 21);
+    for (const auto& command : lists.opaque) {
+        CHECK(command.vertexOffset < 4U * 300U);
+    }
+}

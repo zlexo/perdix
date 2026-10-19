@@ -860,3 +860,47 @@ TEST_CASE("a chunk's place on each of RFC 0011's levels holds a record of its ow
     REQUIRE(uploads.find(here, 2) != nullptr);
     CHECK(uploads.find(here, 2)->generation == 2);
 }
+
+TEST_CASE("with RFC 0011's swaps a mesh is drawn only while a swap shows its chunk, through "
+          "remeshes, an empty mesh and an unload") {
+    ArenaSpace space = make_space(1'024, 3);
+    FakeArena arena(1'024);
+    ChunkUploads uploads(space);
+    uploads.begin_frame(0, Time{});
+    const TestMesh mesh(some, 7);
+    // Without swaps every mesh is drawn.
+    REQUIRE(uploads.upload(mesh.update(here, 1), arena, Time{}).value() == Uploaded::written);
+    CHECK(uploads.find(here)->shown);
+    uploads.remove(here);
+    uploads.use_swaps();
+    REQUIRE(uploads.upload(mesh.update(here, 2), arena, Time{}).value() == Uploaded::written);
+    CHECK_FALSE(uploads.find(here)->shown);
+    uploads.set_shown(here, 0, true);
+    CHECK(uploads.find(here)->shown);
+    // A remesh keeps it shown; so does a mesh after an empty one, and after
+    // an unload: shown is the chunk's, not the mesh's.
+    REQUIRE(uploads.upload(mesh.update(here, 3), arena, Time{}).value() == Uploaded::written);
+    CHECK(uploads.find(here)->shown);
+    REQUIRE(uploads.upload({.pos = here, .generation = 4, .mesh = {}}, arena, Time{}).value() ==
+            Uploaded::removed);
+    REQUIRE(uploads.upload(mesh.update(here, 5), arena, Time{}).value() == Uploaded::written);
+    CHECK(uploads.find(here)->shown);
+    uploads.remove(here);
+    REQUIRE(uploads.upload(mesh.update(here, 6), arena, Time{}).value() == Uploaded::written);
+    CHECK(uploads.find(here)->shown);
+    // Each level's own: the same place on level 1 is hidden until shown.
+    vx::render::ChunkMeshUpdate coarse = mesh.update(here, 1);
+    coarse.level = 1;
+    REQUIRE(uploads.upload(coarse, arena, Time{}).value() == Uploaded::written);
+    CHECK_FALSE(uploads.find(here, 1)->shown);
+    // Hidden, now and for the meshes after.
+    uploads.set_shown(here, 0, false);
+    CHECK_FALSE(uploads.find(here)->shown);
+    REQUIRE(uploads.upload(mesh.update(here, 7), arena, Time{}).value() == Uploaded::written);
+    CHECK_FALSE(uploads.find(here)->shown);
+    // Shown before its mesh comes: drawn once it does.
+    constexpr ChunkPos later{.x = 40, .y = -3, .z = 2};
+    uploads.set_shown(later, 0, true);
+    REQUIRE(uploads.upload(mesh.update(later, 1), arena, Time{}).value() == Uploaded::written);
+    CHECK(uploads.find(later)->shown);
+}

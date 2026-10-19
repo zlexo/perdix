@@ -45,7 +45,10 @@ struct Holes {
 // the arena never holds back the unloads that make it. What waits is the
 // overlay's backlog; what is done with the meshes sent alone tells the
 // world thread how far behind the main thread is. A chunk is its position
-// and RFC 0011's level: the same position on two levels is two chunks.
+// and RFC 0011's level: the same position on two levels is two chunks. RFC
+// 0011's swaps go last each frame, in order, each whole once every chunk it
+// shows has a mesh in the arena: a chunk is never drawn with the chunk
+// around it, and never goes before what replaces it is there.
 class StreamedMeshes final : public render::ChunkChanges {
 public:
     // Takes the meshes, batches and unloads among `messages`, in order; the
@@ -64,9 +67,9 @@ public:
     // Of the meshes sent alone, those uploaded or dropped so far: what
     // ToWorld::uploaded reports.
     [[nodiscard]] std::uint64_t done() const noexcept { return done_; }
-    // Meshes, batches and unloads waiting for the next frames.
+    // Meshes, batches, unloads and swaps waiting for the next frames.
     [[nodiscard]] std::size_t waiting() const noexcept {
-        return meshes_.size() + batches_.size() + unloads_.size();
+        return meshes_.size() + batches_.size() + unloads_.size() + swaps_.size();
     }
     // The holes the meshes waiting here leave: chunks whose newest mesh
     // waiting has quads and that have none on screen in `uploads`, in
@@ -88,6 +91,11 @@ private:
         std::uint8_t level = 0;
     };
 
+    struct Swap {
+        std::vector<LodPos> show;
+        std::vector<LodPos> hide;
+    };
+
     // Takes `messages` as receive does, handing the samples to `sampled`
     // when it is set and leaving them for the caller when not.
     void take(std::vector<ToMain>& messages,
@@ -99,6 +107,10 @@ private:
     [[nodiscard]] bool unloaded(const Mesh& mesh) const noexcept;
     // Once no mesh waits that came before an unload, the unloads' orders go.
     void forget_unloads() noexcept;
+    // The streaming meshes, in order, until one cannot go this frame.
+    [[nodiscard]] Result<void> upload_meshes(render::ChunkUploader& uploader);
+    // The swaps whose shown chunks all have meshes in the arena, in order.
+    void apply_swaps(render::ChunkUploader& uploader);
     // Whether an edit's batch waiting for room holds the chunk at `pos` on
     // `level`.
     [[nodiscard]] bool in_waiting_batch(ChunkPos pos, std::uint8_t level) const noexcept;
@@ -106,6 +118,7 @@ private:
     std::deque<Mesh> meshes_;
     std::deque<std::vector<MeshUpdate>> batches_;
     std::vector<Unload> unloads_; // since the last frame
+    std::deque<Swap> swaps_;
     // Each chunk's last unload, while a mesh that came before it may wait:
     // by level, the chunk's index into unload_orders_, the unload's order
     // there.

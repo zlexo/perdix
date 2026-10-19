@@ -53,6 +53,10 @@ struct Options {
     // What Perdix does from the start (RFC 0012): his own life, following
     // you, or standing still.
     LifeMode perdix = LifeMode::life;
+    // RFC 0011's levels of detail: past the near terrain the world is drawn
+    // in rings of coarser chunks, each level streamed and swapped in as the
+    // camera moves.
+    bool horizon = false;
 };
 
 // The options, from the arguments after the program's name, or why they are
