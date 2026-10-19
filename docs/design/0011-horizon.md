@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Accepted (2026-10-19) |
 | **Milestone** | M9 Horizon, designed after M3 and before M4 Terrain |
 | **Issue** | #333 |
 
@@ -12,7 +12,7 @@ How Perdix shows terrain 16 kilometers away. Past the near terrain the world is 
 
 ## Motivation
 
-Full detail costs the square of the distance. At today's 1,024 blocks, RFC 0006 draws about 3,200 chunk columns and RFC 0007 about 854,000 quads a frame, and the frame takes 22 to 24 ms on the reference machine, held by the GPU. Full detail to 16,384 blocks would be 256 times the chunks: no machine draws that.
+Full detail costs the square of the distance. At today's 1,024 blocks, RFC 0006 draws about 3,200 chunk columns and RFC 0007 about 854,000 quads a frame. The first benchmark flythrough (2026-10-09) measured that frame at 22 to 24 ms on the reference machine, held by the GPU, with most of the machine's swap in use; a run on 2026-10-11 measured 4.6 ms at the median in `hover`. The second pull request settles which holds. Full detail to 16,384 blocks would be 256 times the chunks: no machine draws that.
 
 Most of that detail cannot be seen. At 2560 by 1440 with RFC 0001's 70-degree vertical field of view, a block at distance d covers about 1,028 / d pixels: 4 pixels at 256 blocks, 1 pixel at 1,024, a sixteenth of a pixel at 16,384. Cells that cover a few pixels look the same as blocks there and cost a sixteenth, a sixty-fourth, less.
 
@@ -122,7 +122,7 @@ RFC 0007's arena holds every level's meshes; a record gains its level, and the d
 
 ### Occlusion culling
 
-Before any of this is chosen for good, the second pull request measures where today's frame goes (budget below): PR #296 drew 160,000 quads as one instanced draw in 0.56 ms of GPU time, so the 22 ms frame is not explained by its quad count, and culling only helps if quads are what costs.
+Before any of this is chosen for good, the second pull request measures where today's frame goes (budget below): PR #296 drew 160,000 quads as one instanced draw in 0.56 ms of GPU time, so a 22 ms frame, as the first flythrough measured, is not explained by its quad count, and culling only helps if quads are what costs.
 
 Apple's two Vulkan drivers run every multi-draw command as a Metal draw encoded on the CPU, and both emulate the draw count and conditional rendering with a compute pass that splits the render pass and still encodes every potential draw. GPU-driven culling that writes draw commands, the usual way, is therefore slow here. This RFC culls on the CPU first:
 
@@ -210,7 +210,7 @@ On the reference machine, release build, at 2560 by 1440, k = 4 and a view dista
 | Chunk data | within RFC 0006's 512 MiB budget |
 | Holes within 256 blocks during `sprint` | none at p99, as RFC 0006 asks now |
 
-Today the frame at 1,024 blocks is 22 to 24 ms. Coarse levels keep the far terrain within today's quad count, but the target also needs the near frame down: which is why the measurements come first.
+The frame at 1,024 blocks measured 22 to 24 ms in the first flythrough and 4.6 ms at the median in a later run. Coarse levels keep the far terrain within today's quad count, but the target also needs the near frame down: which is why the measurements come first.
 
 ## Test plan
 
@@ -225,7 +225,7 @@ Today the frame at 1,024 blocks is 22 to 24 ms. Coarse levels keep the far terra
 ## Pull request plan
 
 1. This RFC, VISION.md's headline target, and the roadmap's order.
-2. **Measure the frame:** GPU time per pass in the overlay and the flythrough, a quad-count sweep with the view distance slider, the cutout pass's share, the cost of a render-pass split and of an instanced box test on both drivers. Sets k's default with the owner, and says whether culling must go to the GPU.
+2. **Measure the frame:** GPU time per pass in the overlay and the flythrough, a quad-count sweep with the view distance slider, the cutout pass's share, the cost of a render-pass split and of an instanced box test on both drivers. Checks the accepted k = 4 against the numbers, and says whether culling must go to the GPU.
 3. Levels: `LodPos`, parents and children, the rings from k, 2:1 balance; property tests.
 4. The generator's level: the interface, the placeholder hills at any level, band-limited; determinism and agreement tests. RFC 0008's As built notes the change to its interface.
 5. Meshing at a level: the scale in the origin, occlusion at level 0 only, the two border sets, flat colors past level 2.
@@ -241,6 +241,8 @@ Today the frame at 1,024 blocks is 22 to 24 ms. Coarse levels keep the far terra
 Pull requests 2 to 8 can land on the placeholder hills before M4 (decided 2026-10-09); 9 to 12 are worth most on RFC 0008's terrain.
 
 ## Open questions
+
+All settled on 2026-10-19: every recommendation below was accepted.
 
 1. **Quality default, k** (taste: sharpness against frame rate). Recommendation: **4**, cells of 2 to 4 pixels and full detail to about 514 blocks, as a setting from 2 to 8. 2 keeps full detail to 1,028 blocks at about 3 times the quads; 8 drops full detail to the near cylinder.
 2. **The far look** (taste). Recommendation: **textures to level 2, flat colors beyond**, as Distant Horizons and Luanti's draft do: cheaper, no moire at the edge, at the price of a change of look where fog mostly covers it. The other way: textures at every level.

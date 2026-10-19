@@ -18,7 +18,7 @@ Milestones in order. Each ends with something you can see, a tagged release and 
 | 8 | Save | worlds persist | world format, compression |
 | 9 | Horizon | very long view distance | level of detail, occlusion culling |
 
-Horizon's design comes right after Infinite, before Terrain, so the terrain generator is built for far, coarse terrain from the start, and its core may land before Terrain too, on the placeholder hills (decided 2026-10-09).
+Horizon's design comes after Infinite and Body, before Terrain, so the terrain generator is built for far, coarse terrain from the start, and its core may land before Terrain too, on the placeholder hills (decided 2026-10-09).
 
 After milestone 9 come multiplayer, more entities and gameplay, each after its own vision decision.
 
