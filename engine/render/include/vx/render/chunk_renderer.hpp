@@ -45,8 +45,8 @@ public:
     // goes.
     void remove(ChunkPos pos, std::uint8_t level = 0) { uploads_->remove(pos, level); }
     // RFC 0011's swaps, as ChunkUploads::set_shown.
-    void set_shown(ChunkPos pos, std::uint8_t level, bool shown) {
-        uploads_->set_shown(pos, level, shown);
+    void set_shown(ChunkPos pos, std::uint8_t level, bool shown, bool fade = false) {
+        uploads_->set_shown(pos, level, shown, fade);
     }
     [[nodiscard]] const ChunkMeshRecord* find(ChunkPos pos, std::uint8_t level = 0) const noexcept {
         return uploads_->find(pos, level);
@@ -124,8 +124,10 @@ public:
     // Culls and builds the frame's draw lists for a camera at `camera_block`
     // plus `camera_fraction` that sees `view`, relative to it, and writes
     // them into the frame slot's buffer.
+    // Chunks fade in over `fade_seconds` once they appear (RFC 0013).
     [[nodiscard]] Result<ChunkFrame> prepare(const Device& device, const glm::i64vec3& camera_block,
-                                             const glm::vec3& camera_fraction, const Frustum& view);
+                                             const glm::vec3& camera_fraction, const Frustum& view,
+                                             float fade_seconds = 0.0F);
 
     // The overlay's switches (RFC 0007), from the next frame.
     void set_switches(const DrawSwitches& switches) noexcept { switches_ = switches; }

@@ -533,12 +533,14 @@ double fogged(double linear, std::uint8_t fog, double amount) {
     return 255.0 * (face + (amount * ((static_cast<double>(fog) / 255.0) - face)));
 }
 
-// What a renderer draws for `camera` under `fog`, read back.
+// What a renderer draws for `camera` under `fog`, read back; chunks fade in
+// over `fade` seconds once they appear.
 std::vector<std::uint8_t> draw_fogged(vx::render::Renderer& renderer,
                                       const vx::render::Camera& camera,
-                                      const std::optional<vx::render::Fog>& fog) {
-    const vx::Result<vx::render::Frame> frame =
-        renderer.render({.sky = black, .camera = camera, .cubes = {}, .fog = fog});
+                                      const std::optional<vx::render::Fog>& fog,
+                                      float fade = 0.0F) {
+    const vx::Result<vx::render::Frame> frame = renderer.render(
+        {.sky = black, .camera = camera, .cubes = {}, .fog = fog, .chunk_fade_seconds = fade});
     REQUIRE(frame.has_value());
     vx::Result<std::vector<std::uint8_t>> pixels = renderer.capture();
     REQUIRE(pixels.has_value());
@@ -692,4 +694,37 @@ TEST_CASE("the sky fades from its color to the fog color toward the horizon, whe
     CHECK(top[0] < 130);
     CHECK(renderer.context().instance().validation_counts().errors == 0);
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
+}
+
+TEST_CASE("a chunk that appears fades in from the fog color, with fog, as 26.2's chunks do") {
+    const std::array<Quarters, 1> layers = {Quarters{white, white, white, white}};
+    const std::vector<std::byte> textures = texture_bytes(layers);
+    vx::Result<vx::render::Renderer> created = renderer_with(textures);
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    // Fog that reaches nothing here: what shows is the fade alone.
+    constexpr vx::render::Srgb8 color{.r = 64, .g = 128, .b = 192};
+    const vx::render::Fog clear{
+        .color = color, .ramps = {.haze_end = 1.0e6F, .band_start = 1.0e6F, .band_end = 2.0e6F}};
+    const auto face = [&](const std::vector<std::uint8_t>& pixels) {
+        return pixel_at(pixels, 32, 32);
+    };
+    const auto is_fog = [&](const Pixel& at) {
+        return std::abs(int{at[0]} - color.r) <= 1 && std::abs(int{at[1]} - color.g) <= 1 &&
+               std::abs(int{at[2]} - color.b) <= 1;
+    };
+    // The frame it appears in, it is the fog color; long into a fade of
+    // 1,000 seconds, nearly so.
+    OneBlock block(vx::Opacity::opaque);
+    REQUIRE(renderer.set_chunk({.x = 0, .y = 0, .z = 0}, block.mesh()).has_value());
+    CHECK(is_fog(face(draw_fogged(renderer, facing(vx::Face::pos_z), clear, 1'000.0F))));
+    CHECK(is_fog(face(draw_fogged(renderer, facing(vx::Face::pos_z), clear, 1'000.0F))));
+    // With no fade, or no fog to fade from, its own color.
+    const Pixel own = face(draw_fogged(renderer, facing(vx::Face::pos_z), clear, 0.0F));
+    CHECK(std::abs(own[0] - fogged(0.8, color.r, 0.0)) <= 1.5);
+    const Pixel unfogged =
+        face(draw_fogged(renderer, facing(vx::Face::pos_z), std::nullopt, 1'000.0F));
+    CHECK(unfogged == own);
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
 }

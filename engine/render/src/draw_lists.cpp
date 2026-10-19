@@ -10,6 +10,8 @@
 #include <glm/vec4.hpp>
 #include <volk.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -171,9 +173,18 @@ void append_runs(std::span<const std::uint16_t, 6> counts, std::uint8_t drawn,
     }
 }
 
+float faded_in(const ChunkMeshRecord& record, const ChunkFade& fade) noexcept {
+    if (!record.appeared || fade.time.count() <= 0.0F) {
+        return 1.0F;
+    }
+    const std::chrono::duration<float> since = fade.now - *record.appeared;
+    return std::clamp(since / fade.time, 0.0F, 1.0F);
+}
+
 void build_draw_lists(std::span<const ChunkMeshRecord> records, const glm::i64vec3& camera_block,
                       const glm::vec3& camera_fraction, const Frustum& view,
-                      const DrawSwitches& switches, DrawLists& lists, const DrawnAt& drawn_at) {
+                      const DrawSwitches& switches, DrawLists& lists, const DrawnAt& drawn_at,
+                      const ChunkFade& fade) {
     lists.origins.clear();
     lists.opaque.clear();
     lists.cutout.clear();
@@ -232,10 +243,12 @@ void build_draw_lists(std::span<const ChunkMeshRecord> records, const glm::i64ve
                 static_cast<std::uint64_t>(static_cast<std::int64_t>(lists.stats.quads) + change);
         }
         if (lists.opaque.size() + lists.cutout.size() > before) {
-            // The fourth component is the level, for the shader's scale.
+            // The fourth component is the level, for the shader's scale,
+            // plus half what the chunk has still to fade in.
             lists.origins.emplace_back(static_cast<float>(corner.x), static_cast<float>(corner.y),
                                        static_cast<float>(corner.z),
-                                       static_cast<float>(record.level));
+                                       static_cast<float>(record.level) +
+                                           (0.5F * (1.0F - faded_in(record, fade))));
             ++lists.stats.chunks;
         }
     }

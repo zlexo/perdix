@@ -254,7 +254,10 @@ Result<void> ChunkRenderer::apply(ChunkChanges& changes, VkCommandBuffer command
 }
 
 Result<ChunkFrame> ChunkRenderer::prepare(const Device& device, const glm::i64vec3& camera_block,
-                                          const glm::vec3& camera_fraction, const Frustum& view) {
+                                          const glm::vec3& camera_fraction, const Frustum& view,
+                                          float fade_seconds) {
+    const ChunkFade fade{.now = uploads_.frame_start(),
+                         .time = std::chrono::duration<float>(fade_seconds)};
     // RFC 0011's open border sets: a chunk is drawn while its record is shown.
     const DrawnAt drawn_at = [this](ChunkPos pos, std::uint8_t level) {
         const ChunkMeshRecord* record = uploads_.find(pos, level);
@@ -270,14 +273,14 @@ Result<ChunkFrame> ChunkRenderer::prepare(const Device& device, const glm::i64ve
         // exactly while the camera has moved under 2^24 blocks since.
         const CullingView& culling = *frozen_view_;
         build_draw_lists(uploads_.records(), culling.camera_block, culling.camera_fraction,
-                         culling.frustum, switches_, lists_, drawn_at);
+                         culling.frustum, switches_, lists_, drawn_at, fade);
         const glm::vec4 shift(relative_origin(culling.camera_block, camera_block), 0.0F);
         for (glm::vec4& origin : lists_.origins) {
             origin += shift;
         }
     } else {
         build_draw_lists(uploads_.records(), camera_block, camera_fraction, view, switches_, lists_,
-                         drawn_at);
+                         drawn_at, fade);
     }
     constexpr VkDeviceSize command_bytes = sizeof(VkDrawIndexedIndirectCommand);
     const VkDeviceSize origins_bytes = lists_.origins.size() * sizeof(glm::vec4);

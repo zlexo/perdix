@@ -109,11 +109,12 @@ Result<Uploaded> ChunkUploads::upload(const ChunkMeshUpdate& update, QuadWriter&
         stats_.wanted = std::max(stats_.wanted, quads);
         return Uploaded::full;
     }
-    return place(update, *range, writer);
+    return place(update, *range, writer, frame_start_);
 }
 
 Result<Uploaded> ChunkUploads::upload_batch(std::span<const ChunkMeshUpdate> batch,
-                                            QuadWriter& writer) {
+                                            QuadWriter& writer,
+                                            std::optional<Clock::time_point> appearing) {
     // Every range first, the largest first, so a small mesh never takes the
     // one hole a large one needs: when one does not fit, nothing is
     // written, and the ranges taken go back with this frame's slot.
@@ -159,7 +160,8 @@ Result<Uploaded> ChunkUploads::upload_batch(std::span<const ChunkMeshUpdate> bat
             ++stats_.dropped;
         } else if (!range) {
             empty(batch[at]);
-        } else if (const Result<Uploaded> placed = place(batch[at], *range, writer);
+        } else if (const Result<Uploaded> placed =
+                       place(batch[at], *range, writer, appearing.value_or(frame_start_));
                    !placed.has_value()) {
             give_back(at + 1);
             return placed.error();
@@ -274,7 +276,7 @@ bool ChunkUploads::stale(const ChunkMeshUpdate& update) const noexcept {
 }
 
 Result<Uploaded> ChunkUploads::place(const ChunkMeshUpdate& update, const ArenaRange& range,
-                                     QuadWriter& writer) {
+                                     QuadWriter& writer, Clock::time_point appearing) {
     std::array<std::uint16_t, 12> count{};
     std::uint32_t first = range.first_quad;
     std::size_t group = 0;
@@ -311,15 +313,18 @@ Result<Uploaded> ChunkUploads::place(const ChunkMeshUpdate& update, const ArenaR
         record.border = border;
         record.open = open;
     } else {
+        // A new record shown at once appeared now: it fades in (RFC 0013).
+        const bool shown = !swaps_ || shown_[update.level].find(update.pos).has_value();
         index_[update.level].insert(update.pos, static_cast<std::uint32_t>(records_.size()));
         records_.push_back({.pos = update.pos,
                             .generation = update.generation,
                             .range = range,
                             .count = count,
                             .level = update.level,
-                            .shown = !swaps_ || shown_[update.level].find(update.pos).has_value(),
+                            .shown = shown,
                             .border = border,
-                            .open = open});
+                            .open = open,
+                            .appeared = shown ? std::optional(appearing) : std::nullopt});
         emptied_[update.level].erase(update.pos);
         ++stats_.meshes;
     }
@@ -329,7 +334,7 @@ Result<Uploaded> ChunkUploads::place(const ChunkMeshUpdate& update, const ArenaR
     return Uploaded::written;
 }
 
-void ChunkUploads::set_shown(ChunkPos pos, std::uint8_t level, bool shown) {
+void ChunkUploads::set_shown(ChunkPos pos, std::uint8_t level, bool shown, bool fade) {
     if (shown) {
         shown_[level].insert(pos, 0);
     } else {
@@ -337,6 +342,7 @@ void ChunkUploads::set_shown(ChunkPos pos, std::uint8_t level, bool shown) {
     }
     if (const std::optional<std::uint32_t> at = index_[level].find(pos)) {
         records_[*at].shown = shown;
+        records_[*at].appeared = shown && fade ? std::optional(frame_start_) : std::nullopt;
     }
 }
 
