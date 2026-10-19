@@ -117,6 +117,10 @@ struct FrameInputs {
     float chunk_fade_seconds = 0.75F;
 };
 
+// RFC 0013's MSAA switch: the samples each pixel of the world takes,
+// resolved into the frame. Off, as 26.2 has none, unless chosen.
+enum class Antialiasing : std::uint8_t { off, x2, x4 };
+
 // How block textures are filtered (RFC 0004).
 enum class BlockFilter : std::uint8_t {
     // Texels crisp up close, mipmapped and anisotropic far away: the default.
@@ -246,6 +250,14 @@ public:
     // The arena, its uploads and the last frame's culling, for the overlay.
     [[nodiscard]] const ChunkRenderer& chunks() const noexcept { return chunks_; }
     [[nodiscard]] ChunkRenderer& chunks() noexcept { return chunks_; }
+    // Draws the world with `samples` a pixel from the next frame, resolved
+    // into the frame (RFC 0013): its pipelines and attachments are made
+    // again now. An error where the device does not offer that many for
+    // both color and depth.
+    [[nodiscard]] Result<void> set_antialiasing(Antialiasing samples);
+    [[nodiscard]] Antialiasing antialiasing() const noexcept { return antialiasing_; }
+    // Whether the device offers `samples` for both color and depth.
+    [[nodiscard]] bool offers(Antialiasing samples) const noexcept;
     // How the chunk's textures are filtered, from the next frame.
     void set_block_filter(BlockFilter filter) noexcept { block_filter_ = filter; }
     [[nodiscard]] BlockFilter block_filter() const noexcept { return block_filter_; }
@@ -334,8 +346,12 @@ private:
                                                    std::size_t slot, std::span<TagRun> runs);
     [[nodiscard]] Result<void> add_rendered_semaphores();
     [[nodiscard]] Result<void> recreate_target();
-    // Every pipeline again, for a target of `format`.
+    // Every pipeline again, for a target of `format`, with the samples
+    // antialiasing_ asks for.
     [[nodiscard]] Result<void> rebuild_pipelines(VkFormat format);
+    // The depth attachment, and with MSAA the world's color, for a target
+    // of `extent` and `format`.
+    [[nodiscard]] Result<void> make_attachments(VkExtent2D extent, VkFormat format);
     // Makes the target again where the swapchain is stale or the framebuffer
     // changed size since it was made.
     [[nodiscard]] Result<void> refresh_target();
@@ -345,7 +361,10 @@ private:
     Context context_;                    // declared first, so it is destroyed last
     std::optional<Swapchain> swapchain_; // exactly one of these two
     std::optional<Image> offscreen_;
-    Image depth_;           // beside either target, the size of its images
+    Image depth_; // beside either target, the size of its images, of the world's samples
+    // With MSAA (RFC 0013), the world's color, its samples resolved into the
+    // target; none without.
+    std::optional<Image> msaa_color_;
     TextureTable textures_; // RFC 0001's one global descriptor set
     // RFC 0004's block texture array, in the set's binding 2: the layers of
     // RendererDesc::block_textures, or the checker alone without them.
@@ -361,6 +380,7 @@ private:
     BlockFilter block_filter_ = BlockFilter::sharpened;
     float occlusion_strength_ = 1.0F;
     bool wireframe_ = false;
+    Antialiasing antialiasing_ = Antialiasing::off;
     Extent framebuffer_;
     Extent target_framebuffer_; // the size the target was made for
     PresentMode present_mode_;
