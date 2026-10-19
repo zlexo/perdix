@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <numbers>
 #include <utility>
 
 namespace {
@@ -79,5 +81,29 @@ TEST_CASE("under 512 blocks the fog color moves toward the sky's as 26.2 moves i
     for (const auto& [blocks, color] : expected) {
         CAPTURE(blocks);
         CHECK(vx::render::fog_color({}, blocks) == color);
+    }
+}
+
+TEST_CASE("26.2's daytime sky turns to the fog color toward the horizon, as its disc is fogged") {
+    // The disc 16 blocks up, 512 across, fogged from 0 to 512 blocks, its
+    // distance from 16 at the middle to 512.25 at the rim: at 90 degrees 16
+    // blocks away, at 30 degrees 27.7 out, at 2 degrees 458 out.
+    const auto at = [](double degrees) {
+        return vx::render::sky_fog_amount(
+            static_cast<float>(std::sin(degrees * std::numbers::pi / 180.0)));
+    };
+    CHECK(at(90.0) == doctest::Approx(16.0 / 512.0).epsilon(1e-4));
+    CHECK(at(30.0) == doctest::Approx(0.0837).epsilon(2e-3));
+    CHECK(at(10.0) == doctest::Approx(0.2030).epsilon(2e-3));
+    CHECK(at(5.0) == doctest::Approx(0.3775).epsilon(2e-3));
+    CHECK(at(3.0) == doctest::Approx(0.6092).epsilon(2e-3));
+    CHECK(at(2.0) == doctest::Approx(0.8990).epsilon(2e-3));
+    // From the rim, 1.79 degrees, down: the fog color.
+    CHECK(at(1.78) == 1.0F);
+    CHECK(at(0.0) == 1.0F);
+    CHECK(at(-30.0) == 1.0F);
+    // Never less as the ray sinks.
+    for (double degrees = 89.0; degrees > 0.0; degrees -= 1.0) {
+        CHECK(at(degrees) >= at(degrees + 1.0));
     }
 }

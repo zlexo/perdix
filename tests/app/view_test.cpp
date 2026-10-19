@@ -63,6 +63,7 @@ TEST_CASE("a frame's fog is 26.2's at the view distance the world holds, and non
     CHECK(far->ramps.haze_end == doctest::Approx(2'048.0));
     CHECK(far->ramps.band_start == doctest::Approx(921.6));
     CHECK(far->ramps.band_end == doctest::Approx(1'024.0));
+    CHECK(far->sky == vx::render::Srgb8{.r = 120, .g = 167, .b = 255});
     // 4 chunks, 128 blocks: 26.2's own, its color pulled toward the sky.
     const std::optional<vx::render::Fog> near = vx::app::frame_fog(true, 4);
     REQUIRE(near.has_value());
