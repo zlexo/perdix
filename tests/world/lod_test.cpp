@@ -73,6 +73,16 @@ double distance_to(const Vec3d& eye, const LodBox& box) {
     return std::sqrt((x * x) + (y * y) + (z * z));
 }
 
+// The distance from the eye to the nearest point of a box's column, across.
+double across_to(const Vec3d& eye, const LodBox& box) {
+    const auto gap = [](double v, std::int64_t min, std::int64_t max) {
+        return std::max({static_cast<double>(min) - v, 0.0, v - static_cast<double>(max)});
+    };
+    const double x = gap(eye.x, box.min_x, box.max_x);
+    const double z = gap(eye.z, box.min_z, box.max_z);
+    return std::sqrt((x * x) + (z * z));
+}
+
 LodRings with(std::uint32_t height, double k) {
     LodRings rings;
     rings.framebuffer_height = height;
@@ -218,8 +228,8 @@ TEST_CASE("a small window's rings stop at the floor that keeps neighbors within 
     CHECK(bare.unit() == doctest::Approx((std::sqrt(3.0) * 32.0) + 1.0));
 }
 
-TEST_CASE("outside the near cylinder the level never falls with distance, and a child's never "
-          "falls below its parent's") {
+TEST_CASE("outside the near cylinder the level never falls with distance across, and a child's "
+          "never falls below its parent's") {
     std::mt19937 random(0x81);
     std::uniform_real_distribution<double> across(-1.0e6, 1.0e6);
     std::uniform_real_distribution<double> height(-100.0, 3'000.0);
@@ -240,9 +250,10 @@ TEST_CASE("outside the near cylinder the level never falls with distance, and a 
                                    .level = 0};
                 const std::int64_t dx = chunk.x - at.x;
                 const std::int64_t dz = chunk.z - at.z;
-                const bool near = (dx * dx) + (dz * dz) <= 64 && std::abs(chunk.y - at.y) <= 8;
+                // Levels go by column: the height counts for nothing.
+                const bool near = (dx * dx) + (dz * dz) <= 64;
                 if (!near) {
-                    seen.emplace_back(distance_to(eye, vx::box_of(chunk)),
+                    seen.emplace_back(across_to(eye, vx::box_of(chunk)),
                                       rings.level_at(eye, chunk));
                 }
                 for (std::uint8_t level = 1; level <= vx::max_lod_level; ++level) {
@@ -264,7 +275,8 @@ TEST_CASE("outside the near cylinder the level never falls with distance, and a 
     }
 }
 
-TEST_CASE("the near cylinder is drawn at level 0, whatever the distance says") {
+TEST_CASE("the near cylinder's columns are drawn at level 0 at every height, whatever the "
+          "distance says") {
     // In a small window level 1 starts inside the cylinder's reach.
     const LodRings small = with(360, 4.0);
     const Vec3d eye{.x = 16.0, .y = 70.0, .z = 16.0}; // in chunk (0, 2, 0)
@@ -281,11 +293,24 @@ TEST_CASE("the near cylinder is drawn at level 0, whatever the distance says") {
         }
     }
     // A corner of it is 337.9 blocks away, past level 1's start: the
-    // cylinder decides. A row above it, the distance does.
+    // cylinder decides.
     const LodPos corner{.x = 5, .y = 10, .z = 6, .level = 0};
     CHECK(distance_to(eye, vx::box_of(corner)) > small.radius(1));
     CHECK(small.level_at(eye, corner) == 0);
-    CHECK(small.level_at(eye, {.x = 5, .y = 11, .z = 6, .level = 0}) == 1);
+    // Its edge columns lie past level 1's start even across, and a column
+    // changes level whole: rows far above and below are level 0 too.
+    for (const std::int32_t x : {-8, 8}) {
+        CHECK(across_to(eye, vx::box_of({.x = x, .y = 2, .z = 0, .level = 0})) > small.radius(1));
+        for (const std::int32_t y : {-300, 2, 11, 300}) {
+            CHECK(small.level_at(eye, {.x = x, .y = y, .z = 0, .level = 0}) == 0);
+        }
+    }
+    // A column just past the cylinder, past level 1's start across, is
+    // level 1 at every height, the camera's own included.
+    const LodPos past{.x = 9, .y = 2, .z = 0, .level = 0};
+    CHECK(across_to(eye, vx::box_of(past)) > small.radius(1));
+    CHECK(small.level_at(eye, past) == 1);
+    CHECK(small.level_at(eye, {.x = 9, .y = -40, .z = 0, .level = 0}) == 1);
 }
 
 TEST_CASE("a chunk is drawn where its place calls for its level and its parent's for a finer one") {

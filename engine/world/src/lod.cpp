@@ -52,15 +52,15 @@ bool reaches(const EyeChunk& eye, LodPos chunk, std::int32_t radius) noexcept {
     return (dx * dx) + (dz * dz) <= std::int64_t{radius} * radius;
 }
 
-// The distance from the eye to the nearest point of a box, in blocks.
-double nearest_distance(const Vec3d& eye, const LodBox& box) noexcept {
+// The distance from the eye to the nearest point of a box's column,
+// across, in blocks: the height left out.
+double across_distance(const Vec3d& eye, const LodBox& box) noexcept {
     const auto gap = [](double v, std::int64_t min, std::int64_t max) {
         return std::max({static_cast<double>(min) - v, 0.0, v - static_cast<double>(max)});
     };
     const double x = gap(eye.x, box.min_x, box.max_x);
-    const double y = gap(eye.y, box.min_y, box.max_y);
     const double z = gap(eye.z, box.min_z, box.max_z);
-    return std::sqrt((x * x) + (y * y) + (z * z));
+    return std::sqrt((x * x) + (z * z));
 }
 
 // The floor under unit(), above which chunks drawn side by side differ by
@@ -102,17 +102,14 @@ double LodRings::radius(std::uint8_t level) const noexcept {
 }
 
 bool LodRings::near(const Vec3d& eye, LodPos chunk) const noexcept {
-    const EyeChunk at = eye_chunk(eye);
-    const Span rows = span(chunk.y, chunk.level);
-    return rows.first <= at.y + near_height && rows.last >= at.y - near_height &&
-           reaches(at, chunk, near_distance);
+    return reaches(eye_chunk(eye), chunk, near_distance);
 }
 
 std::uint8_t LodRings::level_at(const Vec3d& eye, LodPos chunk) const noexcept {
     if (near(eye, chunk)) {
         return 0;
     }
-    const double distance = nearest_distance(eye, box_of(chunk));
+    const double distance = across_distance(eye, box_of(chunk));
     const double base = unit();
     std::uint8_t level = 0;
     while (level < max_lod_level &&

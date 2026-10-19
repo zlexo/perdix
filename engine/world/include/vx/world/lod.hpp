@@ -107,15 +107,20 @@ struct LodRings {
     [[nodiscard]] double unit() const noexcept;
     // Where a level starts, in blocks: level 0 at 0.
     [[nodiscard]] double radius(std::uint8_t level) const noexcept;
-    // The level a chunk's place calls for: 0 for a chunk reaching into the
-    // near cylinder, else the coarsest level whose ring starts at or before
-    // the nearest point of the chunk's box, in three dimensions.
+    // The level a chunk's place calls for, the same for every chunk of its
+    // column: 0 for a column reaching into the near cylinder, else the
+    // coarsest level whose ring starts at or before the column's nearest
+    // point, across. By column, not by the box's distance in three
+    // dimensions as RFC 0011 first had it: a coarse level's surface can lie
+    // a row below the finer one's, so a column drawn at two levels could
+    // draw its ground at neither.
     [[nodiscard]] std::uint8_t level_at(const Vec3d& eye, LodPos chunk) const noexcept;
     // Whether a chunk reaches into the terrain disc: one of its columns is
     // within the view distance of the camera's, as RFC 0006 counts it.
     [[nodiscard]] bool in_view(const Vec3d& eye, LodPos chunk) const noexcept;
-    // Whether a chunk reaches into the near cylinder, which is drawn at
-    // level 0 whatever the distance says.
+    // Whether a chunk's column reaches into the near cylinder, whose
+    // columns are drawn at level 0 at every height, whatever the distance
+    // says.
     [[nodiscard]] bool near(const Vec3d& eye, LodPos chunk) const noexcept;
     // Whether a chunk is drawn: in view, its place calls for its level or a
     // coarser one, and its parent's for a finer one (the top level has no
