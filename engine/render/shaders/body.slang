@@ -4,6 +4,8 @@
 // body's block, from the camera's block, so the GPU never sees a world
 // position, as with the cube.
 
+import fog;
+
 // vx::BodyVertex, 32 bytes: the position and the texel's u, then the
 // texel's v and the normal. Two float4s are laid out the same under every
 // buffer layout rule.
@@ -12,14 +14,16 @@ struct BodyVertex {
     float4 v_normal;   // the texel's v; the outward normal, posed
 };
 
-// The renderer's DrawPush, as the cube's: 96 of the 128 bytes Vulkan 1.3
-// guarantees. The skin changes from one body's draw to the next.
+// The renderer's BodyPush, the cube's DrawPush and the fog: 112 of the 128
+// bytes Vulkan 1.3 guarantees. The skin changes from one body's draw to the
+// next.
 struct BodyPush {
     float4x4 view_projection; // offset 0: rotation and projection only
     BodyVertex* vertices;     // offset 64: the frame's bodies, 432 vertices each
     float4* origins;          // offset 72: each body's block, from the camera's block
     float3 camera_fraction;   // offset 80: the camera's place within its block
     uint skin;                // offset 92: the body's skin, a slot of the texture table
+    Fog* fog;                 // offset 96: the frame's fog (RFC 0013)
 };
 
 [[vk::push_constant]] ConstantBuffer<BodyPush> push;
@@ -32,6 +36,7 @@ struct Varyings {
     float4 position : SV_Position;
     float2 texel : TEXCOORD;
     float2 light : COLOR; // seen from outside, and from inside
+    float2 fog_distances : FOG; // for the fog (RFC 0013)
 };
 
 // The game's light for entities (26.2's entity shader): two lights fixed in
@@ -50,10 +55,10 @@ Varyings vertex_main(uint vertex_index : SV_VulkanVertexID, uint instance : SV_V
     const BodyVertex vertex = push.vertices[vertex_index];
     const float3 normal = vertex.v_normal.yzw;
     Varyings out;
-    out.position = mul(push.view_projection,
-                       float4(push.origins[instance].xyz + vertex.position_u.xyz -
-                                  push.camera_fraction,
-                              1.0));
+    const float3 from_eye =
+        push.origins[instance].xyz + vertex.position_u.xyz - push.camera_fraction;
+    out.position = mul(push.view_projection, float4(from_eye, 1.0));
+    out.fog_distances = fog_distances(from_eye);
     out.texel = float2(vertex.position_u.w, vertex.v_normal.x);
     // A face seen from inside its box, through an outer layer's clear
     // texels, is lit as if it faced the other way, as the game lights it.
@@ -74,5 +79,6 @@ float4 fragment_main(Varyings in, bool front : SV_IsFrontFace) : SV_Target {
     if (color.a < 0.1) {
         discard;
     }
-    return float4(color.rgb * (front ? in.light.x : in.light.y), color.a);
+    const float3 lit = color.rgb * (front ? in.light.x : in.light.y);
+    return float4(apply_fog(push.fog, lit, in.fog_distances), color.a);
 }

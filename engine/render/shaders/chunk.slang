@@ -6,13 +6,14 @@
 // shader rebuilds its corner from the quad's 8 bytes, as vx/mesh/quad.hpp
 // lays them out; nothing else is stored per vertex.
 
+import fog;
+
 struct Quad {
     uint geometry; // x, y, z: 5 bits each | width - 1, height - 1: 5 each | face: 3
     uint material; // texture layer: 16 | occlusion, 2 bits a corner, corner 0 lowest: 8
 };
 
-// The renderer's ChunkPush, padded there to 112 of the 128 bytes Vulkan 1.3
-// guarantees.
+// The renderer's ChunkPush: 112 of the 128 bytes Vulkan 1.3 guarantees.
 struct ChunkPush {
     float4x4 view_projection; // offset 0: rotation and projection only
     Quad* quads;              // offset 64: the arena's quads
@@ -20,6 +21,7 @@ struct ChunkPush {
     float3 camera_fraction;   // offset 80: the camera's place within its block
     float occlusion_strength; // offset 92: 0 leaves corners lit, 1 darkens them fully
     uint filter;              // offset 96: 0 sharpened, 1 sharpened without anisotropy, 2 nearest
+    Fog* fog;                 // offset 104: the frame's fog (RFC 0013)
 };
 
 [[vk::push_constant]] ConstantBuffer<ChunkPush> push;
@@ -38,6 +40,7 @@ struct Varyings {
     // Past RFC 0011's level 2 a face is its texture's average color: cells
     // of 8 blocks and up are under 2 pixels at their ring's inner edge.
     nointerpolation uint flat : FLAT;
+    float2 fog_distances : FOG; // for the fog (RFC 0013)
 };
 
 // For each face, +x, -x, +y, -y, +z, -z: the axis it looks along and those
@@ -107,8 +110,9 @@ Varyings vertex_main(uint vertex_index : SV_VulkanVertexID, uint instance : SV_V
     const float occluded = 0.4 + (0.2 * float(occlusion[corner]));
 
     Varyings out;
-    out.position = mul(push.view_projection,
-                       float4(push.origins[instance].xyz + position - push.camera_fraction, 1.0));
+    const float3 from_eye = push.origins[instance].xyz + position - push.camera_fraction;
+    out.position = mul(push.view_projection, float4(from_eye, 1.0));
+    out.fog_distances = fog_distances(from_eye);
     out.uv = float3(uv, float(field(quad.material, 0, 16)));
     out.light = shade[face] * lerp(1.0, occluded, push.occlusion_strength);
     out.flat = level > 2.5 ? 1u : 0u;
@@ -142,7 +146,7 @@ float4 block_color(float3 uv, uint flat) {
 [shader("fragment")]
 float4 fragment_opaque(Varyings in) : SV_Target {
     const float4 color = block_color(in.uv, in.flat);
-    return float4(color.rgb * in.light, 1.0);
+    return float4(apply_fog(push.fog, color.rgb * in.light, in.fog_distances), 1.0);
 }
 
 // Leaves and glass: a texel below half alpha is a hole (RFC 0004). In a pass
@@ -154,5 +158,5 @@ float4 fragment_cutout(Varyings in) : SV_Target {
     if (color.a < 0.5) {
         discard;
     }
-    return float4(color.rgb * in.light, 1.0);
+    return float4(apply_fog(push.fog, color.rgb * in.light, in.fog_distances), 1.0);
 }

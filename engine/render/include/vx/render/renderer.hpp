@@ -9,6 +9,7 @@
 #include <vx/render/chunk_renderer.hpp>
 #include <vx/render/context.hpp>
 #include <vx/render/draw_lists.hpp>
+#include <vx/render/fog.hpp>
 #include <vx/render/gpu_timer.hpp>
 #include <vx/render/image.hpp>
 #include <vx/render/pipeline.hpp>
@@ -108,6 +109,8 @@ struct FrameInputs {
     // frame does not ask, so nothing uploads or unloads while a window is
     // minimized. Null changes nothing.
     ChunkChanges* chunk_changes = nullptr;
+    // RFC 0013's fog over the chunks and bodies; none leaves them clear.
+    std::optional<Fog> fog = std::nullopt;
 };
 
 // How block textures are filtered (RFC 0004).
@@ -382,6 +385,9 @@ private:
     // quads, and each tag's block relative to the camera's.
     std::vector<Buffer> tag_vertices_;
     std::vector<Buffer> tag_origins_;
+    // Each slot's fog (RFC 0013), rewritten every frame: what fog.slang
+    // reads through its address.
+    std::vector<Buffer> fog_;
     // Where a tag is laid out before it is copied, and the order tags are
     // drawn in, the farthest first.
     std::array<TagVertex, max_tag_vertices> laid_{};
