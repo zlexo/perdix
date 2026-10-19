@@ -268,6 +268,65 @@ TEST_CASE("a coarse surface range lies between solid and air, and chunks out of 
     }
 }
 
+TEST_CASE("grass caps every coarse column, as it caps the full-detail ones") {
+    // Each cell column's top solid cell is grass: from afar a hill is as
+    // green as up close, wherever its ground falls inside the cell. Its top
+    // can lie up to half a cell under the full-detail ground, which is grass
+    // there too. The spires' cells are stone.
+    const PlaceholderGenerator generator(0x5EED, blocks);
+    vx::GenScratch scratch;
+    std::mt19937 random(23);
+    std::uniform_int_distribution<std::int32_t> chunks_across(-200, 200);
+    for (std::uint8_t level = 1; level < vx::lod_levels; ++level) {
+        CAPTURE(int{level});
+        std::size_t columns = 0;
+        std::size_t grass = 0;
+        std::size_t grass_under = 0;
+        for (int sample = 0; sample < 8; ++sample) {
+            const ColumnPos column{.x = chunks_across(random) >> level,
+                                   .z = chunks_across(random) >> level};
+            const vx::ChunkRange range = generator.lod_surface_range(column, level, scratch);
+            // Each cell column's top two solid cells, from the bottom up.
+            std::vector<BlockState> top(vx::chunk_size * vx::chunk_size, BlockState::air);
+            std::vector<BlockState> under(vx::chunk_size * vx::chunk_size, BlockState::air);
+            for (std::int32_t y = range.min_y; y <= range.max_y; ++y) {
+                const std::vector<BlockState> cells = dense(generator.lod_build(
+                    {.x = column.x, .y = y, .z = column.z, .level = level}, scratch));
+                for (std::int32_t z = 0; z < vx::chunk_size; ++z) {
+                    for (std::int32_t x = 0; x < vx::chunk_size; ++x) {
+                        const auto at = static_cast<std::size_t>(x + (z * vx::chunk_size));
+                        for (std::int32_t cy = 0; cy < vx::chunk_size; ++cy) {
+                            const BlockState cell = cells[vx::local_index(x, cy, z)];
+                            if (cell != BlockState::air) {
+                                under[at] = top[at];
+                                top[at] = cell;
+                            }
+                        }
+                    }
+                }
+            }
+            for (std::int32_t z = 0; z < vx::chunk_size; ++z) {
+                for (std::int32_t x = 0; x < vx::chunk_size; ++x) {
+                    const std::int64_t cell_x = (std::int64_t{column.x} * vx::chunk_size) + x;
+                    const std::int64_t cell_z = (std::int64_t{column.z} * vx::chunk_size) + z;
+                    if (generator.cell_height(cell_x, cell_z, level) ==
+                        PlaceholderGenerator::spire_height) {
+                        continue;
+                    }
+                    ++columns;
+                    const auto at = static_cast<std::size_t>(x + (z * vx::chunk_size));
+                    grass += top[at] == blocks.grass ? 1 : 0;
+                    // Under the grass, dirt or stone, as at level 0.
+                    grass_under += under[at] == blocks.grass ? 1 : 0;
+                }
+            }
+        }
+        CHECK(columns > 7'000);
+        CHECK(grass == columns);
+        CHECK(grass_under == 0);
+    }
+}
+
 TEST_CASE("the spires are whole cells to level 4 and fall between the cells at 5") {
     const PlaceholderGenerator generator(0x5EED, blocks);
     for (std::uint8_t level = 0; level <= 4; ++level) {

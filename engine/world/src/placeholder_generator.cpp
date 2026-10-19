@@ -251,8 +251,11 @@ ChunkStorage PlaceholderGenerator::lod_build(LodPos pos, GenScratch& scratch) co
                                     (static_cast<std::size_t>(z) * chunk_size)];
                 BlockState block = BlockState::air;
                 if (middle < ground) {
-                    // The block the top of the cell's solid part has at level 0.
-                    const std::int64_t shown = std::min(top, ground - 1);
+                    // The column's top solid cell is grass: its top can lie
+                    // up to half a cell under the ground. Below it, the
+                    // block the cell's top has at level 0.
+                    const bool capped = middle + size >= ground;
+                    const std::int64_t shown = capped ? ground - 1 : top;
                     if (ground == spire_height || shown < ground - (dirt_depth + 1)) {
                         block = blocks_.stone;
                     } else if (shown < ground - 1) {
