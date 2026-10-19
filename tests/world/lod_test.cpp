@@ -839,3 +839,52 @@ TEST_CASE("a chunk outside its level's terrain ends the descent: nothing below i
     CHECK(asked > 0);
     CHECK(asked <= 50);
 }
+
+TEST_CASE("where chunks of two levels meet, the camera is on the finer chunk's side of the face "
+          "between them") {
+    std::mt19937 random(0xFACE);
+    std::uniform_real_distribution<double> across(-5.0e5, 5.0e5);
+    std::uniform_real_distribution<double> height(-200.0, 3'000.0);
+    std::size_t faces = 0;
+    std::size_t wrong = 0;
+    for (const auto& [base, distance] : std::array<std::pair<LodRings, std::int32_t>, 3>{
+             {{with(1'440, 4.0), 64}, {with(360, 8.0), 96}, {with(1'440, 2.0), 48}}}) {
+        for (int trial = 0; trial < 4; ++trial) {
+            LodRings rings = base;
+            rings.view_distance = distance;
+            const Vec3d eye{.x = across(random), .y = height(random), .z = across(random)};
+            const std::vector<LodPos> cover = vx::lod_cover(rings, eye, -4, 8);
+            const LodSet drawn(cover.begin(), cover.end());
+            for (const LodPos chunk : cover) {
+                // Each face's neighbor drawn one level coarser.
+                if (chunk.level == vx::max_lod_level) {
+                    continue;
+                }
+                const LodBox box = vx::box_of(chunk);
+                for (int axis = 0; axis < 3; ++axis) {
+                    for (const int sign : {-1, 1}) {
+                        std::array<std::int32_t, 3> at{chunk.x, chunk.y, chunk.z};
+                        at.at(static_cast<std::size_t>(axis)) += sign;
+                        const LodPos next{.x = at[0], .y = at[1], .z = at[2], .level = chunk.level};
+                        const std::optional<LodPos> over = drawn_over(drawn, next);
+                        if (!over || over->level != chunk.level + 1) {
+                            continue;
+                        }
+                        // The face's plane, and the eye's side of it.
+                        const std::array<std::int64_t, 2> extent =
+                            axis == 0 ? std::array{box.min_x, box.max_x}
+                                      : (axis == 1 ? std::array{box.min_y, box.max_y}
+                                                   : std::array{box.min_z, box.max_z});
+                        const double plane = static_cast<double>(sign > 0 ? extent[1] : extent[0]);
+                        const std::array<double, 3> e{eye.x, eye.y, eye.z};
+                        const double side = (e.at(static_cast<std::size_t>(axis)) - plane) * sign;
+                        ++faces;
+                        wrong += side > 0.0 ? 1 : 0; // on the coarser chunk's side
+                    }
+                }
+            }
+        }
+    }
+    CHECK(faces > 1'000);
+    CHECK(wrong == 0);
+}
