@@ -18,6 +18,6 @@ Closes #
 
 ## Screenshots
 
-<!-- Taken with --no-minecraft: the game's textures are Mojang's and are never published (RFC 0009). -->
+<!-- Taken with --no-minecraft: the game's textures are Mojang's, and pull requests show Perdix's own (RFC 0009). -->
 
 <!-- Visual changes only. Delete this section otherwise. -->
