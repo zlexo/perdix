@@ -238,7 +238,7 @@ The frame at 1,024 blocks measured 22 to 24 ms in the first flythrough and 4.6 m
 12. Flythrough version 2 and its report; the targets checked.
 13. If pull request 2 or 12 says so: GPU culling on instanced clusters, with RFC 0007's open question 1 reopened.
 
-Pull requests 2 to 8 can land on the placeholder hills before M4 (decided 2026-10-09); 9 to 12 are worth most on RFC 0008's terrain.
+Pull requests 2 to 8 can land on the placeholder hills before M4 (decided 2026-10-09); 9 to 12 are worth most on RFC 0008's terrain. **Order, decided 2026-10-19:** pull requests 3 to 8 come first, the owner choosing to build before measuring; pull request 2 follows them, ahead of 9, 10 and 13, the culling choices its numbers decide.
 
 ## Open questions
 
