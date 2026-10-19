@@ -216,27 +216,27 @@ std::uint32_t ChunkUploads::fresh_quads(std::span<const ChunkMeshUpdate> batch,
     return total;
 }
 
-void ChunkUploads::remove(ChunkPos pos) {
-    if (const std::optional<std::uint32_t> at = index_.find(pos)) {
+void ChunkUploads::remove(ChunkPos pos, std::uint8_t level) {
+    if (const std::optional<std::uint32_t> at = index_[level].find(pos)) {
         erase(*at);
     }
-    emptied_.erase(pos);
+    emptied_[level].erase(pos);
 }
 
-const ChunkMeshRecord* ChunkUploads::find(ChunkPos pos) const noexcept {
-    const std::optional<std::uint32_t> at = index_.find(pos);
+const ChunkMeshRecord* ChunkUploads::find(ChunkPos pos, std::uint8_t level) const noexcept {
+    const std::optional<std::uint32_t> at = index_[level].find(pos);
     return at ? &records_[*at] : nullptr;
 }
 
-std::optional<std::uint32_t> ChunkUploads::newest(ChunkPos pos) const noexcept {
-    if (const std::optional<std::uint32_t> at = index_.find(pos)) {
+std::optional<std::uint32_t> ChunkUploads::newest(ChunkPos pos, std::uint8_t level) const noexcept {
+    if (const std::optional<std::uint32_t> at = index_[level].find(pos)) {
         return records_[*at].generation;
     }
-    return emptied_.find(pos);
+    return emptied_[level].find(pos);
 }
 
 bool ChunkUploads::stale(const ChunkMeshUpdate& update) const noexcept {
-    const std::optional<std::uint32_t> known = newest(update.pos);
+    const std::optional<std::uint32_t> known = newest(update.pos, update.level);
     return known.has_value() && update.generation <= *known;
 }
 
@@ -260,7 +260,7 @@ Result<Uploaded> ChunkUploads::place(const ChunkMeshUpdate& update, const ArenaR
             first += static_cast<std::uint32_t>(quads.size());
         }
     }
-    if (const std::optional<std::uint32_t> at = index_.find(update.pos)) {
+    if (const std::optional<std::uint32_t> at = index_[update.level].find(update.pos)) {
         ChunkMeshRecord& record = records_[*at];
         space_->retire(record.range, slot_);
         stats_.quads -= record.range.quads;
@@ -268,10 +268,13 @@ Result<Uploaded> ChunkUploads::place(const ChunkMeshUpdate& update, const ArenaR
         record.range = range;
         record.count = count;
     } else {
-        index_.insert(update.pos, static_cast<std::uint32_t>(records_.size()));
-        records_.push_back(
-            {.pos = update.pos, .generation = update.generation, .range = range, .count = count});
-        emptied_.erase(update.pos);
+        index_[update.level].insert(update.pos, static_cast<std::uint32_t>(records_.size()));
+        records_.push_back({.pos = update.pos,
+                            .generation = update.generation,
+                            .range = range,
+                            .count = count,
+                            .level = update.level});
+        emptied_[update.level].erase(update.pos);
         ++stats_.meshes;
     }
     stats_.quads += range.quads;
@@ -281,11 +284,11 @@ Result<Uploaded> ChunkUploads::place(const ChunkMeshUpdate& update, const ArenaR
 }
 
 void ChunkUploads::empty(const ChunkMeshUpdate& update) {
-    if (const std::optional<std::uint32_t> at = index_.find(update.pos)) {
+    if (const std::optional<std::uint32_t> at = index_[update.level].find(update.pos)) {
         erase(*at);
     }
-    emptied_.erase(update.pos);
-    emptied_.insert(update.pos, update.generation);
+    emptied_[update.level].erase(update.pos);
+    emptied_[update.level].insert(update.pos, update.generation);
 }
 
 void ChunkUploads::erase(std::uint32_t index) {
@@ -293,12 +296,12 @@ void ChunkUploads::erase(std::uint32_t index) {
     space_->retire(record.range, slot_);
     stats_.quads -= record.range.quads;
     --stats_.meshes;
-    index_.erase(record.pos);
+    index_[record.level].erase(record.pos);
     // The last record fills the hole, so the draw lists walk no gaps.
     if (const std::size_t last = records_.size() - 1; index != last) {
         records_[index] = records_[last];
-        index_.erase(records_[index].pos);
-        index_.insert(records_[index].pos, index);
+        index_[records_[index].level].erase(records_[index].pos);
+        index_[records_[index].level].insert(records_[index].pos, index);
     }
     records_.pop_back();
 }
