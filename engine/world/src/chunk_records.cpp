@@ -10,11 +10,12 @@
 namespace vx {
 namespace {
 
-// How many of the 26 chunks around `pos` lie past the world's edge.
-std::uint8_t outside_neighbors(ChunkPos pos) noexcept {
+// How many of the 26 chunks around `pos` lie past the world's edge, on
+// RFC 0011's `level`.
+std::uint8_t outside_neighbors(ChunkPos pos, std::uint8_t level) noexcept {
     // The coordinates within one of `at` that the world holds: 2 or 3.
-    const auto inside = [](std::int32_t at) {
-        return 1 + (at > lowest_chunk ? 1 : 0) + (at < highest_chunk ? 1 : 0);
+    const auto inside = [level](std::int32_t at) {
+        return 1 + (at > lowest_chunk_at(level) ? 1 : 0) + (at < highest_chunk_at(level) ? 1 : 0);
     };
     return static_cast<std::uint8_t>(27 - (inside(pos.x) * inside(pos.y) * inside(pos.z)));
 }
@@ -41,7 +42,7 @@ std::uint32_t ChunkRecords::add(ChunkPos pos, std::uint32_t load_id) {
     record.load_id = load_id;
     // Nothing past the world's edge is ever generated or waited for: those
     // neighbors count as planned and ready, as uniform air would.
-    record.planned_neighbors = outside_neighbors(pos);
+    record.planned_neighbors = outside_neighbors(pos, level_);
     record.ready_neighbors = record.planned_neighbors;
     for_neighbors(pos, [&](std::uint32_t neighbor) {
         const ChunkRecord& other = records_[neighbor];
@@ -60,7 +61,7 @@ std::uint32_t ChunkRecords::broken() const {
             continue;
         }
         const ChunkRecord& record = records_[index];
-        int planned = outside_neighbors(record.pos);
+        int planned = outside_neighbors(record.pos, level_);
         int ready = planned;
         int drawn = counted(record.drawn); // itself included
         int loaded = counted(record.loaded);

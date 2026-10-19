@@ -357,3 +357,42 @@ TEST_CASE("nothing outside the 32-bit world belongs to a region at its edge") {
         CHECK_FALSE(region.column_planned({.x = camera.x, .z = past}));
     }
 }
+
+TEST_CASE("an RFC 0011 ring draws the columns between its edges, and its hysteresis shrinks the "
+          "hole") {
+    const vx::RegionSettings ring{.view_distance = 10,
+                                  .near_distance = -1,
+                                  .near_height = 0,
+                                  .hysteresis = 2,
+                                  .inner_distance = 4,
+                                  .level = 2};
+    const vx::Region region({.x = 0, .y = 0, .z = 0}, ring);
+    CHECK_FALSE(region.column_drawn({.x = 0, .z = 0}));
+    CHECK_FALSE(region.column_drawn({.x = 4, .z = 0}));
+    CHECK_FALSE(region.column_drawn({.x = 0, .z = -4}));
+    CHECK(region.column_drawn({.x = 5, .z = 0}));
+    CHECK(region.column_drawn({.x = 3, .z = 3}));
+    CHECK(region.column_drawn({.x = 10, .z = 0}));
+    CHECK_FALSE(region.column_drawn({.x = 11, .z = 0}));
+    // Grown for hysteresis, the hole narrows as the disc widens; with no
+    // near cylinder, none grows either.
+    const vx::Region kept = region.grown(2);
+    CHECK(kept.column_drawn({.x = 3, .z = 0}));
+    CHECK_FALSE(kept.column_drawn({.x = 2, .z = 0}));
+    CHECK(kept.column_drawn({.x = 12, .z = 0}));
+    CHECK(kept.settings().near_distance == -1);
+    CHECK(region.grown(5).settings().inner_distance == -1);
+    // A disc keeps no hole however it grows.
+    const vx::RegionSettings disc{
+        .view_distance = 4, .near_distance = 1, .near_height = 1, .hysteresis = 2};
+    CHECK(vx::Region({}, disc).grown(3).column_drawn({.x = 0, .z = 0}));
+    // The world's edge comes 2^level times nearer in a coarse level's chunks.
+    const std::int32_t edge = vx::highest_chunk_at(2);
+    CHECK(edge == vx::highest_chunk >> 2);
+    const vx::Region far({.x = edge, .y = 0, .z = 0}, ring);
+    CHECK(far.column_drawn({.x = edge - 6, .z = 0}));
+    CHECK_FALSE(far.column_drawn({.x = edge + 6, .z = 0}));
+    CHECK(vx::Region({.x = edge, .y = 0, .z = 0}, ring)
+              .drawn({.x = edge - 6, .z = 0}, {.min_y = 0, .max_y = 2})
+              .chunks() == 3);
+}
