@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstdint>
 #include <numbers>
+#include <span>
+#include <unordered_set>
 #include <vector>
 
 namespace vx {
@@ -99,11 +101,15 @@ double LodRings::radius(std::uint8_t level) const noexcept {
     return level == 0 ? 0.0 : unit() * static_cast<double>(std::int64_t{1} << level);
 }
 
-std::uint8_t LodRings::level_at(const Vec3d& eye, LodPos chunk) const noexcept {
+bool LodRings::near(const Vec3d& eye, LodPos chunk) const noexcept {
     const EyeChunk at = eye_chunk(eye);
     const Span rows = span(chunk.y, chunk.level);
-    if (rows.first <= at.y + near_height && rows.last >= at.y - near_height &&
-        reaches(at, chunk, near_distance)) {
+    return rows.first <= at.y + near_height && rows.last >= at.y - near_height &&
+           reaches(at, chunk, near_distance);
+}
+
+std::uint8_t LodRings::level_at(const Vec3d& eye, LodPos chunk) const noexcept {
+    if (near(eye, chunk)) {
         return 0;
     }
     const double distance = nearest_distance(eye, box_of(chunk));
@@ -157,33 +163,173 @@ std::int32_t LodRings::stream_distance(std::uint8_t level) const noexcept {
     return static_cast<std::int32_t>(std::ceil(std::min(view, ring)));
 }
 
+namespace {
+
+// The top level's chunks over the terrain disc's square and the rows, from
+// which lod_cover and lod_select go down.
+std::vector<LodPos> top_chunks(const LodRings& rings, const Vec3d& eye, std::int32_t min_y,
+                               std::int32_t max_y) {
+    std::vector<LodPos> top;
+    const EyeChunk at = eye_chunk(eye);
+    const std::int64_t reach = std::max(rings.view_distance, 0);
+    const auto shifted = [](std::int64_t chunk) {
+        return static_cast<std::int32_t>(chunk >> max_lod_level);
+    };
+    for (std::int32_t y = shifted(min_y); y <= shifted(max_y); ++y) {
+        for (std::int32_t z = shifted(at.z - reach); z <= shifted(at.z + reach); ++z) {
+            for (std::int32_t x = shifted(at.x - reach); x <= shifted(at.x + reach); ++x) {
+                top.push_back({.x = x, .y = y, .z = z, .level = max_lod_level});
+            }
+        }
+    }
+    return top;
+}
+
+// Whether a chunk is part of the drawn region: in the rows, the 32-bit world
+// and the terrain disc.
+bool in_region(const LodRings& rings, const Vec3d& eye, std::int32_t min_y, std::int32_t max_y,
+               LodPos chunk) noexcept {
+    const Span rows = span(chunk.y, chunk.level);
+    return rows.last >= min_y && rows.first <= max_y && in_world(box_of(chunk)) &&
+           rings.in_view(eye, chunk);
+}
+
+// Chunks in a hash set.
+struct LodHash {
+    std::size_t operator()(const LodPos& pos) const noexcept {
+        std::uint64_t hash = 0xcbf2'9ce4'8422'2325ULL;
+        for (const std::uint64_t part :
+             {std::uint64_t{static_cast<std::uint32_t>(pos.x)},
+              std::uint64_t{static_cast<std::uint32_t>(pos.y)},
+              std::uint64_t{static_cast<std::uint32_t>(pos.z)}, std::uint64_t{pos.level}}) {
+            hash = (hash ^ part) * 0x100'0000'01B3ULL;
+        }
+        return static_cast<std::size_t>(hash);
+    }
+};
+using LodSet = std::unordered_set<LodPos, LodHash>;
+
+// lod_select's walk: whether a chunk's part of the region can be drawn,
+// appending the chunks that draw it; when not, appending nothing. Its
+// recursion goes a level down per call, so at most 6 deep.
+class Selection {
+public:
+    Selection(const LodRings& rings, const Vec3d& eye, std::int32_t min_y, std::int32_t max_y,
+              const std::function<LodReady(LodPos)>& ready, std::span<const LodPos> before,
+              std::vector<LodPos>& out)
+        : rings_(&rings), eye_(&eye), min_y_(min_y), max_y_(max_y), ready_(&ready), out_(&out),
+          before_(before.begin(), before.end()) {
+        // Every chunk with something drawn below it, to find what was drawn
+        // inside a chunk without walking all of it.
+        for (LodPos chunk : before) {
+            while (chunk.level < max_lod_level) {
+                chunk = parent(chunk);
+                if (!above_.insert(chunk).second) {
+                    break;
+                }
+            }
+        }
+    }
+
+    bool pick(LodPos chunk) { // NOLINT(misc-no-recursion): a level down per call
+        if (!in_region(chunk)) {
+            return true; // nothing of the region to draw
+        }
+        const LodReady state = (*ready_)(chunk);
+        const bool finer = chunk.level > 0 && rings_->level_at(*eye_, chunk) < chunk.level;
+        if (finer && state != LodReady::outside) {
+            // Its children once all can be drawn.
+            const std::size_t mark = out_->size();
+            bool all = true;
+            for (const LodPos child : children(chunk)) {
+                all = pick(child);
+                if (!all) {
+                    break;
+                }
+            }
+            if (all) {
+                return true;
+            }
+            out_->resize(mark);
+            // Until then itself, unless it draws nothing where finer chunks
+            // drawn before still can be.
+            if (state == LodReady::empty && keep(chunk)) {
+                return true;
+            }
+        }
+        if (state != LodReady::waiting) {
+            take(chunk, state);
+            return true;
+        }
+        return keep(chunk);
+    }
+
+private:
+    [[nodiscard]] bool in_region(LodPos chunk) const noexcept {
+        return vx::in_region(*rings_, *eye_, min_y_, max_y_, chunk);
+    }
+
+    void take(LodPos chunk, LodReady state) {
+        if (state == LodReady::mesh) {
+            out_->push_back(chunk);
+        }
+    }
+
+    // What was drawn inside `chunk` before, if all of it can still be: none
+    // when nothing inside it was, as when a chunk around it drew it.
+    bool keep(LodPos chunk) { // NOLINT(misc-no-recursion): a level down per call
+        if (before_.contains(chunk)) {
+            const LodReady state = (*ready_)(chunk);
+            if (state == LodReady::waiting) {
+                return false;
+            }
+            take(chunk, state);
+            return true;
+        }
+        if (!above_.contains(chunk)) {
+            return false;
+        }
+        // Something below it was drawn, so nothing around it was: each child
+        // with nothing drawn inside had nothing to draw.
+        const std::size_t mark = out_->size();
+        bool all = true;
+        for (const LodPos child : children(chunk)) {
+            if (in_region(child) && (before_.contains(child) || above_.contains(child))) {
+                all = keep(child);
+                if (!all) {
+                    out_->resize(mark);
+                    break;
+                }
+            }
+        }
+        return all;
+    }
+
+    const LodRings* rings_;
+    const Vec3d* eye_;
+    std::int32_t min_y_;
+    std::int32_t max_y_;
+    const std::function<LodReady(LodPos)>* ready_;
+    std::vector<LodPos>* out_;
+    LodSet before_; // drawn before
+    LodSet above_;  // with a chunk drawn before somewhere below
+};
+
+} // namespace
+
 std::vector<LodPos> lod_cover(const LodRings& rings, const Vec3d& eye, std::int32_t min_y,
                               std::int32_t max_y) {
     std::vector<LodPos> drawn;
     if (min_y > max_y) {
         return drawn;
     }
-    // The top level's chunks over the disc's square and the rows, then down
-    // through every chunk whose place calls for a finer level.
-    const EyeChunk at = eye_chunk(eye);
-    const std::int64_t reach = std::max(rings.view_distance, 0);
-    const auto top = [](std::int64_t chunk) {
-        return static_cast<std::int32_t>(chunk >> max_lod_level);
-    };
-    std::vector<LodPos> pending;
-    for (std::int32_t y = top(min_y); y <= top(max_y); ++y) {
-        for (std::int32_t z = top(at.z - reach); z <= top(at.z + reach); ++z) {
-            for (std::int32_t x = top(at.x - reach); x <= top(at.x + reach); ++x) {
-                pending.push_back({.x = x, .y = y, .z = z, .level = max_lod_level});
-            }
-        }
-    }
+    // The top level's chunks, then down through every chunk whose place
+    // calls for a finer level.
+    std::vector<LodPos> pending = top_chunks(rings, eye, min_y, max_y);
     while (!pending.empty()) {
         const LodPos chunk = pending.back();
         pending.pop_back();
-        const Span rows = span(chunk.y, chunk.level);
-        if (rows.last < min_y || rows.first > max_y || !in_world(box_of(chunk)) ||
-            !rings.in_view(eye, chunk)) {
+        if (!in_region(rings, eye, min_y, max_y, chunk)) {
             continue;
         }
         if (chunk.level == 0 || rings.level_at(eye, chunk) >= chunk.level) {
@@ -193,6 +339,20 @@ std::vector<LodPos> lod_cover(const LodRings& rings, const Vec3d& eye, std::int3
         for (const LodPos child : children(chunk)) {
             pending.push_back(child);
         }
+    }
+    return drawn;
+}
+
+std::vector<LodPos> lod_select(const LodRings& rings, const Vec3d& eye, std::int32_t min_y,
+                               std::int32_t max_y, const std::function<LodReady(LodPos)>& ready,
+                               std::span<const LodPos> drawn_before) {
+    std::vector<LodPos> drawn;
+    if (min_y > max_y) {
+        return drawn;
+    }
+    Selection selection(rings, eye, min_y, max_y, ready, drawn_before, drawn);
+    for (const LodPos top : top_chunks(rings, eye, min_y, max_y)) {
+        selection.pick(top);
     }
     return drawn;
 }
