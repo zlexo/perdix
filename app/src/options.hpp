@@ -18,6 +18,8 @@ namespace vx::app {
 // slider's range (RFC 0006's open question 1).
 inline constexpr std::int32_t least_view_distance = 4;
 inline constexpr std::int32_t most_view_distance = 64;
+// RFC 0011: with --horizon the view reaches 16,384 blocks.
+inline constexpr std::int32_t most_horizon_view_distance = 512;
 
 // RFC 0006's benchmark flythrough: none, the full one, the few seconds CI
 // runs, or RFC 0005's ten minutes on the same path.

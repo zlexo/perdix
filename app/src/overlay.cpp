@@ -308,12 +308,31 @@ void Overlay::draw_chunk_rendering(render::Renderer& renderer) {
     const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
     if (now - arena_sampled_ >= std::chrono::milliseconds(250)) {
         arena_ = chunks.arena().space().stats();
+        levels_ = {};
+        for (const render::ChunkMeshRecord& record : chunks.uploads().records()) {
+            LevelCount& level = levels_.at(record.level);
+            ++level.held;
+            level.shown += record.shown ? 1 : 0;
+        }
         arena_sampled_ = now;
     }
     const render::UploadStats& uploads = chunks.uploads().stats();
     const render::DrawLists& lists = chunks.draw_lists();
     ImGui::Text("Chunk meshes: %u, %llu quads (%.1f MiB)", uploads.meshes,
                 static_cast<unsigned long long>(uploads.quads), quads_mib(uploads.quads));
+    // RFC 0011's levels, once any past level 0 holds a mesh.
+    if (std::any_of(levels_.begin() + 1, levels_.end(),
+                    [](const LevelCount& level) { return level.held > 0; })) {
+        std::string line = "Levels, shown of held:";
+        for (std::size_t level = 0; level < levels_.size(); ++level) {
+            if (levels_.at(level).held > 0) {
+                line += " L" + std::to_string(level) + " " +
+                        std::to_string(levels_.at(level).shown) + "/" +
+                        std::to_string(levels_.at(level).held);
+            }
+        }
+        ImGui::TextUnformatted(line.c_str());
+    }
     ImGui::Text("Drawn: %u chunks, %u culled; %zu opaque and %zu cutout draws", lists.stats.chunks,
                 lists.stats.culled, lists.opaque.size(), lists.cutout.size());
     ImGui::Text("Quads drawn: %llu, %llu facing away",
@@ -391,8 +410,8 @@ void Overlay::draw_render_distance(RenderDistance& distance) {
     // once and not at every step of a drag.
     int chunks = dragged_distance_ > 0 ? dragged_distance_ : distance.chunks;
     ImGui::BeginDisabled(distance.fixed);
-    ImGui::SliderInt("Render distance", &chunks, RenderDistance::least, RenderDistance::most,
-                     "%d chunks", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderInt("Render distance", &chunks, RenderDistance::least, distance.limit, "%d chunks",
+                     ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         distance.chunks = chunks;
     }

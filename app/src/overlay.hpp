@@ -7,6 +7,7 @@
 #include <vx/render/renderer.hpp>
 #include <vx/render/swapchain_choice.hpp>
 #include <vx/world/life.hpp>
+#include <vx/world/lod.hpp>
 
 #include <array>
 #include <chrono>
@@ -35,8 +36,11 @@ struct ChunkMeshing {
 struct RenderDistance {
     static constexpr std::int32_t least = 4;
     static constexpr std::int32_t most = 64;
+    // RFC 0011: with the horizon on, 16,384 blocks.
+    static constexpr std::int32_t horizon_most = 512;
     std::int32_t chunks = 32;
     bool fixed = false;
+    std::int32_t limit = most; // the slider's top
 };
 
 // The player's movement, as the overlay shows it (RFC 0010).
@@ -191,6 +195,12 @@ private:
     // times a second, not every frame (RFC 0007).
     render::ArenaStats arena_;
     std::chrono::steady_clock::time_point arena_sampled_;
+    // RFC 0011's levels, sampled with the arena: meshes held, and shown.
+    struct LevelCount {
+        std::uint32_t held = 0;
+        std::uint32_t shown = 0;
+    };
+    std::array<LevelCount, lod_levels> levels_{};
 };
 
 } // namespace vx::app

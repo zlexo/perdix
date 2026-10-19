@@ -85,7 +85,8 @@ TEST_CASE("every option is read, and none at all is a run with nothing set") {
     }
 }
 
-TEST_CASE("--horizon turns RFC 0011's levels of detail on, off without it") {
+TEST_CASE("--horizon turns RFC 0011's levels of detail on, off without it, and lets the view "
+          "reach 512 chunks") {
     const vx::Result<vx::app::Options> none = parse({});
     REQUIRE(none.has_value());
     CHECK_FALSE(none.value().horizon);
@@ -93,11 +94,20 @@ TEST_CASE("--horizon turns RFC 0011's levels of detail on, off without it") {
     REQUIRE(on.has_value());
     CHECK(on.value().horizon);
     CHECK(on.value().view_distance == 48);
+    // Past 64 only with the horizon, in either order.
+    const vx::Result<vx::app::Options> far = parse({"--view-distance=512", "--horizon"});
+    REQUIRE(far.has_value());
+    CHECK(far.value().view_distance == vx::app::most_horizon_view_distance);
+    const vx::Result<vx::app::Options> flat = parse({"--view-distance=65"});
+    REQUIRE_FALSE(flat.has_value());
+    CHECK(flat.error().message.find("--horizon") != std::string::npos);
+    CHECK_FALSE(parse({"--view-distance=513", "--horizon"}).has_value());
 }
 
 TEST_CASE("the command line's view distances are the overlay slider's") {
     CHECK(vx::app::least_view_distance == vx::app::RenderDistance::least);
     CHECK(vx::app::most_view_distance == vx::app::RenderDistance::most);
+    CHECK(vx::app::most_horizon_view_distance == vx::app::RenderDistance::horizon_most);
 }
 
 TEST_CASE("options that cannot be used say which, and why") {
@@ -117,14 +127,15 @@ TEST_CASE("options that cannot be used say which, and why") {
           "--workers takes a whole number from 1 to 64, not \"six\"");
     CHECK(error_of({"--worker-qos=fast"}) ==
           "--worker-qos takes switching, utility or user-initiated, not \"fast\"");
-    CHECK(error_of({"--view-distance=3"}) ==
-          "--view-distance takes a whole number of chunks from 4 to 64, not \"3\"");
-    CHECK(error_of({"--view-distance=65"}) ==
-          "--view-distance takes a whole number of chunks from 4 to 64, not \"65\"");
-    CHECK(error_of({"--view-distance=far"}) ==
-          "--view-distance takes a whole number of chunks from 4 to 64, not \"far\"");
-    CHECK(error_of({"--view-distance="}) ==
-          "--view-distance takes a whole number of chunks from 4 to 64, not \"\"");
+    CHECK(error_of({"--view-distance=3"}) == "--view-distance takes a whole number of chunks "
+                                             "from 4 to 64, or 512 with --horizon, not \"3\"");
+    CHECK(error_of({"--view-distance=65"}) == "--view-distance above 64 chunks needs --horizon");
+    CHECK(error_of({"--view-distance=513"}) == "--view-distance takes a whole number of chunks "
+                                               "from 4 to 64, or 512 with --horizon, not \"513\"");
+    CHECK(error_of({"--view-distance=far"}) == "--view-distance takes a whole number of chunks "
+                                               "from 4 to 64, or 512 with --horizon, not \"far\"");
+    CHECK(error_of({"--view-distance="}) == "--view-distance takes a whole number of chunks "
+                                            "from 4 to 64, or 512 with --horizon, not \"\"");
 }
 
 TEST_CASE("--no-minecraft turns the game off, and the environment fills the search") {
