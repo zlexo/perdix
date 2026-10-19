@@ -6,6 +6,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <span>
 #include <vector>
 
 namespace vx {
@@ -112,6 +114,9 @@ struct LodRings {
     // Whether a chunk reaches into the terrain disc: one of its columns is
     // within the view distance of the camera's, as RFC 0006 counts it.
     [[nodiscard]] bool in_view(const Vec3d& eye, LodPos chunk) const noexcept;
+    // Whether a chunk reaches into the near cylinder, which is drawn at
+    // level 0 whatever the distance says.
+    [[nodiscard]] bool near(const Vec3d& eye, LodPos chunk) const noexcept;
     // Whether a chunk is drawn: in view, its place calls for its level or a
     // coarser one, and its parent's for a finer one (the top level has no
     // parent to refine).
@@ -130,5 +135,29 @@ struct LodRings {
 // terrain disc's columns, each chunk within a level of its neighbors.
 [[nodiscard]] std::vector<LodPos> lod_cover(const LodRings& rings, const Vec3d& eye,
                                             std::int32_t min_y, std::int32_t max_y);
+
+// What a chunk offers RFC 0011's swaps, as streaming knows it.
+enum class LodReady : std::uint8_t {
+    waiting, // its mesh is not ready yet
+    mesh,    // its mesh is ready, and has faces to draw
+    empty,   // its mesh is ready, and draws nothing
+    outside, // outside its level's terrain: nothing in it draws, at any level
+};
+
+// RFC 0011's swaps: the chunks to draw now for lod_cover's chunks between
+// the same rows, among those `ready` says can be, given the chunks drawn
+// before, `drawn`. Top down from the top level: a chunk whose place calls
+// for a finer level gives way to its 8 children once all of them can be
+// drawn, and until then stays, when ready; a chunk at its level is drawn
+// once ready. Where neither can be, what was drawn there before stays, if
+// all of it still can be: so a coarse chunk goes only with all of its
+// children that have faces, and children go only once their parent can be
+// drawn, however far the camera moved. A chunk outside its level's terrain
+// ends the descent. The chunks with faces are listed; with every chunk
+// ready they are lod_cover's.
+[[nodiscard]] std::vector<LodPos> lod_select(const LodRings& rings, const Vec3d& eye,
+                                             std::int32_t min_y, std::int32_t max_y,
+                                             const std::function<LodReady(LodPos)>& ready,
+                                             std::span<const LodPos> drawn = {});
 
 } // namespace vx
