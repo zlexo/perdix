@@ -39,6 +39,7 @@ add_library(vx_world STATIC
     src/collision.cpp
     src/job_record.cpp
     src/life.cpp
+    src/lod.cpp
     src/memory_budget.cpp
     src/movement.cpp
     src/names.cpp

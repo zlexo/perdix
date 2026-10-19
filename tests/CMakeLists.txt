@@ -76,6 +76,7 @@ add_executable(vx_world_tests
     world/life_modes_test.cpp
     world/life_stroll_test.cpp
     world/life_test.cpp
+    world/lod_test.cpp
     world/look_control_test.cpp
     world/memory_budget_test.cpp
     world/move_rules_test.cpp
