@@ -4,6 +4,7 @@
 #include <vx/world/chunk_storage.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/generator.hpp>
+#include <vx/world/lod.hpp>
 #include <vx/world/region.hpp>
 
 #include <cstdint>
@@ -41,6 +42,22 @@ public:
     [[nodiscard]] ChunkStorage build(std::span<const ChunkPlan* const, 27> plans,
                                      GenScratch& scratch) const override;
 
+    // RFC 0011's coarse levels, all five. A cell takes the ground's height
+    // at the middle of its column, without the smaller octave where its
+    // 32-block hills are under two cells (level 5), whose mean stands in. A
+    // cell is solid when its middle is under the ground, and takes the block
+    // the top of its solid part has at level 0, so grass caps the hills. The
+    // 16-block spires are whole cells to level 4 and fall between the cells'
+    // middles at level 5. Level 0 by these rules is the calls above.
+    [[nodiscard]] std::uint8_t levels() const noexcept override { return lod_levels; }
+    [[nodiscard]] ChunkRange lod_surface_range(ColumnPos column, std::uint8_t level,
+                                               GenScratch& scratch) const override;
+    [[nodiscard]] std::optional<BlockState> lod_out_of_reach(LodPos pos) const noexcept override;
+    [[nodiscard]] ChunkStorage lod_build(LodPos pos, GenScratch& scratch) const override;
+    // The ground's height under cell (x, z) of `level`, in blocks.
+    [[nodiscard]] std::int32_t cell_height(std::int64_t x, std::int64_t z,
+                                           std::uint8_t level) const noexcept;
+
     // The hills' heights run from this to just under 112; the spires reach
     // 640.
     static constexpr std::int32_t lowest_ground = 16;
@@ -54,6 +71,13 @@ private:
     // The heights of a chunk column's 1,024 block columns, into `heights`,
     // x fastest.
     void column_heights(ColumnPos column, std::span<std::int32_t> heights) const noexcept;
+    // The ground's heights under a chunk column's 1,024 cells at `level`.
+    void cell_heights(ColumnPos column, std::uint8_t level,
+                      std::span<std::int32_t> heights) const noexcept;
+    // The hills' height at block column (x, z), with or without the smaller
+    // octave.
+    [[nodiscard]] std::int32_t hills(std::int32_t x, std::int32_t z,
+                                     bool small_octave) const noexcept;
 
     std::uint64_t seed_;
     PlaceholderBlocks blocks_;

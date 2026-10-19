@@ -85,6 +85,7 @@ add_executable(vx_world_tests
     world/names_test.cpp
     world/packed_array_test.cpp
     world/placeholder_generator_test.cpp
+    world/placeholder_lod_test.cpp
     world/region_test.cpp
     world/segment_test.cpp
     world/slipperiness_test.cpp
