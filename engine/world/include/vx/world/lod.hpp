@@ -116,6 +116,13 @@ struct LodRings {
     // coarser one, and its parent's for a finer one (the top level has no
     // parent to refine).
     [[nodiscard]] bool drawn(const Vec3d& eye, LodPos chunk) const noexcept;
+    // How far a level streams: the radius of the disc of its columns, in its
+    // own chunks around the camera's chunk at the level, as RFC 0006's
+    // region counts it, that holds every chunk of the level lod_cover can
+    // draw, wherever the eye is in the camera's chunk and however high. A
+    // full disc, since a high camera draws coarse chunks straight below it;
+    // -1, no columns, for a negative view distance.
+    [[nodiscard]] std::int32_t stream_distance(std::uint8_t level) const noexcept;
 };
 
 // Every chunk drawn (RFC 0011) between level-0 chunk rows `min_y` and

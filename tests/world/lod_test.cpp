@@ -409,6 +409,88 @@ TEST_CASE("the chunks drawn cover the view once, each within a level of its neig
     CHECK(pairs > 10'000);
 }
 
+TEST_CASE("each level streams a disc that holds every chunk of the level drawn, for any eye") {
+    std::mt19937 random(0x57D);
+    std::uniform_real_distribution<double> across(-5.0e5, 5.0e5);
+    std::uniform_real_distribution<double> ground(-100.0, 200.0);
+    std::uniform_real_distribution<double> height(-200.0, 4'000.0);
+    std::uniform_int_distribution<std::int32_t> near(0, 12);
+    std::uniform_real_distribution<double> fov(0.8, 1.9);
+    // Chunks drawn at each level, and the most any reached of its level's
+    // disc, as a share of the radius.
+    std::array<std::size_t, vx::lod_levels> checked{};
+    std::array<double, vx::lod_levels> reach{};
+    std::size_t outside = 0;
+    const std::array<std::pair<LodRings, std::int32_t>, 6> cases{{{with(1'440, 4.0), 48},
+                                                                  {with(1'440, 4.0), 512},
+                                                                  {with(2'160, 2.0), 96},
+                                                                  {with(480, 8.0), 48},
+                                                                  {with(360, 8.0), 512},
+                                                                  {with(1'080, 4.0), 160}}};
+    for (const auto& [base, distance] : cases) {
+        for (int trial = 0; trial < 6; ++trial) {
+            LodRings rings = base;
+            rings.view_distance = distance;
+            rings.near_distance = near(random);
+            rings.near_height = near(random);
+            rings.fov_y = fov(random);
+            // Half on the ground, where the near cylinder meets its rows.
+            const double y = trial % 2 == 0 ? ground(random) : height(random);
+            const Vec3d eye{.x = across(random), .y = y, .z = across(random)};
+            const LodPos at = vx::lod_of({.x = static_cast<std::int32_t>(std::floor(eye.x)),
+                                          .y = static_cast<std::int32_t>(std::floor(eye.y)),
+                                          .z = static_cast<std::int32_t>(std::floor(eye.z))},
+                                         0);
+            // The ground's rows, from a camera on it or high above.
+            for (const LodPos chunk : vx::lod_cover(rings, eye, -3, 5)) {
+                const std::int64_t dx = std::int64_t{chunk.x} - (at.x >> chunk.level);
+                const std::int64_t dz = std::int64_t{chunk.z} - (at.z >> chunk.level);
+                const std::int64_t radius = rings.stream_distance(chunk.level);
+                outside += (dx * dx) + (dz * dz) <= radius * radius ? 0 : 1;
+                ++checked.at(chunk.level);
+                reach.at(chunk.level) = std::max(
+                    reach.at(chunk.level), std::sqrt(static_cast<double>((dx * dx) + (dz * dz))) /
+                                               static_cast<double>(radius));
+            }
+        }
+    }
+    CHECK(outside == 0);
+    for (std::uint8_t level = 0; level < vx::lod_levels; ++level) {
+        INFO("level " << int{level});
+        CHECK(checked.at(level) > 100);
+        // Not wasteful: some chunk comes within 2 chunks of the edge.
+        CHECK(reach.at(level) > 0.9);
+    }
+}
+
+TEST_CASE("at the default rings every level streams 19 chunks out, the top level its view") {
+    LodRings rings;
+    // r_(L+1) / (32 x 2^L) = 1,440 / (16 x 2 x 4 x tan 35 degrees), 16.07,
+    // plus 2 sqrt(2) for the parent's corners and the camera's chunk.
+    for (std::uint8_t level = 0; level < vx::max_lod_level; ++level) {
+        CHECK(rings.stream_distance(level) == 19);
+    }
+    // 512 / 32 + sqrt(2): the view, at the top.
+    CHECK(rings.stream_distance(vx::max_lod_level) == 18);
+    // A nearer view: whichever is nearer, the view or the ring.
+    rings.view_distance = 32;
+    CHECK(rings.stream_distance(0) == 19);
+    CHECK(rings.stream_distance(1) == 18);
+    CHECK(rings.stream_distance(2) == 10);
+    CHECK(rings.stream_distance(5) == 3);
+    rings.view_distance = 12;
+    CHECK(rings.stream_distance(0) == 12);
+    rings.view_distance = -1;
+    CHECK(rings.stream_distance(0) == -1);
+    CHECK(rings.stream_distance(3) == -1);
+    // A small window's floor, under a near cylinder of 10 chunks, 320
+    // blocks: the cylinder holds level 0 out.
+    LodRings small = with(240, 8.0);
+    small.near_distance = 10;
+    CHECK(small.radius(1) < 270.0);
+    CHECK(small.stream_distance(0) == 13); // 320 / 32 + 2 sqrt(2)
+}
+
 TEST_CASE("the chunks drawn stop at the edge of the 32-bit world") {
     const LodRings rings;
     const Vec3d eye{.x = 2'147'483'000.5, .y = 64.0, .z = -2'147'483'000.5};
