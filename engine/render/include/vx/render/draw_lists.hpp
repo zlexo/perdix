@@ -26,9 +26,13 @@ struct DrawSwitches {
 // Which of a chunk's six face directions can face the camera: a bit for each
 // arena group, bit 0 for +x, then +y, +z, -x, -y, -z (arena_faces). With
 // `corner` the chunk's lowest block relative to the camera's block, faces
-// along +x need corner.x <= 0 and faces along -x corner.x >= -31, and the
-// same for y and z: integer tests, conservative by one block (RFC 0007).
-[[nodiscard]] std::uint8_t facing_mask(const glm::i64vec3& corner) noexcept;
+// along +x need corner.x <= 0 and faces along -x corner.x >= -(span - 1),
+// -31 at level 0, and the same for y and z: integer tests, conservative by
+// one block (RFC 0007).
+// `span` is the chunk's size in blocks: 32 at level 0, 32 x 2^L at RFC 0011's
+// level L.
+[[nodiscard]] std::uint8_t facing_mask(const glm::i64vec3& corner,
+                                       std::int64_t span = chunk_size) noexcept;
 
 // Appends a command for each run of one pass's six groups, in arena order,
 // that is drawn: groups whose bit is set in `drawn`, merged with their

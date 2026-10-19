@@ -16,7 +16,7 @@ struct Quad {
 struct ChunkPush {
     float4x4 view_projection; // offset 0: rotation and projection only
     Quad* quads;              // offset 64: the arena's quads
-    float4* origins;          // offset 72: each drawn chunk's lowest corner, from the camera's block
+    float4* origins;          // offset 72: each drawn chunk's lowest corner, from the camera's block, and its level (RFC 0011) in w
     float3 camera_fraction;   // offset 80: the camera's place within its block
     float occlusion_strength; // offset 92: 0 leaves corners lit, 1 darkens them fully
     uint filter;              // offset 96: 0 sharpened, 1 sharpened without anisotropy, 2 nearest
@@ -35,6 +35,9 @@ struct Varyings {
     float4 position : SV_Position;
     float3 uv : TEXCOORD; // one image a block, repeating; z is the layer
     float light : COLOR;  // the face's shade, times its corner's occlusion
+    // Past RFC 0011's level 2 a face is its texture's average color: cells
+    // of 8 blocks and up are under 2 pixels at their ring's inner edge.
+    nointerpolation uint flat : FLAT;
 };
 
 // For each face, +x, -x, +y, -y, +z, -z: the axis it looks along and those
@@ -81,6 +84,10 @@ Varyings vertex_main(uint vertex_index : SV_VulkanVertexID, uint instance : SV_V
     if (corner == 2u || corner == 3u) {
         position[axis.z] += float(field(quad.geometry, 20, 5) + 1u);
     }
+    // In blocks: a coarse chunk's quads are in cells of 2^level blocks
+    // (RFC 0011), and its textures still repeat once a block.
+    const float level = push.origins[instance].w;
+    position *= exp2(level);
 
     // Each face shows its image unmirrored from outside (RFC 0004): on the
     // sides with its top edge up, on the top face toward north (-z), on the
@@ -104,6 +111,7 @@ Varyings vertex_main(uint vertex_index : SV_VulkanVertexID, uint instance : SV_V
                        float4(push.origins[instance].xyz + position - push.camera_fraction, 1.0));
     out.uv = float3(uv, float(field(quad.material, 0, 16)));
     out.light = shade[face] * lerp(1.0, occluded, push.occlusion_strength);
+    out.flat = level > 2.5 ? 1u : 0u;
     return out;
 }
 
@@ -113,7 +121,11 @@ Varyings vertex_main(uint vertex_index : SV_VulkanVertexID, uint instance : SV_V
 // smaller than pixels the coordinate is left alone, and mipmaps and
 // anisotropic filtering do the work, chosen by the true derivatives. Nearest
 // is the classic look, a toggle.
-float4 block_color(float3 uv) {
+float4 block_color(float3 uv, uint flat) {
+    if (flat != 0u) {
+        // The last mip level is the texture's average color (RFC 0004).
+        return blocks.SampleLevel(linear, float3(0.5, 0.5, uv.z), 16.0);
+    }
     if (push.filter == 2u) {
         return blocks.Sample(nearest, uv);
     }
@@ -129,7 +141,7 @@ float4 block_color(float3 uv) {
 
 [shader("fragment")]
 float4 fragment_opaque(Varyings in) : SV_Target {
-    const float4 color = block_color(in.uv);
+    const float4 color = block_color(in.uv, in.flat);
     return float4(color.rgb * in.light, 1.0);
 }
 
@@ -138,7 +150,7 @@ float4 fragment_opaque(Varyings in) : SV_Target {
 // behind fragments that may be discarded.
 [shader("fragment")]
 float4 fragment_cutout(Varyings in) : SV_Target {
-    const float4 color = block_color(in.uv);
+    const float4 color = block_color(in.uv, in.flat);
     if (color.a < 0.5) {
         discard;
     }

@@ -32,13 +32,13 @@ void add_command(std::uint32_t first, std::uint32_t quads, std::uint32_t origin,
 
 } // namespace
 
-std::uint8_t facing_mask(const glm::i64vec3& corner) noexcept {
+std::uint8_t facing_mask(const glm::i64vec3& corner, std::int64_t span) noexcept {
     std::uint8_t mask = 0;
     for (glm::length_t axis = 0; axis < 3; ++axis) {
         if (corner[axis] <= 0) {
             mask = static_cast<std::uint8_t>(mask | (1U << static_cast<unsigned>(axis)));
         }
-        if (corner[axis] >= -(chunk_size - 1)) {
+        if (corner[axis] >= -(span - 1)) {
             mask = static_cast<std::uint8_t>(mask | (1U << static_cast<unsigned>(axis + 3)));
         }
     }
@@ -84,20 +84,22 @@ void build_draw_lists(std::span<const ChunkMeshRecord> records, const glm::i64ve
     lists.cutout.clear();
     lists.stats = {};
     for (const ChunkMeshRecord& record : records) {
+        // A chunk of RFC 0011's level L spans 32 x 2^L blocks.
+        const std::int64_t span = std::int64_t{chunk_size} << record.level;
         const glm::i64vec3 corner =
-            (glm::i64vec3(record.pos.x, record.pos.y, record.pos.z) * std::int64_t{chunk_size}) -
-            camera_block;
+            (glm::i64vec3(record.pos.x, record.pos.y, record.pos.z) * span) - camera_block;
         // The chunk's cube relative to the camera, in doubles.
         const Vec3d min{.x = static_cast<double>(corner.x) - static_cast<double>(camera_fraction.x),
                         .y = static_cast<double>(corner.y) - static_cast<double>(camera_fraction.y),
                         .z =
                             static_cast<double>(corner.z) - static_cast<double>(camera_fraction.z)};
-        const Vec3d max{.x = min.x + chunk_size, .y = min.y + chunk_size, .z = min.z + chunk_size};
+        const auto size = static_cast<double>(span);
+        const Vec3d max{.x = min.x + size, .y = min.y + size, .z = min.z + size};
         if (switches.frustum && !view.may_contain(min, max)) {
             ++lists.stats.culled;
             continue;
         }
-        const std::uint8_t facing = switches.faces ? facing_mask(corner) : 0x3F;
+        const std::uint8_t facing = switches.faces ? facing_mask(corner, span) : 0x3F;
         const std::span<const std::uint16_t, 12> count(record.count);
         std::uint32_t opaque_quads = 0;
         for (std::size_t group = 0; group < 12; ++group) {
@@ -118,8 +120,10 @@ void build_draw_lists(std::span<const ChunkMeshRecord> records, const glm::i64ve
         append_runs(count.last<6>(), facing, record.range.first_quad + opaque_quads, origin,
                     switches.merge, lists.cutout);
         if (lists.opaque.size() + lists.cutout.size() > before) {
+            // The fourth component is the level, for the shader's scale.
             lists.origins.emplace_back(static_cast<float>(corner.x), static_cast<float>(corner.y),
-                                       static_cast<float>(corner.z), 0.0F);
+                                       static_cast<float>(corner.z),
+                                       static_cast<float>(record.level));
             ++lists.stats.chunks;
         }
     }
