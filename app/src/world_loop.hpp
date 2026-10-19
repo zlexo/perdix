@@ -290,6 +290,10 @@ public:
     // With RFC 0011's rings, the chunks to draw as last sent, in order of
     // level, then x, y and z.
     [[nodiscard]] std::span<const LodPos> drawn() const noexcept { return drawn_; }
+    // RFC 0011's rings under these limits: the settings' rings with the
+    // region's terrain disc and near cylinder.
+    [[nodiscard]] static LodRings lod_rings(const WorldLoopSettings& settings,
+                                            RegionLimits limits) noexcept;
     // Streaming meshes sent but not yet uploaded.
     [[nodiscard]] std::uint64_t unuploaded() const noexcept { return sent_ - uploaded_; }
     // Mesh jobs queued or running.
@@ -391,10 +395,6 @@ private:
     static std::vector<std::unique_ptr<Level>> make_levels(const Generator& generator,
                                                            JobSystem& jobs, WakeEvent& wake,
                                                            const WorldLoopSettings& settings);
-    // RFC 0011's rings under these limits: the settings' rings with the
-    // region's terrain disc and near cylinder.
-    [[nodiscard]] static LodRings lod_rings(const WorldLoopSettings& settings,
-                                            RegionLimits limits) noexcept;
     // A level's region settings under these limits: level 0's region, or a
     // coarse level's disc with no near cylinder, each as far out as its level
     // streams.

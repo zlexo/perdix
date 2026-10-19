@@ -273,7 +273,8 @@ Result<Uploaded> ChunkUploads::place(const ChunkMeshUpdate& update, const ArenaR
                             .generation = update.generation,
                             .range = range,
                             .count = count,
-                            .level = update.level});
+                            .level = update.level,
+                            .shown = !swaps_ || shown_[update.level].find(update.pos).has_value()});
         emptied_[update.level].erase(update.pos);
         ++stats_.meshes;
     }
@@ -281,6 +282,17 @@ Result<Uploaded> ChunkUploads::place(const ChunkMeshUpdate& update, const ArenaR
     ++stats_.uploads;
     stats_.quads_uploaded += range.quads;
     return Uploaded::written;
+}
+
+void ChunkUploads::set_shown(ChunkPos pos, std::uint8_t level, bool shown) {
+    if (shown) {
+        shown_[level].insert(pos, 0);
+    } else {
+        shown_[level].erase(pos);
+    }
+    if (const std::optional<std::uint32_t> at = index_[level].find(pos)) {
+        records_[*at].shown = shown;
+    }
 }
 
 void ChunkUploads::empty(const ChunkMeshUpdate& update) {

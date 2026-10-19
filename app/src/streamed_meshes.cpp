@@ -94,12 +94,14 @@ void StreamedMeshes::take(std::vector<ToMain>& messages,
         case ToMain::Kind::unload:
             take_unload({.pos = message.pos, .level = message.level});
             break;
+        case ToMain::Kind::swap:
+            swaps_.push_back({.show = std::move(message.show), .hide = std::move(message.hide)});
+            break;
         case ToMain::Kind::player:
         case ToMain::Kind::perdix:
         case ToMain::Kind::landed:
         case ToMain::Kind::sample:
         case ToMain::Kind::report:
-        case ToMain::Kind::swap: // RFC 0011's, for the caller until levels are drawn
             if (kept != at) {
                 messages[kept] = std::move(message);
             }
@@ -119,6 +121,13 @@ void StreamedMeshes::take_unload(Unload unload) {
         });
     }
     std::erase_if(batches_, [](const std::vector<MeshUpdate>& batch) { return batch.empty(); });
+    // A swap waiting to show it never will: its mesh is gone.
+    for (Swap& swap : swaps_) {
+        std::erase_if(swap.show, [unload](LodPos pos) {
+            return pos.level == unload.level && pos.x == unload.pos.x && pos.y == unload.pos.y &&
+                   pos.z == unload.pos.z;
+        });
+    }
     if (meshes_.empty()) {
         return; // none came before it
     }
@@ -216,10 +225,37 @@ Result<void> StreamedMeshes::apply(render::ChunkUploader& uploader) {
         }
         batches_.pop_front();
     }
-    // Then the streaming meshes in order, until the budget says later, one
-    // does not fit, or one is of a chunk a waiting batch holds, which goes
-    // after the edit so that no neighbor shows the edit without it. A mesh
-    // its chunk's unload came after is dropped.
+    if (const Result<void> streamed = upload_meshes(uploader); !streamed.has_value()) {
+        return streamed.error();
+    }
+    apply_swaps(uploader);
+    return {};
+}
+
+void StreamedMeshes::apply_swaps(render::ChunkUploader& uploader) {
+    while (!swaps_.empty()) {
+        const Swap& swap = swaps_.front();
+        const bool ready = std::ranges::all_of(swap.show, [&uploader](LodPos pos) {
+            return uploader.find({.x = pos.x, .y = pos.y, .z = pos.z}, pos.level) != nullptr;
+        });
+        if (!ready) {
+            return; // and the swaps after it wait with it
+        }
+        for (const LodPos pos : swap.hide) {
+            uploader.set_shown({.x = pos.x, .y = pos.y, .z = pos.z}, pos.level, false);
+        }
+        for (const LodPos pos : swap.show) {
+            uploader.set_shown({.x = pos.x, .y = pos.y, .z = pos.z}, pos.level, true);
+        }
+        swaps_.pop_front();
+    }
+}
+
+Result<void> StreamedMeshes::upload_meshes(render::ChunkUploader& uploader) {
+    // The streaming meshes in order, until the budget says later, one does
+    // not fit, or one is of a chunk a waiting batch holds, which goes after
+    // the edit so that no neighbor shows the edit without it. A mesh its
+    // chunk's unload came after is dropped.
     while (!meshes_.empty()) {
         const Mesh& mesh = meshes_.front();
         if (!unloaded(mesh)) {

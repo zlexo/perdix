@@ -238,6 +238,7 @@ public:
     void compact_chunk_arena() noexcept { chunks_.start_compaction(); }
     // The arena, its uploads and the last frame's culling, for the overlay.
     [[nodiscard]] const ChunkRenderer& chunks() const noexcept { return chunks_; }
+    [[nodiscard]] ChunkRenderer& chunks() noexcept { return chunks_; }
     // How the chunk's textures are filtered, from the next frame.
     void set_block_filter(BlockFilter filter) noexcept { block_filter_ = filter; }
     [[nodiscard]] BlockFilter block_filter() const noexcept { return block_filter_; }

@@ -84,6 +84,11 @@ void build_draw_lists(std::span<const ChunkMeshRecord> records, const glm::i64ve
     lists.cutout.clear();
     lists.stats = {};
     for (const ChunkMeshRecord& record : records) {
+        // RFC 0011's swaps hide a level's mesh until the levels around it
+        // are ready to change with it.
+        if (!record.shown) {
+            continue;
+        }
         // A chunk of RFC 0011's level L spans 32 x 2^L blocks.
         const std::int64_t span = std::int64_t{chunk_size} << record.level;
         const glm::i64vec3 corner =

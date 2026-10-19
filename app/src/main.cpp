@@ -38,6 +38,7 @@
 #include <vx/world/body_motion.hpp>
 #include <vx/world/coordinates.hpp>
 #include <vx/world/life.hpp>
+#include <vx/world/lod.hpp>
 #include <vx/world/movement.hpp>
 #include <vx/world/placeholder_generator.hpp>
 
@@ -113,6 +114,50 @@ std::uint32_t arena_quads(std::int32_t view_distance) {
     const double quads = 9'400.0 * scale * scale * 1'843.0 * 1.25;
     return static_cast<std::uint32_t>(std::clamp(
         quads, 1'048'576.0, static_cast<double>(vx::render::ChunkRenderer::max_arena_quads)));
+}
+
+// The view distance whose arena holds the meshes streamed: RFC 0011's levels
+// each mesh a disc, as many meshes as one disc as wide as the square root of
+// the sum of their widths' squares.
+std::int32_t arena_distance(const vx::app::WorldLoopSettings& settings) {
+    if (!settings.lod) {
+        return settings.region.view_distance;
+    }
+    const vx::LodRings rings =
+        vx::app::WorldLoop::lod_rings(settings, {.view_distance = settings.region.view_distance,
+                                                 .hysteresis = settings.region.hysteresis});
+    double squares = 0.0;
+    for (std::uint8_t level = 0; level < vx::lod_levels; ++level) {
+        const auto chunks = static_cast<double>(rings.stream_distance(level));
+        squares += chunks * chunks;
+    }
+    return static_cast<std::int32_t>(std::ceil(std::sqrt(squares)));
+}
+
+// RFC 0011's rings with --horizon, for the framebuffer's height (RFC 0001's
+// field of view is the rings' own); none without it.
+std::optional<vx::LodRings> horizon_rings(const vx::app::Options& options,
+                                          vx::render::Extent framebuffer) {
+    if (!options.horizon) {
+        return std::nullopt;
+    }
+    vx::LodRings rings;
+    rings.framebuffer_height = framebuffer.height;
+    return rings;
+}
+
+// With RFC 0011's rings the arena draws a mesh only while a swap shows it.
+void use_horizon(const vx::app::WorldLoopSettings& settings, vx::render::Renderer& renderer) {
+    if (settings.lod) {
+        renderer.chunks().uploads().use_swaps();
+    }
+}
+
+// The startup line about the world.
+std::string describe_world(const vx::app::WorldLoopSettings& settings, const std::string& workers) {
+    return "World: placeholder hills, seed 0x5EED, view distance " +
+           std::to_string(settings.region.view_distance) + " chunks" +
+           (settings.lod ? ", horizon on (RFC 0011)" : "") + ", " + workers + "\n";
 }
 
 // RFC 0005's workers: as many as the options say, or the cores less two,
@@ -832,6 +877,7 @@ int main(int argc, char* argv[]) {
             .seed = world_seed ^ 0x9E37'79B9'7F4A'7C15ULL};
     }
     settings.physics = registry.physics();
+    settings.lod = horizon_rings(options.value(), window.value().framebuffer_size());
 
     // Before the renderer, so it is destroyed after it: the renderer draws
     // with the overlay's ImGui context until then.
@@ -855,7 +901,7 @@ int main(int argc, char* argv[]) {
          .block_textures = pack.textures,
          .skins = figures.skins,
          .font = figures.font.has_value() ? &figures.font.value() : nullptr,
-         .chunk_arena_quads = arena_quads(settings.region.view_distance),
+         .chunk_arena_quads = arena_quads(arena_distance(settings)),
          .stage_chunk_uploads = false,
          .draw_call_limit = 0});
     if (!renderer.has_value()) {
@@ -875,6 +921,7 @@ int main(int argc, char* argv[]) {
     // the renderer and the camera to it. Destroyed in reverse: the meshes
     // still waiting go back to the pool before the thread stops and joins,
     // then the loop waits for its jobs.
+    use_horizon(settings, renderer.value());
     vx::JobSystem jobs(
         {.workers = worker_count(options.value()), .qos = options.value().worker_qos});
     vx::MeshResultPool pool;
@@ -882,8 +929,7 @@ int main(int argc, char* argv[]) {
     const vx::app::WorldThread world(loop);
     vx::app::StreamedMeshes meshes;
     const std::string workers = describe_workers(jobs.worker_count(), options.value().worker_qos);
-    std::cout << "World: placeholder hills, seed 0x5EED, view distance "
-              << settings.region.view_distance << " chunks, " << workers << "\n";
+    std::cout << describe_world(settings, workers);
     if (plan) {
         return fly(*plan, window.value(), renderer.value(), overlay, loop, meshes, workers);
     }

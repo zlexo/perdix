@@ -17,6 +17,7 @@
 #include <vx/render/renderer.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
+#include <vx/world/lod.hpp>
 #include <vx/world/placeholder_generator.hpp>
 #include <vx/world/region.hpp>
 
@@ -26,7 +27,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -166,4 +169,113 @@ TEST_CASE("the frame shows the ground under the player's eye, streamed in after 
     // Looking down from a standing eye, the lower half of the frame is
     // ground.
     CHECK(sky_pixels(pixels.value(), image_size.height / 2) == 0);
+}
+
+TEST_CASE("with RFC 0011's horizon on, the arena draws exactly the chunks the world loop picks, "
+          "on several levels, none with a chunk around it") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    vx::app::WorldLoopSettings settings{
+        .region = {.view_distance = 16, .near_distance = 2, .near_height = 2, .hysteresis = 2}};
+    // The rings for this frame's 144 rows: level 1 from 113 blocks out.
+    settings.lod = vx::LodRings{};
+    settings.lod->framebuffer_height = image_size.height;
+    settings.unuploaded_limit = 1'000'000;
+    WorldLoop loop(generator, table, jobs, pool, settings);
+    vx::Result<vx::render::Renderer> created =
+        vx::render::Renderer::create({.surface = std::nullopt,
+                                      .framebuffer = image_size,
+                                      .validation = true,
+                                      .present_mode = vx::render::PresentMode::fifo,
+                                      .overlay = nullptr,
+                                      .block_textures = {},
+                                      .chunk_arena_quads = std::uint32_t{1} << 22U,
+                                      .stage_chunk_uploads = false,
+                                      .draw_call_limit = 0});
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    renderer.chunks().uploads().use_swaps();
+    renderer.chunks().uploads().set_budget(std::chrono::hours(1));
+
+    // Over the hills, looking out across them.
+    vx::app::StreamedMeshes meshes;
+    vx::render::Camera camera;
+    camera.position = {24.5, 140.0, 24.5};
+    camera.yaw = 0.785F;
+    camera.pitch = -0.25F;
+    std::vector<ToMain> messages;
+    std::uint64_t reported = 0;
+    const auto frame = [&] {
+        loop.take(messages);
+        meshes.receive(messages);
+        ToWorld viewer;
+        viewer.kind = ToWorld::Kind::camera;
+        viewer.camera = vx::app::camera_viewer(camera, aspect);
+        loop.to_world().push(std::move(viewer));
+        REQUIRE(renderer
+                    .render({.sky = sky,
+                             .camera = camera,
+                             .cubes = {},
+                             .overlay = nullptr,
+                             .chunk_changes = &meshes})
+                    .has_value());
+        if (meshes.done() != reported) {
+            reported = meshes.done();
+            ToWorld done;
+            done.kind = ToWorld::Kind::uploaded;
+            done.uploaded = reported;
+            loop.to_world().push(std::move(done));
+        }
+    };
+    std::chrono::steady_clock::time_point now{};
+    for (int round = 0; round < 1'000; ++round) {
+        loop.settle();
+        now += WorldLoop::tick_length;
+        loop.step(now);
+        frame();
+        if (round > 2 && meshes.waiting() == 0 && loop.unuploaded() == 0 &&
+            loop.meshes_in_flight() == 0) {
+            break;
+        }
+    }
+    REQUIRE(meshes.waiting() == 0);
+
+    using Chunk = std::tuple<int, std::int32_t, std::int32_t, std::int32_t>;
+    std::set<Chunk> picked;
+    for (const vx::LodPos chunk : loop.drawn()) {
+        picked.insert({chunk.level, chunk.x, chunk.y, chunk.z});
+    }
+    std::set<Chunk> shown;
+    std::set<int> levels;
+    for (const vx::render::ChunkMeshRecord& record : renderer.chunks().uploads().records()) {
+        if (record.shown) {
+            shown.insert({record.level, record.pos.x, record.pos.y, record.pos.z});
+            levels.insert(record.level);
+        }
+    }
+    CHECK(shown == picked);
+    CHECK(levels.size() >= 3);
+    // The meshes of every level stream in, most of them hidden.
+    CHECK(renderer.chunks().uploads().records().size() > shown.size());
+    std::size_t overlaps = 0;
+    for (const vx::LodPos chunk : loop.drawn()) {
+        for (vx::LodPos up = chunk; up.level < vx::max_lod_level;) {
+            up = vx::parent(up);
+            overlaps += shown.contains({up.level, up.x, up.y, up.z}) ? 1 : 0;
+        }
+    }
+    CHECK(overlaps == 0);
+    const std::uint32_t drawn = renderer.chunks().draw_lists().stats.chunks;
+    CHECK(drawn > 0);
+    CHECK(drawn <= shown.size());
+
+    const vx::Result<std::vector<std::uint8_t>> pixels = renderer.capture();
+    REQUIRE(pixels.has_value());
+    MESSAGE(renderer.chunks().uploads().records().size(), " meshes held, ", shown.size(),
+            " shown on ", levels.size(), " levels, ", drawn,
+            " drawn; sky in the lower half: ", sky_pixels(pixels.value(), image_size.height / 2),
+            " of ", image_size.width * image_size.height / 2);
 }

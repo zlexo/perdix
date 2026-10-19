@@ -85,6 +85,16 @@ TEST_CASE("every option is read, and none at all is a run with nothing set") {
     }
 }
 
+TEST_CASE("--horizon turns RFC 0011's levels of detail on, off without it") {
+    const vx::Result<vx::app::Options> none = parse({});
+    REQUIRE(none.has_value());
+    CHECK_FALSE(none.value().horizon);
+    const vx::Result<vx::app::Options> on = parse({"--horizon", "--view-distance=48"});
+    REQUIRE(on.has_value());
+    CHECK(on.value().horizon);
+    CHECK(on.value().view_distance == 48);
+}
+
 TEST_CASE("the command line's view distances are the overlay slider's") {
     CHECK(vx::app::least_view_distance == vx::app::RenderDistance::least);
     CHECK(vx::app::most_view_distance == vx::app::RenderDistance::most);

@@ -159,6 +159,7 @@ Result<Options> parse_options(std::span<const std::string_view> args) {
     constexpr std::string_view minecraft_flag = "--minecraft=";
     constexpr std::string_view minecraft_version_flag = "--minecraft-version=";
     constexpr std::string_view no_minecraft_flag = "--no-minecraft";
+    constexpr std::string_view horizon_flag = "--horizon";
     Options options;
     for (const std::string_view arg : args) {
         if (arg == overlay_flag) {
@@ -177,6 +178,8 @@ Result<Options> parse_options(std::span<const std::string_view> args) {
             options.minecraft_version = std::string(arg.substr(minecraft_version_flag.size()));
         } else if (arg == no_minecraft_flag) {
             options.no_minecraft = true;
+        } else if (arg == horizon_flag) {
+            options.horizon = true;
         } else if (const Result<bool> run = parse_run_option(arg, options); !run.has_value()) {
             return run.error();
         } else if (run.value()) {
@@ -188,7 +191,7 @@ Result<Options> parse_options(std::span<const std::string_view> args) {
             return Error{"unknown option \"" + std::string(arg) +
                          "\": try --frames=N, --overlay, --pack=DIR, --minecraft=PATH, "
                          "--minecraft-version=ID, --no-minecraft, --flythrough[=quick|long], "
-                         "--view-distance=N, --workers=N, "
+                         "--view-distance=N, --horizon, --workers=N, "
                          "--worker-qos=switching|utility|user-initiated, "
                          "--skin=NAME[:slim], --perdix-skin=NAME[:slim] or "
                          "--perdix=life|follow|still"};

@@ -551,3 +551,92 @@ TEST_CASE("an edit's batch waiting for room holds back its own chunks' meshes, n
     arena.offer(meshes);
     CHECK(arena.uploads.find(at, 0) == nullptr);
 }
+
+namespace {
+
+ToMain swap_of(std::vector<vx::LodPos> show, std::vector<vx::LodPos> hide) {
+    ToMain swap;
+    swap.kind = ToMain::Kind::swap;
+    swap.show = std::move(show);
+    swap.hide = std::move(hide);
+    return swap;
+}
+
+ChunkPos at(vx::LodPos pos) {
+    return {.x = pos.x, .y = pos.y, .z = pos.z};
+}
+
+bool shown(const Arena& arena, vx::LodPos pos) {
+    const vx::render::ChunkMeshRecord* record = arena.uploads.find(at(pos), pos.level);
+    return record != nullptr && record->shown;
+}
+
+} // namespace
+
+TEST_CASE("RFC 0011's swaps wait until every chunk they show has a mesh in the arena, then hide "
+          "and show at once") {
+    vx::MeshResultPool pool;
+    vx::app::StreamedMeshes meshes;
+    Arena arena;
+    arena.uploads.set_budget(std::chrono::hours(1));
+    arena.uploads.use_swaps();
+    constexpr vx::LodPos coarse{.x = 1, .y = 0, .z = 0, .level = 1};
+    constexpr vx::LodPos west{.x = 2, .y = 0, .z = 0, .level = 0};
+    constexpr vx::LodPos east{.x = 3, .y = 0, .z = 0, .level = 0};
+    constexpr std::array<std::uint32_t, 12> some{2};
+    std::vector<ToMain> messages;
+    messages.push_back(message_of(mesh_on(pool, coarse.level, at(coarse), 1, some)));
+    messages.push_back(swap_of({coarse}, {}));
+    meshes.receive(messages);
+    arena.offer(meshes);
+    CHECK(shown(arena, coarse));
+    // The coarse chunk's children, one mesh still on its way: nothing
+    // changes, the child already in the arena hidden.
+    messages.push_back(message_of(mesh_on(pool, 0, at(west), 2, some)));
+    messages.push_back(swap_of({west, east}, {coarse}));
+    meshes.receive(messages);
+    arena.offer(meshes);
+    CHECK(shown(arena, coarse));
+    REQUIRE(arena.uploads.find(at(west)) != nullptr);
+    CHECK_FALSE(shown(arena, west));
+    CHECK(meshes.waiting() == 1);
+    // The last mesh: both children show, and the coarse chunk goes, in the
+    // same frame.
+    messages.push_back(message_of(mesh_on(pool, 0, at(east), 3, some)));
+    meshes.receive(messages);
+    arena.offer(meshes);
+    CHECK_FALSE(shown(arena, coarse));
+    CHECK(shown(arena, west));
+    CHECK(shown(arena, east));
+    CHECK(meshes.waiting() == 0);
+}
+
+TEST_CASE("swaps go in order, and an unload takes its chunk out of a waiting swap") {
+    vx::MeshResultPool pool;
+    vx::app::StreamedMeshes meshes;
+    Arena arena;
+    arena.uploads.set_budget(std::chrono::hours(1));
+    arena.uploads.use_swaps();
+    constexpr vx::LodPos first{.x = 5, .y = 1, .z = 0, .level = 2};
+    constexpr vx::LodPos second{.x = 6, .y = 1, .z = 0, .level = 2};
+    constexpr vx::LodPos gone{.x = 7, .y = 1, .z = 0, .level = 2};
+    constexpr std::array<std::uint32_t, 12> some{1};
+    std::vector<ToMain> messages;
+    // The first swap waits for a mesh that will not come; the second's is
+    // there, and waits behind it.
+    messages.push_back(message_of(mesh_on(pool, second.level, at(second), 1, some)));
+    messages.push_back(swap_of({first, gone}, {}));
+    messages.push_back(swap_of({second}, {}));
+    meshes.receive(messages);
+    arena.offer(meshes);
+    CHECK_FALSE(shown(arena, second));
+    // The first's mesh comes and the chunk it was still waiting for unloads:
+    // both swaps go.
+    messages.push_back(message_of(mesh_on(pool, first.level, at(first), 2, some)));
+    messages.push_back(unload_of(at(gone), gone.level));
+    meshes.receive(messages);
+    arena.offer(meshes);
+    CHECK(shown(arena, first));
+    CHECK(shown(arena, second));
+    CHECK(meshes.waiting() == 0);
+}
