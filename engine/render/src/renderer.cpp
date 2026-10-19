@@ -400,6 +400,12 @@ float linear(std::uint8_t channel) {
     return encoded <= 0.04045F ? encoded / 12.92F : std::pow((encoded + 0.055F) / 1.055F, 2.4F);
 }
 
+// How long the frame's chunks take to fade in (RFC 0013): none without fog,
+// whose color they fade from.
+float fade_seconds(const FrameInputs& inputs) {
+    return inputs.fog ? inputs.chunk_fade_seconds : 0.0F;
+}
+
 // What a frame clears to: with fog, the fog color, as 26.2 clears to it;
 // without, the sky.
 Color clear_color(const FrameInputs& inputs) {
@@ -830,7 +836,8 @@ struct ChunkView {
     ChunkChanges* changes; // null changes nothing
     glm::i64vec3 camera_block;
     glm::vec3 camera_fraction;
-    Frustum frustum; // relative to the camera
+    Frustum frustum;    // relative to the camera
+    float fade_seconds; // RFC 0013's fade, 0 for none
 };
 
 // Records a frame: hands Tracy the GPU zones of earlier frames whose
@@ -869,8 +876,8 @@ Result<void> record_frame(VkCommandBuffer commands, GpuTimer& timer, std::uint32
             return applied.error();
         }
     }
-    Result<ChunkFrame> frame =
-        chunks.prepare(*view.device, view.camera_block, view.camera_fraction, view.frustum);
+    Result<ChunkFrame> frame = chunks.prepare(*view.device, view.camera_block, view.camera_fraction,
+                                              view.frustum, view.fade_seconds);
     if (!frame.has_value()) {
         vkEndCommandBuffer(commands);
         return frame.error();
@@ -1919,7 +1926,8 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
                          .changes = inputs.chunk_changes,
                          .camera_block = split.block,
                          .camera_fraction = split.fraction,
-                         .frustum = view_frustum(inputs.camera, aspect)};
+                         .frustum = view_frustum(inputs.camera, aspect),
+                         .fade_seconds = fade_seconds(inputs)};
     };
 
     if (offscreen_.has_value()) {
@@ -2140,7 +2148,9 @@ Result<void> Renderer::set_chunk(ChunkPos position, const ChunkMesh& mesh) {
     ArenaWriter writer(staging, slot.command_buffer, chunks_.arena());
     const ChunkMeshUpdate update{
         .pos = position, .generation = ++set_chunk_generation_, .mesh = mesh};
-    const Result<Uploaded> uploaded = uploads.upload_batch(std::span(&update, 1), writer);
+    // Set outside any frame, it appears now (RFC 0013).
+    const Result<Uploaded> uploaded =
+        uploads.upload_batch(std::span(&update, 1), writer, ChunkUploads::Clock::now());
     staging.finish(slot.command_buffer);
     vkEndCommandBuffer(slot.command_buffer);
     if (!uploaded.has_value()) {

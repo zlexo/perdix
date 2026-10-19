@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -391,4 +392,39 @@ TEST_CASE("toward a side whose own level's neighbor is not drawn, a coarse chunk
                                  [](vx::ChunkPos, std::uint8_t) { return false; });
     CHECK(drawn_quads(lists.opaque) ==
           std::vector<std::uint32_t>{100, 101, 102, 103, 104, 105, 106});
+}
+
+TEST_CASE("a chunk's fade rides in its origin's w: its level plus half what it has still to fade "
+          "in (RFC 0013)") {
+    using std::chrono::milliseconds;
+    using Clock = std::chrono::steady_clock;
+    std::vector<vx::render::ChunkMeshRecord> records(2);
+    for (std::size_t at = 0; at < records.size(); ++at) {
+        records[at].pos = {.x = static_cast<std::int32_t>(at), .y = 0, .z = 0};
+        records[at].count = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        records[at].range.first_quad = static_cast<std::uint32_t>(at);
+    }
+    records[1].level = 2;
+    const Clock::time_point start{};
+    records[0].appeared = start;
+    records[1].appeared = start;
+    DrawLists lists;
+    const auto fades_at = [&](Clock::time_point now, float seconds) {
+        // Every face drawn, whichever way it looks.
+        vx::render::build_draw_lists(records, {}, {}, {},
+                                     {.frustum = true, .faces = false, .merge = true}, lists, {},
+                                     {.now = now, .time = std::chrono::duration<float>(seconds)});
+        REQUIRE(lists.origins.size() == 2);
+        return std::array{lists.origins[0].w, lists.origins[1].w};
+    };
+    // As it appears, all still to fade: half in w.
+    CHECK(fades_at(start, 1.0F) == std::array{0.5F, 2.5F});
+    // Half way through a second's fade: a quarter.
+    CHECK(fades_at(start + milliseconds(500), 1.0F) == std::array{0.25F, 2.25F});
+    // Faded in, and with no fade at all: the level alone.
+    CHECK(fades_at(start + milliseconds(1'500), 1.0F) == std::array{0.0F, 2.0F});
+    CHECK(fades_at(start, 0.0F) == std::array{0.0F, 2.0F});
+    // A chunk shown at once never fades.
+    records[0].appeared.reset();
+    CHECK(fades_at(start, 1.0F) == std::array{0.0F, 2.5F});
 }

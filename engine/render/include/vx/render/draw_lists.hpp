@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <span>
@@ -52,12 +53,25 @@ struct DrawStats {
     std::uint64_t quads_facing_away = 0;
 };
 
+// RFC 0013's fade: the frame's time, and how long a chunk takes to fade in
+// from the fog color once it appears; no time fades none.
+struct ChunkFade {
+    // NOLINTNEXTLINE(readability-redundant-member-init): partial designated init
+    std::chrono::steady_clock::time_point now{};
+    std::chrono::duration<float> time{0.0F};
+};
+
+// How far a chunk has faded in (RFC 0013): 0 as it appears, 1 once the
+// fade's time has passed, linearly, and 1 for a chunk shown at once.
+[[nodiscard]] float faded_in(const ChunkMeshRecord& record, const ChunkFade& fade) noexcept;
+
 // A frame's draw lists (RFC 0007), built afresh on the main thread from the
 // arena's records.
 struct DrawLists {
     // A chunk's lowest block relative to the camera's block, one for each
-    // chunk drawn: a whole number, exact as a float within 2^24 blocks. A
-    // command's first instance picks it.
+    // chunk drawn: a whole number, exact as a float within 2^24 blocks; in w
+    // its level (RFC 0011) plus half what it has still to fade in (RFC 0013).
+    // A command's first instance picks it.
     std::vector<glm::vec4> origins;
     std::vector<VkDrawIndexedIndirectCommand> opaque;
     std::vector<VkDrawIndexedIndirectCommand> cutout;
@@ -75,9 +89,11 @@ using DrawnAt = std::function<bool(ChunkPos pos, std::uint8_t level)>;
 // that way: where finer chunks are drawn across, they are nearer the camera
 // than the face between, and only the coarse chunk's faces can show. With no
 // `drawn_at`, no set opens.
+// Each chunk's fade (RFC 0013) is from `fade`.
 void build_draw_lists(std::span<const ChunkMeshRecord> records, const glm::i64vec3& camera_block,
                       const glm::vec3& camera_fraction, const Frustum& view,
-                      const DrawSwitches& switches, DrawLists& lists, const DrawnAt& drawn_at = {});
+                      const DrawSwitches& switches, DrawLists& lists, const DrawnAt& drawn_at = {},
+                      const ChunkFade& fade = {});
 
 // Calls `draw(first, count)` for consecutive slices of `commands` commands,
 // at most `limit` a slice: a device's maxDrawIndirectCount bounds one call

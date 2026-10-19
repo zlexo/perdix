@@ -17,6 +17,7 @@
 #include <glm/vec3.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -26,10 +27,56 @@
 #include <optional>
 #include <span>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace vx::app {
+
+namespace {
+
+// A column of one level's grid, as a set's key.
+std::uint64_t column_key(std::int32_t x, std::int32_t z) noexcept {
+    return (std::uint64_t{static_cast<std::uint32_t>(x)} << 32U) | static_cast<std::uint32_t>(z);
+}
+
+using ColumnSets = std::array<std::unordered_set<std::uint64_t>, lod_levels>;
+
+// A swap's hidden chunks, as columns: each one's own, and with `around`,
+// also every column around it on the coarser levels.
+ColumnSets columns_of(std::span<const LodPos> chunks, bool around) {
+    ColumnSets columns;
+    for (const LodPos pos : chunks) {
+        for (std::uint8_t level = pos.level; level < lod_levels; ++level) {
+            const int up = level - pos.level;
+            // A column already in has its columns around it in too.
+            if (!columns.at(level).insert(column_key(pos.x >> up, pos.z >> up)).second || !around) {
+                break;
+            }
+        }
+    }
+    return columns;
+}
+
+// Whether a chunk a swap shows takes the place of something the swap hides
+// (RFC 0013): a chunk in its own column, in a column around it, or in one
+// inside it. RFC 0011's swaps change a column's level whole, and a coarse
+// level's surface can lie a row below the finer one's, so rows alone would
+// not tell.
+bool replaces(LodPos pos, const ColumnSets& hidden, const ColumnSets& hidden_around) {
+    if (hidden_around.at(pos.level).contains(column_key(pos.x, pos.z))) {
+        return true; // in its own column, or one inside it
+    }
+    for (std::uint8_t level = pos.level + 1; level < lod_levels; ++level) {
+        const int up = level - pos.level;
+        if (hidden.at(level).contains(column_key(pos.x >> up, pos.z >> up))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
 
 render::ChunkMeshUpdate chunk_update(const MeshUpdate& update) noexcept {
     ChunkMesh mesh{};
@@ -262,8 +309,13 @@ void StreamedMeshes::apply_swaps(render::ChunkUploader& uploader) {
         for (const LodPos pos : swap.hide) {
             uploader.set_shown({.x = pos.x, .y = pos.y, .z = pos.z}, pos.level, false);
         }
+        // A chunk that appears where nothing was drawn fades in from the fog
+        // color (RFC 0013); one that takes another level's place, at once.
+        const ColumnSets hidden = columns_of(swap.hide, false);
+        const ColumnSets hidden_around = columns_of(swap.hide, true);
         for (const LodPos pos : swap.show) {
-            uploader.set_shown({.x = pos.x, .y = pos.y, .z = pos.z}, pos.level, true);
+            uploader.set_shown({.x = pos.x, .y = pos.y, .z = pos.z}, pos.level, true,
+                               !replaces(pos, hidden, hidden_around));
         }
         swaps_.pop_front();
     }

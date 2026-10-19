@@ -142,6 +142,9 @@ public:
     // RFC 0013's fog: on, unless its switch turns it off, as 26.2 can turn
     // its own off for debugging.
     [[nodiscard]] bool fog() const noexcept { return fog_; }
+    // RFC 0013's fade, as 26.2's Chunk Fade option: how long a chunk takes
+    // to fade in from the fog color once it appears, 0 to 2 seconds.
+    [[nodiscard]] float chunk_fade() const noexcept { return chunk_fade_; }
 
 private:
     // A measure's last samples, in milliseconds, for its graph.
@@ -188,6 +191,7 @@ private:
     WorldReport world_;
     bool reported_ = false;
     bool fog_ = true;
+    float chunk_fade_ = 0.75F;
     // The Render Distance slider's value while it is dragged, 0 otherwise:
     // the distance changes once it is let go.
     std::int32_t dragged_distance_ = 0;

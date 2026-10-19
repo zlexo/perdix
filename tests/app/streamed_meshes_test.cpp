@@ -640,3 +640,70 @@ TEST_CASE("swaps go in order, and an unload takes its chunk out of a waiting swa
     CHECK(shown(arena, second));
     CHECK(meshes.waiting() == 0);
 }
+
+TEST_CASE("a chunk a swap shows fades in where nothing was drawn, and takes another level's "
+          "place at once (RFC 0013)") {
+    vx::MeshResultPool pool;
+    vx::app::StreamedMeshes meshes;
+    Arena arena;
+    arena.uploads.set_budget(std::chrono::hours(1));
+    arena.uploads.use_swaps();
+    constexpr std::array<std::uint32_t, 12> some{1};
+    std::uint32_t generation = 0;
+    const auto arrive = [&](vx::LodPos pos) {
+        std::vector<ToMain> mesh;
+        mesh.push_back(message_of(mesh_on(pool, pos.level, at(pos), ++generation, some)));
+        meshes.receive(mesh);
+    };
+    const auto apply = [&](std::vector<vx::LodPos> show, std::vector<vx::LodPos> hide) {
+        std::vector<ToMain> swap;
+        swap.push_back(swap_of(std::move(show), std::move(hide)));
+        meshes.receive(swap);
+        arena.offer(meshes);
+    };
+    const auto fades = [&arena](vx::LodPos pos) {
+        const vx::render::ChunkMeshRecord* record = arena.uploads.find(at(pos), pos.level);
+        REQUIRE(record != nullptr);
+        REQUIRE(record->shown);
+        return record->appeared.has_value();
+    };
+
+    // Shown where nothing was: it fades in.
+    constexpr vx::LodPos parent{.x = 1, .y = 0, .z = 0, .level = 1};
+    arrive(parent);
+    apply({parent}, {});
+    CHECK(fades(parent));
+    // Its children take its place: at once.
+    constexpr vx::LodPos west{.x = 2, .y = 1, .z = 0, .level = 0};
+    constexpr vx::LodPos east{.x = 3, .y = 1, .z = 1, .level = 0};
+    arrive(west);
+    arrive(east);
+    apply({west, east}, {parent});
+    CHECK_FALSE(fades(west));
+    CHECK_FALSE(fades(east));
+    // A coarse surface a row below the fine one's: the children shown are
+    // in another row of the hidden chunk's column, and take its place.
+    constexpr vx::LodPos low{.x = 3, .y = 0, .z = 0, .level = 1};
+    constexpr vx::LodPos row_up{.x = 6, .y = 2, .z = 1, .level = 0};
+    arrive(low);
+    apply({low}, {});
+    arrive(row_up);
+    apply({row_up}, {low});
+    CHECK_FALSE(fades(row_up));
+    // Going coarser: the parent takes its hidden children's place.
+    constexpr vx::LodPos coarse{.x = 4, .y = 0, .z = 4, .level = 1};
+    constexpr vx::LodPos fine{.x = 8, .y = 1, .z = 9, .level = 0};
+    arrive(fine);
+    apply({fine}, {});
+    arrive(coarse);
+    apply({coarse}, {fine});
+    CHECK_FALSE(fades(coarse));
+    // Shown in the same swap as an unrelated chunk is hidden: it fades in.
+    constexpr vx::LodPos far{.x = 40, .y = 0, .z = 40, .level = 0};
+    constexpr vx::LodPos elsewhere{.x = -9, .y = 0, .z = -9, .level = 2};
+    arrive(elsewhere);
+    apply({elsewhere}, {});
+    arrive(far);
+    apply({far}, {elsewhere});
+    CHECK(fades(far));
+}

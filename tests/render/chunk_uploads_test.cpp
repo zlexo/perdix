@@ -947,3 +947,50 @@ TEST_CASE("RFC 0011's open border sets go after a mesh's twelve groups, in arena
     }
     CHECK(at == record->range.first_quad + record->range.quads);
 }
+
+TEST_CASE(
+    "a chunk shown as its mesh arrives appears then, to fade in, and a newer mesh keeps that") {
+    using std::chrono::milliseconds;
+    ArenaSpace space = make_space(1'024, 3);
+    FakeArena arena(1'024);
+    ChunkUploads uploads(space);
+    const TestMesh first(some, 1);
+    const TestMesh second(few, 2);
+    const Time start{};
+    uploads.begin_frame(0, start);
+    REQUIRE(uploads.upload(first.update(here, 1), arena, start).value() == Uploaded::written);
+    REQUIRE(uploads.find(here) != nullptr);
+    CHECK(uploads.find(here)->appeared == start);
+    // A remesh a frame later: the chunk is still the one that appeared then.
+    uploads.begin_frame(1, start + milliseconds(16));
+    REQUIRE(uploads.upload(second.update(here, 2), arena, start + milliseconds(16)).value() ==
+            Uploaded::written);
+    CHECK(uploads.find(here)->appeared == start);
+}
+
+TEST_CASE("with RFC 0011's swaps, a chunk fades in from the frame a swap shows it with a fade") {
+    using std::chrono::milliseconds;
+    ArenaSpace space = make_space(1'024, 3);
+    FakeArena arena(1'024);
+    ChunkUploads uploads(space);
+    uploads.use_swaps();
+    const TestMesh mesh(some, 1);
+    const Time start{};
+    uploads.begin_frame(0, start);
+    REQUIRE(uploads.upload(mesh.update(here, 1), arena, start).value() == Uploaded::written);
+    CHECK_FALSE(uploads.find(here)->appeared.has_value()); // hidden, not yet appeared
+    uploads.begin_frame(1, start + milliseconds(16));
+    uploads.set_shown(here, 0, true, true);
+    CHECK(uploads.find(here)->appeared == start + milliseconds(16));
+    // Shown again without a fade, as a level swap shows it: at once.
+    uploads.set_shown(here, 0, false);
+    uploads.set_shown(here, 0, true, false);
+    CHECK_FALSE(uploads.find(here)->appeared.has_value());
+    // Shown before its mesh came back after an unload: it appears with it.
+    uploads.remove(here);
+    uploads.begin_frame(2, start + milliseconds(32));
+    REQUIRE(uploads.upload(mesh.update(here, 2), arena, start + milliseconds(32)).value() ==
+            Uploaded::written);
+    CHECK(uploads.find(here)->shown);
+    CHECK(uploads.find(here)->appeared == start + milliseconds(32));
+}

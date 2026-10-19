@@ -506,7 +506,8 @@ draw_frame(vx::render::Renderer& renderer, vx::app::Overlay& overlay, const vx::
                             .tags = std::span(figures.tags).first(figures.tags_shown),
                             .overlay = shown,
                             .chunk_changes = &meshes,
-                            .fog = fog});
+                            .fog = fog,
+                            .chunk_fade_seconds = overlay.chunk_fade()});
 }
 
 // With validation on, a run that broke Vulkan's rules fails, so a smoke run

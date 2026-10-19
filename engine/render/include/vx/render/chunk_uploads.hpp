@@ -67,6 +67,10 @@ struct ChunkMeshRecord {
     // back to back after the twelve groups.
     std::array<std::uint16_t, 12> border{};
     std::array<std::uint16_t, 12> open{};
+    // RFC 0013's fade: the frame it appeared where nothing was drawn, from
+    // which it fades in from the fog color; none for a chunk shown at once,
+    // as a level swap shows one.
+    std::optional<std::chrono::steady_clock::time_point> appeared = std::nullopt;
 };
 
 // Where uploads put quads: the arena's buffer, or a stand-in in tests.
@@ -180,9 +184,12 @@ public:
     // An edit's remeshes (RFC 0005), all in this frame whatever the budget,
     // so no frame shows some new and some old; or none of them, `full`, when
     // a range does not fit for one. A writer's error may leave it partly
-    // written.
-    [[nodiscard]] Result<Uploaded> upload_batch(std::span<const ChunkMeshUpdate> batch,
-                                                QuadWriter& writer);
+    // written. A chunk shown for the first time appears at `appearing`
+    // (RFC 0013), or when the frame began: a batch set outside any frame
+    // gives its own time.
+    [[nodiscard]] Result<Uploaded>
+    upload_batch(std::span<const ChunkMeshUpdate> batch, QuadWriter& writer,
+                 std::optional<Clock::time_point> appearing = std::nullopt);
     // The chunk at `pos` on `level`'s grid unloaded: its mesh goes.
     void remove(ChunkPos pos, std::uint8_t level = 0);
     // RFC 0007's compaction: the highest meshes move down, each into the
@@ -208,7 +215,11 @@ public:
     void use_swaps() noexcept { swaps_ = true; }
     // A swap shows or hides the chunk at `pos` on `level`: its mesh now, and
     // every mesh it gets while shown, through an empty one and an unload.
-    void set_shown(ChunkPos pos, std::uint8_t level, bool shown);
+    // Shown with `fade`, it fades in from this frame (RFC 0013), as a chunk
+    // that appears where nothing was drawn; without, at once.
+    void set_shown(ChunkPos pos, std::uint8_t level, bool shown, bool fade = false);
+    // When this frame began.
+    [[nodiscard]] Clock::time_point frame_start() const noexcept { return frame_start_; }
 
     [[nodiscard]] const ChunkMeshRecord* find(ChunkPos pos, std::uint8_t level = 0) const noexcept;
     [[nodiscard]] std::span<const ChunkMeshRecord> records() const noexcept { return records_; }
@@ -224,9 +235,10 @@ private:
     // update's.
     [[nodiscard]] std::uint32_t fresh_quads(std::span<const ChunkMeshUpdate> batch,
                                             std::span<const std::uint32_t> quads) const noexcept;
-    // Writes the mesh into `range`, which the update now holds.
+    // Writes the mesh into `range`, which the update now holds; a chunk
+    // shown for the first time appears at `appearing`.
     [[nodiscard]] Result<Uploaded> place(const ChunkMeshUpdate& update, const ArenaRange& range,
-                                         QuadWriter& writer);
+                                         QuadWriter& writer, Clock::time_point appearing);
     void empty(const ChunkMeshUpdate& update);
     void erase(std::uint32_t index);
     // Where each record's range starts, unsorted, into by_offset_.

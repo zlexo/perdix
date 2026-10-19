@@ -493,9 +493,12 @@ void Overlay::draw_overlay(render::Renderer& renderer, const render::Camera& cam
         draw_render_distance(distance);
         draw_streaming();
         ImGui::Checkbox("View bobbing", &bobbing);
-        // RFC 0013's fog, off to see the terrain's own colors.
+        // RFC 0013's fog, off to see the terrain's own colors, and how long
+        // a chunk takes to fade in from it, 26.2's Chunk Fade.
         ImGui::SameLine();
         ImGui::Checkbox("Fog", &fog_);
+        ImGui::SliderFloat("Chunk fade", &chunk_fade_, 0.0F, 2.0F, "%.2f s",
+                           ImGuiSliderFlags_AlwaysClamp);
         ImGui::Separator();
         draw_validation(renderer.context());
     }

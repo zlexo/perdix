@@ -111,6 +111,10 @@ struct FrameInputs {
     ChunkChanges* chunk_changes = nullptr;
     // RFC 0013's fog over the chunks and bodies; none leaves them clear.
     std::optional<Fog> fog = std::nullopt;
+    // How long a chunk takes to fade in from the fog color once it appears
+    // where nothing was drawn (RFC 0013; 26.2's Chunk Fade); 0 for none. Only
+    // with fog.
+    float chunk_fade_seconds = 0.75F;
 };
 
 // How block textures are filtered (RFC 0004).

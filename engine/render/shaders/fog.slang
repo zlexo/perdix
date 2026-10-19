@@ -34,15 +34,23 @@ float3 decode(float3 encoded) {
     return select(encoded <= 0.04045, encoded / 12.92, pow((encoded + 0.055) / 1.055, 2.4));
 }
 
-// `color`, in linear light, under the frame's fog at `distances`.
-public float3 apply_fog(Fog* fog, float3 color, float2 distances) {
+// `color`, in linear light, under the frame's fog at `distances`, having
+// faded in from the fog color by `faded_in`, 0 to 1, as 26.2's sections do
+// (its ChunkVisibility), before the fog.
+public float3 apply_fog(Fog* fog, float3 color, float2 distances, float faded_in) {
     const Fog frame = fog[0];
     if (frame.color.w == 0.0) {
         return color;
     }
+    const float3 faded = lerp(frame.color.rgb, encode(color), faded_in);
     const float amount = max(ramp(distances.x, 0.0, frame.ramps.x),
                              ramp(distances.y, frame.ramps.y, frame.ramps.z));
-    return decode(lerp(encode(color), frame.color.rgb, amount));
+    return decode(lerp(faded, frame.color.rgb, amount));
+}
+
+// `color`, in linear light, under the frame's fog at `distances`.
+public float3 apply_fog(Fog* fog, float3 color, float2 distances) {
+    return apply_fog(fog, color, distances, 1.0);
 }
 
 // 26.2's daytime sky where a view ray rises by `rise`, the sine of its
