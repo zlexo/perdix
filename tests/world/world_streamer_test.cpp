@@ -887,6 +887,52 @@ TEST_CASE("fed with room for a few jobs, the streamer queues no more, and still 
     CHECK(own->state == ChunkState::complete);
 }
 
+TEST_CASE("pins for another level's mesh job hold the chunks that are ready, and say which") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    vx::JobSystem jobs({});
+    vx::WakeEvent wake;
+    WorldStreamer streamer(generator, jobs, wake, small);
+    streamer.set_camera(above_hills);
+    settle(streamer, jobs);
+    // A chunk with blocks, a ready one, one with a record that is not ready
+    // (planned around the loaded ones), and one with no record.
+    std::optional<ChunkPos> with_blocks;
+    std::optional<ChunkPos> planned;
+    const vx::ChunkRecords& records = streamer.records();
+    for (std::uint32_t index = 0; index < records.end_index(); ++index) {
+        if (!records.live(index)) {
+            continue;
+        }
+        const ChunkRecord& record = records[index];
+        if (!with_blocks && record.blocks != nullptr) {
+            with_blocks = record.pos;
+        }
+        if (!planned && !vx::counts_as_ready(record.state)) {
+            planned = record.pos;
+        }
+    }
+    REQUIRE(with_blocks.has_value());
+    REQUIRE(planned.has_value());
+    const ChunkPos nowhere{.x = above_hills.x + 40, .y = 0, .z = 0};
+    const std::array<ChunkPos, 4> positions{*with_blocks, above_hills, *planned, nowhere};
+    std::uint32_t ready = 0;
+    vx::JobRecord* pins = streamer.pin_chunks(positions, ready);
+    REQUIRE(pins != nullptr);
+    CHECK(ready == 0b0011U);
+    CHECK(pins->chunks[0] == streamer.find(*with_blocks)->blocks);
+    const ChunkRecord* own = streamer.find(above_hills);
+    CHECK(pins->chunks[1] == own->blocks);
+    if (own->blocks == nullptr) {
+        CHECK(pins->uniform[1] == own->uniform);
+    }
+    CHECK(pins->chunks[2] == nullptr);
+    CHECK(pins->chunks[3] == nullptr);
+    // The blocks stay pinned until the record goes back.
+    CHECK(streamer.pins() > 0);
+    streamer.release(*pins);
+    CHECK(streamer.pins() == 0);
+}
+
 TEST_CASE("a mesh job's pins hold a complete chunk's neighborhood as it was") {
     const vx::PlaceholderGenerator generator(0x5EED, blocks);
     vx::JobSystem jobs({});

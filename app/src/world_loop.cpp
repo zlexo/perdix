@@ -56,6 +56,83 @@ ChunkPos on_level(ChunkPos chunk, std::uint8_t level) noexcept {
     return {.x = chunk.x >> level, .y = chunk.y >> level, .z = chunk.z >> level};
 }
 
+// RFC 0011's border sets. A chunk's side along `axis` (0, 1, 2 for x, y, z)
+// on its parent's boundary: the positive one where its position on the axis
+// is odd, since its parent holds positions 2p and 2p + 1.
+std::int32_t& coordinate(ChunkPos& pos, int axis) noexcept {
+    if (axis == 0) {
+        return pos.x;
+    }
+    return axis == 1 ? pos.y : pos.z;
+}
+
+std::int32_t along(ChunkPos pos, int axis) noexcept {
+    return coordinate(pos, axis);
+}
+
+Face outer_side(ChunkPos pos, int axis) noexcept {
+    constexpr std::array<std::array<Face, 2>, 3> sides = {
+        {{Face::neg_x, Face::pos_x}, {Face::neg_y, Face::pos_y}, {Face::neg_z, Face::pos_z}}};
+    return sides.at(static_cast<std::size_t>(axis)).at(along(pos, axis) & 1);
+}
+
+// The chunk one level coarser across that side: the parent's neighbor.
+ChunkPos coarser_across(ChunkPos pos, int axis) noexcept {
+    ChunkPos up{.x = pos.x >> 1, .y = pos.y >> 1, .z = pos.z >> 1};
+    const std::int32_t step = (along(pos, axis) & 1) != 0 ? 1 : -1;
+    coordinate(up, axis) += step;
+    return up;
+}
+
+// Where the chunk's face starts on the coarser chunk's face, in its cells,
+// along copy_face's axes: z then y on an x face, x then z on a y face, x then
+// y on a z face. Half a coarser chunk is 16 of its cells.
+std::array<int, 2> face_offset(ChunkPos pos, int axis) noexcept {
+    const auto half = [](std::int32_t coordinate) { return (coordinate & 1) * (chunk_size / 2); };
+    if (axis == 0) {
+        return {half(pos.z), half(pos.y)};
+    }
+    if (axis == 1) {
+        return {half(pos.x), half(pos.z)};
+    }
+    return {half(pos.x), half(pos.y)};
+}
+
+// RFC 0011's border sets of a mesh job's chunk at `pos`: the main mesh's
+// counts toward each side on the parent's boundary, then, for each side
+// whose coarser chunk `coarser` pins (its bit in `sides`), the second set,
+// appended to `joined`.
+void add_border_sets(const ChunkMesh& mesh, const JobRecord* coarser, std::uint8_t sides,
+                     ChunkPos pos, std::span<const BlockVisual> visuals, MeshOptions options,
+                     MeshWorkerScratch& scratch, MeshUpdate& update) {
+    for (int axis = 0; axis < 3; ++axis) {
+        const auto side = static_cast<std::size_t>(outer_side(pos, axis));
+        for (std::size_t pass = 0; pass < 2; ++pass) {
+            update.border.at((static_cast<std::size_t>(axis) * 2) + pass) =
+                mesh.border.at(pass).at(side);
+        }
+    }
+    for (int axis = 0; axis < 3; ++axis) {
+        const auto at = static_cast<std::size_t>(axis);
+        if ((sides & (1U << at)) == 0) {
+            continue;
+        }
+        // A uniform chunk is made here, from its state, with no allocation.
+        const Version<ChunkStorage>* blocks = coarser->chunks.at(at);
+        const ChunkStorage uniform_across = ChunkStorage::uniform(coarser->uniform.at(at));
+        const ChunkStorage& across = blocks != nullptr ? blocks->value() : uniform_across;
+        const Face side = outer_side(pos, axis);
+        coarser_border(across, side, face_offset(pos, axis), scratch.padded);
+        const ChunkMesh border = mesh_border(scratch.padded, visuals, scratch.mesh, side, options);
+        for (std::size_t pass = 0; pass < 2; ++pass) {
+            const std::span<const Quad> set = border.range(static_cast<Pass>(pass), side);
+            scratch.joined.insert(scratch.joined.end(), set.begin(), set.end());
+            update.coarser.at((at * 2) + pass) = static_cast<std::uint32_t>(set.size());
+        }
+        update.coarser_sides |= static_cast<std::uint8_t>(1U << at);
+    }
+}
+
 } // namespace
 
 ChunkSight chunk_sight(const Viewer& viewer, ChunkPos pos, double near,
@@ -105,6 +182,7 @@ void WorldLoop::MeshJob::operator()(JobContext& job) const noexcept {
     const ChunkMesh mesh = mesh_chunk(scratch.padded, context->visuals, scratch.mesh, options);
     MeshResult result;
     result.pins = pins;
+    result.coarser = coarser;
     result.update.pos = pos;
     result.update.level = level;
     result.update.load_id = pins->load_id;
@@ -115,10 +193,17 @@ void WorldLoop::MeshJob::operator()(JobContext& job) const noexcept {
                 static_cast<std::uint32_t>(mesh.ranges[pass][face].size());
         }
     }
+    // The main mesh's quads first: its border sets, against the coarser
+    // chunks that came, reuse the scratch.
+    std::vector<Quad>& joined = scratch.joined;
     const std::span<const Quad> quads = mesh.all();
-    if (!quads.empty()) {
-        result.update.quads = context->pool->allocate(quads.size_bytes());
-        std::memcpy(result.update.quads.data(), quads.data(), quads.size_bytes());
+    joined.assign(quads.begin(), quads.end());
+    add_border_sets(mesh, coarser, coarser_sides, pos, context->visuals, options, scratch,
+                    result.update);
+    if (!joined.empty()) {
+        const std::size_t bytes = joined.size() * sizeof(Quad);
+        result.update.quads = context->pool->allocate(bytes);
+        std::memcpy(result.update.quads.data(), joined.data(), bytes);
     }
     context->results->push(std::move(result));
 }
@@ -212,13 +297,16 @@ WorldLoop::~WorldLoop() {
         for (const MeshRecord& record : level->meshes) {
             if (record.job && jobs_->cancel(record.job) && record.pins != nullptr) {
                 level->streamer.release(*record.pins);
+                release_coarser(*level, record.coarser);
             }
         }
         level->streamer.cancel_queued();
     }
     jobs_->wait_until_idle();
     mesh_results_.drain([this](MeshResult&& result) {
-        levels_.at(result.update.level)->streamer.release(*result.pins);
+        Level& level = *levels_.at(result.update.level);
+        level.streamer.release(*result.pins);
+        release_coarser(level, result.coarser);
     });
 }
 
@@ -726,6 +814,7 @@ void WorldLoop::drop_mesh(Level& level, std::uint32_t index, ChunkPos pos) {
     }
     if (record.job && jobs_->cancel(record.job)) {
         level.streamer.release(*record.pins);
+        release_coarser(level, record.coarser);
         --meshes_in_flight_;
     }
     if (record.forwarded != 0) {
@@ -749,6 +838,7 @@ void WorldLoop::drop_mesh(Level& level, std::uint32_t index, ChunkPos pos) {
 void WorldLoop::integrate_mesh(MeshResult& result) {
     Level& level = *levels_.at(result.update.level);
     level.streamer.release(*result.pins);
+    release_coarser(level, result.coarser);
     --meshes_in_flight_;
     ++meshes_made_;
     const std::optional<std::uint32_t> found = level.streamer.records().find(result.update.pos);
@@ -764,6 +854,7 @@ void WorldLoop::integrate_mesh(MeshResult& result) {
         record.generation == result.update.generation) {
         record.job = {};
         record.pins = nullptr;
+        record.coarser = nullptr;
         if (record.dirty) {
             record.dirty = false;
             record.state = MeshRecord::State::sent; // so queue_mesh queues it
@@ -1130,6 +1221,13 @@ void WorldLoop::skip_mesh(Level& level, std::uint32_t index) {
                        .quads = {}});
 }
 
+void WorldLoop::release_coarser(const Level& level, JobRecord* coarser) noexcept {
+    if (coarser != nullptr) {
+        assert(std::size_t{level.level} + 1 < levels_.size());
+        levels_[level.level + 1U]->streamer.release(*coarser);
+    }
+}
+
 bool WorldLoop::start_mesh(Level& level, std::uint32_t index, std::uint32_t key) {
     MeshRecord& record = level.record(index);
     const ChunkPos pos = level.streamer.records()[index].pos;
@@ -1144,18 +1242,33 @@ bool WorldLoop::start_mesh(Level& level, std::uint32_t index, std::uint32_t key)
     // apart for them to read as contact shadows (RFC 0011).
     MeshOptions options = meshing_;
     options.occlusion = options.occlusion && level.level == 0;
-    record.job = jobs_->submit(priority, MeshJob{.context = &context_,
-                                                 .pins = pins,
-                                                 .pos = pos,
-                                                 .level = level.level,
-                                                 .generation = generation,
-                                                 .options = options});
+    // RFC 0011's border sets: below the top level, the coarser chunks across
+    // the chunk's three sides on its parent's boundary, those ready, pinned
+    // from the next level's streamer. One not ready yet gets no second set.
+    JobRecord* coarser = nullptr;
+    std::uint32_t ready = 0;
+    if (std::size_t{level.level} + 1 < levels_.size()) {
+        const std::array<ChunkPos, 3> across{coarser_across(pos, 0), coarser_across(pos, 1),
+                                             coarser_across(pos, 2)};
+        coarser = levels_[level.level + 1U]->streamer.pin_chunks(across, ready);
+    }
+    record.job =
+        jobs_->submit(priority, MeshJob{.context = &context_,
+                                        .pins = pins,
+                                        .pos = pos,
+                                        .level = level.level,
+                                        .generation = generation,
+                                        .options = options,
+                                        .coarser = coarser,
+                                        .coarser_sides = static_cast<std::uint8_t>(ready)});
     if (!record.job) {
         level.streamer.release(*pins);
+        release_coarser(level, coarser);
         return false;
     }
     ++next_generation_;
     record.pins = pins;
+    record.coarser = coarser;
     record.generation = generation;
     record.state = MeshRecord::State::meshing;
     ++meshes_in_flight_;
