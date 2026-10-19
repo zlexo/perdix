@@ -278,4 +278,59 @@ All settled on 2026-10-02: every recommendation below was accepted.
 
 ## As built
 
-Not built yet.
+Pull request plan item 2, the ThreadSanitizer job (#236), landed as one pull request: the `linux-tsan` preset and its CI job, with a planted race.
+
+- **The planted race stays in the build:** the TSan build alone also builds a program in which two threads add to one counter, and its test passes only when ThreadSanitizer reports the race, so the job cannot stay green by no longer finding races. The preset is Clang 18 with `-fsanitize=thread` and `-O1`; the job runs every test but the Vulkan ones.
+- **ThreadSanitizer cannot run on the reference machine:** Apple Clang 17's and Homebrew Clang 20's builds crash before `main`. The Linux job is the only race check, and `scripts/ci-local.sh` says so. It has not run yet: GitHub Actions was blocked by billing while M3 was built. Locally, the threaded code relies on stress tests and on plain mutex and condition variable designs.
+
+Item 3, the thread helpers and the deterministic job system (#237), landed as three pull requests: thread names, QoS and `cache_line`; `JobSystem` in its deterministic mode; its tests and benchmark.
+
+- **The helpers are as designed:** `cache_line` is 128 bytes, `set_thread_name` is cut to 15 characters on Linux, and `set_thread_qos` does nothing outside macOS.
+- **Each level is a heap ordered by key, then by arrival, and every slot keeps its place in its heap,** so a cancel takes a job out where it is. Background jobs that have waited a second are found through a list kept oldest first, on a clock tests set. With no workers, `run_until_idle` runs jobs on the calling thread, one lock a job.
+- **Submitting and running an empty job takes 56 to 60 ns** (1,000 jobs with keys in random order; release build, reference machine), against the budget of 100 ns. With other builds running, an interleaved comparison measured about 100 ns both with item 4's workers built in and without them (medians of 99 and 104 ns).
+- **Every planted mutant fails a test** but a generation wrapping past zero, which takes four billion jobs on one slot. The tests cancel queued, running, finished, empty and stale handles, fill the slot table, age jobs, run 600 random keys in order with every third canceled from the middle of a heap, and check that the `Job` concept refuses callables that are large, owning, throwing, over-aligned or not copy-constructible.
+
+Item 4, the workers (#238), landed as three pull requests: workers that sleep, wake, change class and shut down; the stress test, with the review's tests; the two benchmarks.
+
+- **Each worker sleeps on a condition variable of its own,** and each queued job wakes one sleeper. Workers run at utility, an urgent job at user-initiated, and everything at user-initiated while streaming catches up, changing class between jobs.
+- **Only a sleeping utility worker is raised for an urgent job,** through `pthread_override_qos_class_start_np` until it starts a job, and the worker ends the override itself. The review found that starting an override allocates inside libpthread: it is the one allocation a submit can make, where the RFC allows none. It also found the raise leaking when another worker took the job or a cancel removed it, and no timeout for tests that fail by hanging; such a worker now ends its raise before it sleeps again, and the core tests time out after five minutes.
+- **The stress test:** four threads submit 25,000 jobs each at random levels and keys and cancel random earlier ones, while six workers run them; every job runs once or is canceled once. It passed 40 runs in a row.
+- **Six workers run 2.0 to 2.25 million empty jobs a second,** submitting included (budget 1 million), and a sleeping worker starts an urgent job in 30 to 35 µs at the 99th percentile (budget 50 µs); release build, reference machine, other builds running.
+- **The app sets no `LSSupportsGameMode` key:** it is a bare executable, without the bundle and `Info.plist` that would carry it.
+
+Item 5, `WakeEvent`, `Inbox` and the `MeshResultPool` (#239), landed as three pull requests: wake events and inboxes; the pool; a test of frees during allocations.
+
+- **The results inboxes reserve two messages per job slot, not one,** since a slot is free again before its result is drained.
+- **The pool's size classes are powers of two from 4 KiB to 2 MiB,** RFC 0003's worst mesh rounded up, each with its own lock and free list. Freeing never allocates: a cached buffer's first bytes link it to the next. Under AddressSanitizer a cached buffer is poisoned until it is handed out again.
+- **The review's blocker was a counter in a test,** `size_t += c ? 1 : 0`, which GCC's `-Wsign-conversion` rejects and Clang does not; the shape had come back nine times, and the local checks now search for it. The review also found no test freeing buffers while others are allocated, which four mutants survived, and no poisoning of cached buffers; both were added.
+
+Item 6, Tracy (#240), landed after item 8, so that the world thread's ticks and plots could land whole, as three pull requests: job zones, thread names and the queue lock; the streamer's jobs; ticks, plots and mesh zones.
+
+- **A job's zone is named by its type's `profile_name`** (Surface, Plan, Generate, Mesh), or Job without one; a name that is not a C string fails to compile. A job's chunk or column is formatted on the stack, only inside a zone. Threads are named Main, World and Worker 0 upward.
+- **The scheduler's lock is a `TracyLockable`,** its condition variables then `condition_variable_any`. The review found it costs about 29 MB a second of capture at 120,000 jobs a second; whether it stays is left to item 9.
+- **Ticks are a discontinuous frame set of their own,** "Tick", each with a Tick zone. Each plot is taken where a pass already reads its number: the three inboxes' depths before each drain, pins, copies on write as a running total, meshes not uploaded, and the urgent and normal levels' queued jobs, with the background level once a tick. The review found the first version plotting everything at the tick, after a pass had emptied the inboxes.
+- **Checked headless** with Tracy 0.13.1's `tracy-capture` and `tracy-csvexport` on the threaded world loop test, in the profiling build with two workers: 185 Surface, 228 Plan, 169 Generate and 56 Mesh zones, each with its position, 10 Tick zones and 250 samples of each plot.
+
+Item 7, chunk versions and pins (#243), landed as three pull requests: `Versions<T>`; job records; the property test.
+
+- **`Versions<T>` holds blocks and plans alike:** it makes a version current, pins and unpins it, copies it on a write while it is pinned (`clone()` for chunks), and frees it at once when it is neither current nor pinned, so block data returns to RFC 0002's pool when the last job reading it reports. Versions live at stable addresses, in blocks of 256 reused through a free list.
+- **Job records come from a pool sized to the job slots** and name what each job pinned: a mesh job's 27 chunk versions, or a uniform neighbor's state, and a build job's 27 plans, with the chunk's load id and the job's sequence. A completion, a successful cancel or a failed submit releases exactly those. RFC 0008's parameter snapshot joins the record when it exists.
+- **The property test runs 4,000 random steps over six chunks** (loads, edits, unloads, mesh jobs, runs, cancels and completions) against a model: after each step every version lives exactly while it is current or pinned, and every job read the blocks it was handed. All 15 planted mutants fail it or another test.
+
+Item 8, the world thread and its loop (#245), landed as six pull requests: collision against streamed chunks; what the loop needs of the streamer; the loop; its tests; edits and their batches; backpressure, ticks, catching up and `WorldThread`.
+
+- **The loop is built headless in `app`'s `vx_app_world` library** (decided 2026-10-09): `WorldLoop`, and `WorldThread` to run it at user-interactive QoS. The app first ran it with RFC 0006's item 7, when the player moved onto its ticks; to RFC 0010's moves a chunk not ready is one solid cube. The meshing scratch, RFC 0003's padded chunk and the mesher's, is about 1.7 MiB a worker and belongs to the loop; the streamer keeps the generation scratch.
+- **Backpressure counts the meshes sent alone that the main thread is done with,** uploaded or dropped, clamped at those sent; streaming mesh jobs wait while more than 512 are outstanding, and an edit's never do. The review found that counting a batch's meshes could wrap the count to 1.8e19, and that never counting dropped meshes could hold streaming back for good.
+- **An edit's batch takes in any pending batch one of its chunks is in,** and goes once every member has a mesh started after the edit; a member that unloads leaves it. So a merged batch can exceed RFC 0007's 8 meshes, and an edit on every pass would hold a batch back: fine at a player's rate, to revisit once ticks edit.
+- **Ticks come 20 a second on an injectable clock;** ticks that fall due run back to back, those more than a second behind are skipped, and none runs after a stop. Each tick checks the near cylinder, and while a chunk of it has no mesh sent, the workers run at user-initiated.
+- **With 0, 1 and 6 workers, loading, leaving, coming back and editing end with the same chunks and meshes,** each mesh equal to what RFC 0003's mesher makes from the loop's blocks: the review had found eight wrong-mesh mutants passing tests that compared no mesh contents. It also found `settle()` hanging after a stop, and shutdown running 185 queued generator calls; shutdown now cancels what is queued first.
+- **The region at view distance 32 settled from nothing in 0.26 s;** an idle pass took about 0 µs, and a pass walking 8,900 held meshes 7 µs (release build, reference machine, six workers).
+- **The messages follow the table above where their work has landed:** an edit carries a block and its state until M5 brings the view ray and the targeted block. RFC 0007's arena signal reached the world thread with RFC 0006's item 8 (#256): the frames counted full since the last report and whether the arena is full now. The player's keys and landings, flythrough samples, the merge switch and the view distance joined with later items.
+
+Item 9, the worker sweep and the 10-minute run (#258): the tools landed as four pull requests: workers at one QoS class (#356); `--workers`, `--worker-qos` and the ten-minute flythrough (#357); `scripts/worker-sweep.sh` (#358), its runs interleaved (#382). The sweep itself was stopped on 2026-10-19 after its first three runs: the owner chose features over tuning defaults that already work.
+
+- **The defaults stay the design's:** the cores less two (6 on the reference machine) at `switching`. The three runs that finished, one worker at each mode (release build, view distance 32, on battery with the owner using the machine), drew frames at 3.5 to 3.8 ms at the median in every phase and loaded in 1.1 to 1.3 s, so nothing waits on the tuning. Their 99th percentiles, 4 to 23 ms, moved with what else the machine was doing.
+- **Not measured with it:** meshing throughput with all workers against one (the budget asks at least 4 times), and the 10-minute run. `scripts/worker-sweep.sh` and `--flythrough=long` stay for when a change needs the curve or the heat.
+- **The scheduler's lock stays a `TracyLockable`, in the profiling build only** (item 6's open point): release and debug builds take a plain `std::mutex` and `std::condition_variable`, so the capture cost the review found, about 29 MB a second at 120,000 jobs a second, is paid only where the lock's waits are wanted in the timeline.
+
+GitHub Actions was blocked by billing while M3 was built, so these pull requests merged on local runs of CI's jobs; GCC, AddressSanitizer, ThreadSanitizer and lavapipe have not built them yet.
