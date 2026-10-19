@@ -26,29 +26,30 @@ bool within(ColumnPos center, ColumnPos column, std::int32_t radius) noexcept {
     return (dx * dx) + (dz * dz) <= std::int64_t{radius} * radius;
 }
 
-bool in_world(std::int64_t coordinate) noexcept {
-    return coordinate >= lowest_chunk && coordinate <= highest_chunk;
+bool in_world(std::int64_t coordinate, std::uint8_t level) noexcept {
+    return coordinate >= lowest_chunk_at(level) && coordinate <= highest_chunk_at(level);
 }
 
-bool in_world(ColumnPos column) noexcept {
-    return in_world(column.x) && in_world(column.z);
+bool in_world(ColumnPos column, std::uint8_t level) noexcept {
+    return in_world(column.x, level) && in_world(column.z, level);
 }
 
-// The chunks `low` to `high` that the world holds; empty when none.
-ChunkRange world_range(std::int64_t low, std::int64_t high) noexcept {
-    const std::int64_t min_y = std::max<std::int64_t>(low, lowest_chunk);
-    const std::int64_t max_y = std::min<std::int64_t>(high, highest_chunk);
+// The chunks `low` to `high` that the world holds at `level`; empty when
+// none.
+ChunkRange world_range(std::int64_t low, std::int64_t high, std::uint8_t level) noexcept {
+    const std::int64_t min_y = std::max<std::int64_t>(low, lowest_chunk_at(level));
+    const std::int64_t max_y = std::min<std::int64_t>(high, highest_chunk_at(level));
     if (min_y > max_y) {
         return {};
     }
     return {.min_y = static_cast<std::int32_t>(min_y), .max_y = static_cast<std::int32_t>(max_y)};
 }
 
-ChunkRange widened(ChunkRange range, std::int32_t by) noexcept {
+ChunkRange widened(ChunkRange range, std::int32_t by, std::uint8_t level) noexcept {
     if (range.empty()) {
         return {};
     }
-    return world_range(std::int64_t{range.min_y} - by, std::int64_t{range.max_y} + by);
+    return world_range(std::int64_t{range.min_y} - by, std::int64_t{range.max_y} + by, level);
 }
 
 ColumnPos offset(ColumnPos column, std::int32_t dx, std::int32_t dz) noexcept {
@@ -116,25 +117,34 @@ std::int64_t ColumnRuns::chunks() const noexcept {
 Region Region::grown(std::int32_t by) const noexcept {
     RegionSettings settings = settings_;
     settings.view_distance += by;
-    settings.near_distance += by;
+    // No cylinder stays none: a ring's -1 grows to nothing.
+    settings.near_distance = settings.near_distance < 0 ? -1 : settings.near_distance + by;
     settings.near_height += by;
+    // A ring's hole shrinks as the ring grows; past nothing it is gone.
+    settings.inner_distance = settings.inner_distance < 0 ? -1 : settings.inner_distance - by;
     return {camera_, settings};
+}
+
+bool Region::in_terrain(ColumnPos column) const noexcept {
+    const ColumnPos center{.x = camera_.x, .z = camera_.z};
+    return within(center, column, settings_.view_distance) &&
+           !within(center, column, settings_.inner_distance);
 }
 
 bool Region::column_drawn(ColumnPos column) const noexcept {
     const ColumnPos center{.x = camera_.x, .z = camera_.z};
-    return in_world(column) && (within(center, column, settings_.view_distance) ||
-                                within(center, column, settings_.near_distance));
+    return in_world(column, settings_.level) &&
+           (in_terrain(column) || within(center, column, settings_.near_distance));
 }
 
 bool Region::column_loaded(ColumnPos column) const noexcept {
-    if (!in_world(column)) {
+    if (!in_world(column, settings_.level)) {
         return false;
     }
     for (std::int32_t dz = -1; dz <= 1; ++dz) {
         for (std::int32_t dx = -1; dx <= 1; ++dx) {
             const ColumnPos near = offset(column, dx, dz);
-            if (in_world(near) && column_drawn(near)) {
+            if (in_world(near, settings_.level) && column_drawn(near)) {
                 return true;
             }
         }
@@ -143,13 +153,13 @@ bool Region::column_loaded(ColumnPos column) const noexcept {
 }
 
 bool Region::column_planned(ColumnPos column) const noexcept {
-    if (!in_world(column)) {
+    if (!in_world(column, settings_.level)) {
         return false;
     }
     for (std::int32_t dz = -1; dz <= 1; ++dz) {
         for (std::int32_t dx = -1; dx <= 1; ++dx) {
             const ColumnPos near = offset(column, dx, dz);
-            if (in_world(near) && column_loaded(near)) {
+            if (in_world(near, settings_.level) && column_loaded(near)) {
                 return true;
             }
         }
@@ -159,36 +169,36 @@ bool Region::column_planned(ColumnPos column) const noexcept {
 
 ColumnRuns Region::drawn(ColumnPos column, ChunkRange band) const noexcept {
     ColumnRuns runs;
-    if (!in_world(column)) {
+    if (!in_world(column, settings_.level)) {
         return runs;
     }
     const ColumnPos center{.x = camera_.x, .z = camera_.z};
-    if (within(center, column, settings_.view_distance)) {
-        runs.add(world_range(band.min_y, band.max_y));
+    if (in_terrain(column)) {
+        runs.add(world_range(band.min_y, band.max_y, settings_.level));
     }
     if (within(center, column, settings_.near_distance)) {
         runs.add(world_range(std::int64_t{camera_.y} - settings_.near_height,
-                             std::int64_t{camera_.y} + settings_.near_height));
+                             std::int64_t{camera_.y} + settings_.near_height, settings_.level));
     }
     return runs;
 }
 
 ColumnRuns Region::loaded(ColumnPos column, std::span<const ChunkRange, 9> bands) const noexcept {
     ColumnRuns runs;
-    if (!in_world(column)) {
+    if (!in_world(column, settings_.level)) {
         return runs;
     }
     for (std::int32_t dz = -1; dz <= 1; ++dz) {
         for (std::int32_t dx = -1; dx <= 1; ++dx) {
             const ColumnPos near = offset(column, dx, dz);
-            if (!in_world(near)) {
+            if (!in_world(near, settings_.level)) {
                 continue;
             }
             const std::size_t at =
                 (static_cast<std::size_t>(dz + 1) * 3) + static_cast<std::size_t>(dx + 1);
             const ColumnRuns near_runs = drawn(near, bands[at]);
             for (const ChunkRange& run : near_runs.runs()) {
-                runs.add(widened(run, 1));
+                runs.add(widened(run, 1, settings_.level));
             }
         }
     }
@@ -197,13 +207,13 @@ ColumnRuns Region::loaded(ColumnPos column, std::span<const ChunkRange, 9> bands
 
 ColumnRuns Region::planned(ColumnPos column, std::span<const ChunkRange, 25> bands) const noexcept {
     ColumnRuns runs;
-    if (!in_world(column)) {
+    if (!in_world(column, settings_.level)) {
         return runs;
     }
     for (std::int32_t dz = -1; dz <= 1; ++dz) {
         for (std::int32_t dx = -1; dx <= 1; ++dx) {
             const ColumnPos near = offset(column, dx, dz);
-            if (!in_world(near)) {
+            if (!in_world(near, settings_.level)) {
                 continue;
             }
             // The 3 by 3 bands around the neighbor, out of the 5 by 5.
@@ -219,7 +229,7 @@ ColumnRuns Region::planned(ColumnPos column, std::span<const ChunkRange, 25> ban
             }
             const ColumnRuns near_runs = loaded(near, around);
             for (const ChunkRange& run : near_runs.runs()) {
-                runs.add(widened(run, 1));
+                runs.add(widened(run, 1, settings_.level));
             }
         }
     }

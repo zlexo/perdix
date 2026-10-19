@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -49,6 +50,7 @@ struct SurfaceJob {
     ColumnPos column;
     std::uint32_t load_id;
     std::uint32_t version;
+    std::uint8_t level; // RFC 0011's
 
     void operator()(JobContext& context) const noexcept {
         context.describe(column.x, column.z);
@@ -57,7 +59,9 @@ struct SurfaceJob {
         result.pos = column_key(column);
         result.load_id = load_id;
         result.version = version;
-        result.surface = generator->surface_range(column, scratch[context.worker()]);
+        result.surface =
+            level == 0 ? generator->surface_range(column, scratch[context.worker()])
+                       : generator->lod_surface_range(column, level, scratch[context.worker()]);
         results->push(std::move(result));
     }
 };
@@ -70,6 +74,7 @@ struct PlanJob {
     ChunkPos pos;
     std::uint32_t load_id;
     std::uint32_t version;
+    std::uint8_t level; // RFC 0011's: coarse chunks have no plans
 
     void operator()(JobContext& context) const noexcept {
         context.describe(pos.x, pos.y, pos.z);
@@ -78,7 +83,8 @@ struct PlanJob {
         result.pos = pos;
         result.load_id = load_id;
         result.version = version;
-        result.plan = generator->plan(pos, scratch[context.worker()]);
+        result.plan =
+            level == 0 ? generator->plan(pos, scratch[context.worker()]) : ChunkPlan{.pos = pos};
         results->push(std::move(result));
     }
 };
@@ -92,6 +98,7 @@ struct BuildJob {
     JobRecord* record;
     ChunkPos pos;
     std::uint32_t version;
+    std::uint8_t level; // RFC 0011's: a coarse build reads no plans
 
     void operator()(JobContext& context) const noexcept {
         context.describe(pos.x, pos.y, pos.z);
@@ -106,22 +113,27 @@ struct BuildJob {
         result.load_id = record->load_id;
         result.version = version;
         result.record = record;
-        result.blocks = generator->build(plans, scratch[context.worker()]);
+        result.blocks =
+            level == 0 ? generator->build(plans, scratch[context.worker()])
+                       : generator->lod_build({.x = pos.x, .y = pos.y, .z = pos.z, .level = level},
+                                              scratch[context.worker()]);
         results->push(std::move(result));
     }
 };
 
 // Calls `visit` with each chunk within one of `pos`, itself included, that
-// the world holds.
-template <class F> void around(ChunkPos pos, F&& visit) {
+// the world holds on RFC 0011's `level`.
+template <class F> void around(std::uint8_t level, ChunkPos pos, F&& visit) {
+    const std::int64_t lowest = lowest_chunk_at(level);
+    const std::int64_t highest = highest_chunk_at(level);
     for (std::int32_t dy = -1; dy <= 1; ++dy) {
         for (std::int32_t dz = -1; dz <= 1; ++dz) {
             for (std::int32_t dx = -1; dx <= 1; ++dx) {
                 const std::int64_t x = std::int64_t{pos.x} + dx;
                 const std::int64_t y = std::int64_t{pos.y} + dy;
                 const std::int64_t z = std::int64_t{pos.z} + dz;
-                if (x >= lowest_chunk && x <= highest_chunk && y >= lowest_chunk &&
-                    y <= highest_chunk && z >= lowest_chunk && z <= highest_chunk) {
+                if (x >= lowest && x <= highest && y >= lowest && y <= highest && z >= lowest &&
+                    z <= highest) {
                     visit(ChunkPos{.x = static_cast<std::int32_t>(x),
                                    .y = static_cast<std::int32_t>(y),
                                    .z = static_cast<std::int32_t>(z)});
@@ -135,7 +147,7 @@ template <class F> void around(ChunkPos pos, F&& visit) {
 
 WorldStreamer::WorldStreamer(const Generator& generator, JobSystem& jobs, WakeEvent& results_ready,
                              RegionSettings settings)
-    : generator_(&generator), jobs_(&jobs), settings_(settings),
+    : generator_(&generator), jobs_(&jobs), settings_(settings), chunks_(settings.level),
       job_records_(jobs.slot_count(), blocks_, plans_),
       scratch_(std::max<std::uint32_t>(1, jobs.worker_count())),
       results_(std::size_t{2} * jobs.slot_count(), results_ready), version_(generator.version()) {}
@@ -250,15 +262,39 @@ void WorldStreamer::update_columns() {
         std::max(settings_.view_distance, settings_.near_distance) + settings_.hysteresis;
     // Within reach of those: the nearest column of the square of half side
     // surface_reach around it is within their radius.
+    // A ring's hole (RFC 0011), shrunk by the hysteresis as the grown
+    // region's is: a column whose whole square lies in it reaches no drawn
+    // column.
+    const std::int64_t hole = settings_.inner_distance < 0
+                                  ? -1
+                                  : std::int64_t{settings_.inner_distance} - settings_.hysteresis;
+    const auto in_hole = [&](ColumnPos pos) {
+        if (hole < 0) {
+            return false;
+        }
+        const auto farthest = [&](std::int32_t at, std::int32_t from) {
+            return std::max(std::abs(std::int64_t{at} - surface_reach - from),
+                            std::abs(std::int64_t{at} + surface_reach - from));
+        };
+        const std::int64_t far_x = farthest(pos.x, center.x);
+        const std::int64_t far_z = farthest(pos.z, center.z);
+        return (far_x * far_x) + (far_z * far_z) <= hole * hole;
+    };
     const auto in_ring = [&](ColumnPos pos) {
+        if (in_hole(pos)) {
+            return false;
+        }
         const std::int64_t nearest_x = std::clamp<std::int64_t>(
             center.x, std::int64_t{pos.x} - surface_reach, std::int64_t{pos.x} + surface_reach);
         const std::int64_t nearest_z = std::clamp<std::int64_t>(
             center.z, std::int64_t{pos.z} - surface_reach, std::int64_t{pos.z} + surface_reach);
         const std::int64_t dx = nearest_x - center.x;
         const std::int64_t dz = nearest_z - center.z;
-        return (dx * dx) + (dz * dz) <= std::int64_t{radius} * radius && pos.x >= lowest_chunk &&
-               pos.x <= highest_chunk && pos.z >= lowest_chunk && pos.z <= highest_chunk;
+        return (dx * dx) + (dz * dz) <= std::int64_t{radius} * radius &&
+               pos.x >= lowest_chunk_at(settings_.level) &&
+               pos.x <= highest_chunk_at(settings_.level) &&
+               pos.z >= lowest_chunk_at(settings_.level) &&
+               pos.z <= highest_chunk_at(settings_.level);
     };
     for (std::uint32_t index = 0; index < columns_.size(); ++index) {
         const ColumnPos pos = columns_[index].pos;
@@ -324,8 +360,10 @@ std::optional<ChunkRange> WorldStreamer::band(ColumnPos pos) const noexcept {
         ColumnPos{.x = pos.x, .z = pos.z + 1}, ColumnPos{.x = pos.x, .z = pos.z - 1}};
     for (std::size_t at = 0; at < sides.size(); ++at) {
         // Past the world's edge nothing rises: the side stays empty.
-        const bool outside = next[at].x < lowest_chunk || next[at].x > highest_chunk ||
-                             next[at].z < lowest_chunk || next[at].z > highest_chunk;
+        const bool outside = next[at].x < lowest_chunk_at(settings_.level) ||
+                             next[at].x > highest_chunk_at(settings_.level) ||
+                             next[at].z < lowest_chunk_at(settings_.level) ||
+                             next[at].z > highest_chunk_at(settings_.level);
         if (outside) {
             continue;
         }
@@ -390,7 +428,11 @@ std::uint32_t WorldStreamer::add_chunk(ChunkPos pos) {
 }
 
 std::optional<BlockState> WorldStreamer::uniform_state(ChunkPos pos) const noexcept {
-    if (const std::optional<BlockState> uniform = generator_->out_of_reach(pos)) {
+    const std::optional<BlockState> uniform =
+        settings_.level == 0 ? generator_->out_of_reach(pos)
+                             : generator_->lod_out_of_reach(
+                                   {.x = pos.x, .y = pos.y, .z = pos.z, .level = settings_.level});
+    if (uniform) {
         return uniform;
     }
     const Column* own = column({.x = pos.x, .z = pos.z});
@@ -426,7 +468,7 @@ void WorldStreamer::set_drawn(ChunkPos pos, bool drawn) {
         if (shown(chunks_[index])) {
             report(ChunkEvent::Kind::shown, index);
         }
-        around(pos, [this](ChunkPos near) { add_drawn_near(near, 1); });
+        around(settings_.level, pos, [this](ChunkPos near) { add_drawn_near(near, 1); });
         return;
     }
     // Before the counts drop: the record may go with them.
@@ -434,7 +476,7 @@ void WorldStreamer::set_drawn(ChunkPos pos, bool drawn) {
         report(ChunkEvent::Kind::hidden, *found);
     }
     chunks_[*found].drawn = false;
-    around(pos, [this](ChunkPos near) { add_drawn_near(near, -1); });
+    around(settings_.level, pos, [this](ChunkPos near) { add_drawn_near(near, -1); });
 }
 
 void WorldStreamer::add_drawn_near(ChunkPos pos, int delta) {
@@ -457,7 +499,8 @@ void WorldStreamer::add_drawn_near(ChunkPos pos, int delta) {
 void WorldStreamer::set_loaded(std::uint32_t index, bool loaded) {
     const ChunkPos pos = chunks_[index].pos;
     chunks_[index].loaded = loaded;
-    around(pos, [this, loaded](ChunkPos near) { add_loaded_near(near, loaded ? 1 : -1); });
+    around(settings_.level, pos,
+           [this, loaded](ChunkPos near) { add_loaded_near(near, loaded ? 1 : -1); });
     if (!loaded && chunks_.live(index) && chunks_[index].pos == pos) {
         check_rebuild(index);
     }
@@ -588,7 +631,7 @@ void WorldStreamer::report(ChunkEvent::Kind kind, std::uint32_t index) {
 }
 
 void WorldStreamer::report_changed_around(std::uint32_t index) {
-    around(chunks_[index].pos, [this](ChunkPos near) {
+    around(settings_.level, chunks_[index].pos, [this](ChunkPos near) {
         const std::optional<std::uint32_t> neighbor = chunks_.find(near);
         if (neighbor && counts_as_ready(chunks_[*neighbor].state)) {
             report(ChunkEvent::Kind::changed, *neighbor);
@@ -701,7 +744,7 @@ void WorldStreamer::set_regeneration(std::uint32_t index, Regeneration regenerat
 
 bool WorldStreamer::neighborhood_current(ChunkPos pos) const noexcept {
     bool current = true;
-    around(pos, [&](ChunkPos near) {
+    around(settings_.level, pos, [&](ChunkPos near) {
         const std::optional<std::uint32_t> index = chunks_.find(near);
         current = current && index && counts_as_planned(chunks_[*index].state) &&
                   chunks_[*index].regeneration != Regeneration::replan;
@@ -713,7 +756,7 @@ void WorldStreamer::plan_current(std::uint32_t index) {
     if (regenerating_ == 0) {
         return;
     }
-    around(chunks_[index].pos, [this](ChunkPos near) {
+    around(settings_.level, chunks_[index].pos, [this](ChunkPos near) {
         const std::optional<std::uint32_t> neighbor = chunks_.find(near);
         if (!neighbor) {
             return;
@@ -814,7 +857,8 @@ void WorldStreamer::feed_surfaces(std::size_t& room) {
                                               .results = &results_,
                                               .column = column.pos,
                                               .load_id = column.load_id,
-                                              .version = version_});
+                                              .version = version_,
+                                              .level = settings_.level});
         if (!column.job) {
             return; // no job slot: it stays first in line
         }
@@ -906,7 +950,8 @@ WorldStreamer::Start WorldStreamer::start_plan(const Backlog::Entry& entry) {
                                        .results = &results_,
                                        .pos = record.pos,
                                        .load_id = record.load_id,
-                                       .version = version_});
+                                       .version = version_,
+                                       .level = settings_.level});
     if (!record.job) {
         return Start::full;
     }
@@ -932,7 +977,8 @@ WorldStreamer::Start WorldStreamer::start_build(const Backlog::Entry& entry) {
                                         .results = &results_,
                                         .record = pins,
                                         .pos = record.pos,
-                                        .version = version_});
+                                        .version = version_,
+                                        .level = settings_.level});
     if (!record.job) {
         job_records_.release(*pins);
         return Start::full;
@@ -965,7 +1011,8 @@ WorldStreamer::Start WorldStreamer::start_replan(const Backlog::Entry& entry) {
                                        .results = &results_,
                                        .pos = record.pos,
                                        .load_id = record.load_id,
-                                       .version = version_});
+                                       .version = version_,
+                                       .level = settings_.level});
     if (!record.job) {
         return Start::full;
     }
@@ -996,7 +1043,8 @@ WorldStreamer::Start WorldStreamer::start_rebuild(const Backlog::Entry& entry) {
                                         .results = &results_,
                                         .record = pins,
                                         .pos = record.pos,
-                                        .version = version_});
+                                        .version = version_,
+                                        .level = settings_.level});
     if (!record.job) {
         job_records_.release(*pins);
         return Start::full;
@@ -1237,7 +1285,7 @@ JobRecord* WorldStreamer::pin_neighborhood(ChunkPos pos, std::uint32_t sequence)
         return nullptr;
     }
     // Complete: all 26 neighbors are ready, each with blocks or a state.
-    around(pos, [&](ChunkPos near) {
+    around(settings_.level, pos, [&](ChunkPos near) {
         const std::optional<std::uint32_t> neighbor = chunks_.find(near);
         const ChunkRecord* record = neighbor ? &chunks_[*neighbor] : nullptr;
         job_records_.read_chunk(*pins, around_index(near.x - pos.x, near.y - pos.y, near.z - pos.z),

@@ -36,12 +36,27 @@ inline constexpr std::int32_t lowest_chunk = std::numeric_limits<std::int32_t>::
 inline constexpr std::int32_t highest_chunk =
     std::numeric_limits<std::int32_t>::max() >> chunk_bits;
 
+// The same at RFC 0011's levels: a level-L chunk spans 32 x 2^L blocks, so
+// the world's edge comes 2^L times nearer in its chunks.
+[[nodiscard]] constexpr std::int32_t lowest_chunk_at(std::uint8_t level) noexcept {
+    return lowest_chunk >> level;
+}
+[[nodiscard]] constexpr std::int32_t highest_chunk_at(std::uint8_t level) noexcept {
+    return highest_chunk >> level;
+}
+
 // RFC 0006's region, in whole chunks from the camera's chunk.
 struct RegionSettings {
     std::int32_t view_distance = 32; // the terrain disc's radius
     std::int32_t near_distance = 8;  // the near cylinder's radius
     std::int32_t near_height = 8;    // its chunks below and above the camera's
     std::int32_t hysteresis = 2;     // how much larger the region a loaded chunk must leave
+    // RFC 0011's rings: the columns within this of the camera's are not
+    // drawn, so the disc is a ring; -1 keeps it a disc. A ring's streamer
+    // has no near cylinder (a near distance of -1).
+    std::int32_t inner_distance = -1;
+    // RFC 0011's level, whose grid the distances and chunks are on.
+    std::uint8_t level = 0;
 };
 
 // The settings RFC 0006's memory budget lowers and raises while streaming:
@@ -130,6 +145,10 @@ public:
     [[nodiscard]] const RegionSettings& settings() const noexcept { return settings_; }
 
 private:
+    // Whether a column is in the terrain disc: within the view distance,
+    // and for RFC 0011's ring, outside its hole.
+    [[nodiscard]] bool in_terrain(ColumnPos column) const noexcept;
+
     ChunkPos camera_;
     RegionSettings settings_;
 };

@@ -91,6 +91,10 @@ struct ChunkRecord {
 // up to date as states change, 26 lookups a change. World thread only.
 class ChunkRecords {
 public:
+    // Records on RFC 0011's `level`, whose grid sets where the world ends.
+    ChunkRecords() noexcept = default;
+    explicit ChunkRecords(std::uint8_t level) noexcept : level_(level) {}
+
     // A record at `pos`, which has none, in state queued, counting the
     // records already around it, and as planned and ready the chunks past
     // the world's edge.
@@ -190,6 +194,7 @@ public:
     }
 
 private:
+    std::uint8_t level_ = 0;
     static constexpr int counted(bool counts) noexcept { return counts ? 1 : 0; }
 
     ChunkMap map_;
