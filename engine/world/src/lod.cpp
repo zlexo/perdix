@@ -127,6 +127,36 @@ bool LodRings::drawn(const Vec3d& eye, LodPos chunk) const noexcept {
     return chunk.level == max_lod_level || level_at(eye, parent(chunk)) <= chunk.level;
 }
 
+std::int32_t LodRings::stream_distance(std::uint8_t level) const noexcept {
+    if (view_distance < 0) {
+        return -1;
+    }
+    // Two things hold a drawn chunk near, horizontally, and it must meet
+    // both. With s = 2^level, a chunk whose nearest point lies d blocks from
+    // the eye is under d / (32 s) + sqrt(2) of the camera's chunk away: on
+    // each axis the eye's chunk adds less than one.
+    constexpr double root2 = std::numbers::sqrt2;
+    const double span = std::ldexp(static_cast<double>(chunk_size), level);
+    // In view: one of its level-0 columns is within the view distance of the
+    // camera's, which halves with each level as the columns join, rounding
+    // as above; exact at level 0.
+    const double view = level == 0
+                            ? static_cast<double>(view_distance)
+                            : (std::ldexp(static_cast<double>(view_distance), -level) + root2);
+    if (level == max_lod_level) {
+        return static_cast<std::int32_t>(std::ceil(view));
+    }
+    // Its parent's place calls for a finer level: the parent's nearest point
+    // is under radius(level + 1) away, or it reaches into the near cylinder,
+    // whose columns lie within 32 x near_distance blocks. Each child of the
+    // parent lies within a chunk's diagonal of any point of it, so the
+    // chunk's nearest point is under sqrt(2) chunks farther.
+    const double near = chunk_size * static_cast<double>(std::max(near_distance, 0));
+    const double ring =
+        (std::max(radius(static_cast<std::uint8_t>(level + 1)), near) / span) + (2.0 * root2);
+    return static_cast<std::int32_t>(std::ceil(std::min(view, ring)));
+}
+
 std::vector<LodPos> lod_cover(const LodRings& rings, const Vec3d& eye, std::int32_t min_y,
                               std::int32_t max_y) {
     std::vector<LodPos> drawn;

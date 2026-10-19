@@ -192,7 +192,7 @@ public:
     // A chunk's rank for its jobs (RFC 0006), lowest first: also the mesh
     // half's.
     [[nodiscard]] std::uint32_t score(ChunkPos pos) const noexcept {
-        return chunk_score(pos, viewer_.chunk, viewer_.eye, viewer_.view);
+        return chunk_score(pos, viewer_.chunk, viewer_.eye, viewer_.view, settings_.level);
     }
 
     [[nodiscard]] const ChunkRecord* find(ChunkPos pos) const noexcept;
