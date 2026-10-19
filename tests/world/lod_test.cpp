@@ -553,6 +553,54 @@ struct Arrivals {
     }
 };
 
+// Terrain as the swaps see it: in each column of each level one row has
+// faces, the one the column's surface lies in, and its mesh arrives at a
+// step of its own. A coarse cell is solid when its middle is under the
+// ground, so a level's surface lies up to half a cell under the finer one's:
+// near the bottom of a row the two lie in different rows, as the
+// placeholder's hills do at 64 blocks.
+struct Ground {
+    std::uint64_t seed = 1;
+    std::int32_t steps = 8;
+
+    // The ground's height at a block column, in blocks: 40 to 250.
+    [[nodiscard]] static double height(double x, double z) {
+        return 145.0 + (60.0 * std::sin(x / 211.0)) + (45.0 * std::cos(z / 157.0));
+    }
+    // The row of a level's column that its surface lies in.
+    [[nodiscard]] static std::int32_t surface(std::int32_t x, std::int32_t z, std::uint8_t level) {
+        const double cell = std::ldexp(1.0, level);
+        const double ground = height(((x * 32.0) + 16.0) * cell, ((z * 32.0) + 16.0) * cell);
+        const double top = std::floor(ground - (cell / 2.0));
+        return static_cast<std::int32_t>(std::floor(top / (32.0 * cell)));
+    }
+    [[nodiscard]] LodReady at(LodPos pos, std::int32_t step) const {
+        const std::uint64_t mixed =
+            (LodHash{}(pos) ^ (seed * 0x9E37'79B9'7F4A'7C15ULL)) * 0xBF58'476D'1CE4'E5B9ULL;
+        if (static_cast<std::int32_t>((mixed >> 33U) % static_cast<std::uint64_t>(steps)) > step) {
+            return LodReady::waiting;
+        }
+        // Once all have come, a level-0 mesh in 8 goes for a step, as an
+        // unload takes one: its column's parent, ready by then, stands in.
+        const std::int32_t away = steps + 2 + static_cast<std::int32_t>((mixed >> 40U) % 10U);
+        if (pos.level == 0 && (mixed >> 7U) % 8 == 0 && step == away) {
+            return LodReady::waiting;
+        }
+        return pos.y == surface(pos.x, pos.z, pos.level) ? LodReady::mesh : LodReady::empty;
+    }
+    // Whether the ground of level-0 column (x, z) is drawn, at some level.
+    [[nodiscard]] static bool drawn(const LodSet& drawn, std::int32_t x, std::int32_t z) {
+        for (std::uint8_t level = 0; level < vx::lod_levels; ++level) {
+            const std::int32_t cx = x >> level;
+            const std::int32_t cz = z >> level;
+            if (drawn.contains({.x = cx, .y = surface(cx, cz, level), .z = cz, .level = level})) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
 bool under_drawn(const LodSet& drawn, LodPos pos) {
     while (pos.level < vx::max_lod_level) {
         pos = vx::parent(pos);
@@ -700,6 +748,73 @@ TEST_CASE("RFC 0011's swaps: as meshes arrive and the camera wanders, no chunk i
     CHECK(kept > 2'000);
     CHECK(swaps > 60);
     CHECK(levels > 150); // several levels at once, most steps
+}
+
+TEST_CASE("as meshes arrive and the camera wanders, ground drawn stays drawn, though a coarse "
+          "level's surface can lie a row below the finer one's") {
+    // The flicker this guards: a coarse chunk whose surface has no finer
+    // counterpart inside it (its children are all empty: the finer surface
+    // is a row up) was replaced at once, while the row above it, empty at
+    // the coarse level, still waited for its children. Neither drew the
+    // ground there until they came.
+    std::mt19937 random(0x6E0);
+    std::uniform_real_distribution<double> step_by(-48.0, 48.0);
+    std::uniform_real_distribution<double> jump_by(-900.0, 900.0);
+    std::uniform_real_distribution<double> rise_by(-250.0, 250.0);
+    std::uniform_int_distribution<int> kind(0, 9);
+    constexpr std::int32_t min_y = -1;
+    constexpr std::int32_t max_y = 9;
+    std::size_t kept = 0;     // columns whose ground was drawn and still is in view
+    std::size_t crossing = 0; // of them, those whose levels' surfaces lie in different rows
+    for (std::uint64_t seed = 1; seed <= 6; ++seed) {
+        LodRings rings = with(360, 8.0);
+        rings.view_distance = 40;
+        rings.near_distance = 2;
+        rings.near_height = 2;
+        const Ground ground{.seed = seed, .steps = 10};
+        Vec3d eye{.x = 1'000.5 * static_cast<double>(seed), .y = 160.0, .z = -333.25};
+        std::vector<LodPos> before;
+        std::vector<std::pair<std::int32_t, std::int32_t>> was_drawn;
+        for (std::int32_t step = 0; step < 24; ++step) {
+            const int move = kind(random);
+            if (move < 6) {
+                eye = eye + Vec3d{.x = step_by(random), .y = 0.0, .z = step_by(random)};
+            } else if (move < 8) {
+                eye = eye + Vec3d{.x = jump_by(random), .y = 0.0, .z = jump_by(random)};
+            } else {
+                eye.y = std::clamp(eye.y + rise_by(random), 0.0, 1'500.0);
+            }
+            const auto ready = [&ground, step](LodPos pos) { return ground.at(pos, step); };
+            const std::vector<LodPos> drawn =
+                vx::lod_select(rings, eye, min_y, max_y, ready, before);
+            const LodSet now(drawn.begin(), drawn.end());
+            for (const auto& [x, z] : was_drawn) {
+                const LodPos column{.x = x, .y = 0, .z = z, .level = 0};
+                if (!rings.in_view(eye, column)) {
+                    continue;
+                }
+                ++kept;
+                crossing +=
+                    (Ground::surface(x, z, 0) >> 1) != Ground::surface(x >> 1, z >> 1, 1) ? 1 : 0;
+                INFO("seed " << seed << ", step " << step << ", column " << x << ", " << z);
+                CHECK(Ground::drawn(now, x, z));
+            }
+            was_drawn.clear();
+            const auto ex = static_cast<std::int32_t>(std::floor(eye.x)) >> vx::chunk_bits;
+            const auto ez = static_cast<std::int32_t>(std::floor(eye.z)) >> vx::chunk_bits;
+            for (std::int32_t z = ez - rings.view_distance; z <= ez + rings.view_distance; ++z) {
+                for (std::int32_t x = ex - rings.view_distance; x <= ex + rings.view_distance;
+                     ++x) {
+                    if (Ground::drawn(now, x, z)) {
+                        was_drawn.emplace_back(x, z);
+                    }
+                }
+            }
+            before = drawn;
+        }
+    }
+    CHECK(kept > 20'000);
+    CHECK(crossing > 200);
 }
 
 TEST_CASE("going finer, a coarse chunk stays until all its children can be drawn, then they "
