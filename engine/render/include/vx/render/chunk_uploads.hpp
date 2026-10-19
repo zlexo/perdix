@@ -53,6 +53,9 @@ struct ChunkMeshRecord {
     // other.
     std::array<std::uint16_t, 12> count{};
     std::uint8_t level = 0; // RFC 0011's, as the update's
+    // Drawn: always, unless the uploads take RFC 0011's swaps, then while a
+    // swap shows the chunk.
+    bool shown = true;
 };
 
 // Where uploads put quads: the arena's buffer, or a stand-in in tests.
@@ -189,6 +192,12 @@ public:
     [[nodiscard]] bool repack(ArenaSpace& fresh, std::vector<ArenaMove>& moves);
     // Raised while a loading screen shows (RFC 0007).
     void set_budget(std::chrono::nanoseconds budget) noexcept { budget_ = budget; }
+    // RFC 0011's swaps: from now on a chunk's mesh is drawn only while a
+    // swap shows the chunk, whose levels' meshes all stream in.
+    void use_swaps() noexcept { swaps_ = true; }
+    // A swap shows or hides the chunk at `pos` on `level`: its mesh now, and
+    // every mesh it gets while shown, through an empty one and an unload.
+    void set_shown(ChunkPos pos, std::uint8_t level, bool shown);
 
     [[nodiscard]] const ChunkMeshRecord* find(ChunkPos pos, std::uint8_t level = 0) const noexcept;
     [[nodiscard]] std::span<const ChunkMeshRecord> records() const noexcept { return records_; }
@@ -221,6 +230,9 @@ private:
     // empty mesh until it unloads.
     std::array<ChunkMap, lod_levels> index_;
     std::array<ChunkMap, lod_levels> emptied_;
+    // With RFC 0011's swaps, the chunks shown, by level: a set.
+    bool swaps_ = false;
+    std::array<ChunkMap, lod_levels> shown_;
     UploadStats stats_;
     // Scratch, kept for its capacity: records by first quad, and a repack's
     // new ranges by record.

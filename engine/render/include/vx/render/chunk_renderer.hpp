@@ -44,6 +44,13 @@ public:
     // The chunk at `pos` on `level`'s grid (RFC 0011) unloaded: its mesh
     // goes.
     void remove(ChunkPos pos, std::uint8_t level = 0) { uploads_->remove(pos, level); }
+    // RFC 0011's swaps, as ChunkUploads::set_shown.
+    void set_shown(ChunkPos pos, std::uint8_t level, bool shown) {
+        uploads_->set_shown(pos, level, shown);
+    }
+    [[nodiscard]] const ChunkMeshRecord* find(ChunkPos pos, std::uint8_t level = 0) const noexcept {
+        return uploads_->find(pos, level);
+    }
 
 private:
     ChunkUploads* uploads_;
