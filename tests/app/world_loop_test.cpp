@@ -1752,6 +1752,12 @@ public:
         std::uint32_t generation = 0;
         std::uint64_t bytes = 0; // a hash of the counts and quads
         bool empty = true;
+        // RFC 0011's open border sets as the update brought them, and every
+        // quad.
+        std::array<std::uint32_t, 12> counts{};
+        std::array<std::uint32_t, 12> border{};
+        std::array<std::uint32_t, 12> open{};
+        std::vector<vx::Quad> quads;
     };
     std::map<LevelChunk, Held> held;
     std::set<int> unloads; // the levels unloads came for
@@ -1789,6 +1795,20 @@ private:
         slot.empty =
             std::ranges::all_of(update.counts, [](std::uint32_t count) { return count == 0; });
         slot.bytes = mesh_hash(update.counts, update.quads.data());
+        slot.counts = update.counts;
+        slot.border = update.border;
+        slot.open = update.open;
+        std::size_t total = 0;
+        for (const std::uint32_t count : update.counts) {
+            total += count;
+        }
+        for (const std::uint32_t count : update.open) {
+            total += count;
+        }
+        slot.quads.resize(total);
+        if (total > 0) {
+            std::memcpy(slot.quads.data(), update.quads.data(), total * sizeof(vx::Quad));
+        }
     }
 };
 
@@ -2323,4 +2343,112 @@ TEST_CASE("with levels off the loop sends no swaps") {
     main.receive(messages);
     CHECK(main.swaps == 0);
     CHECK(loop.drawn().empty());
+}
+
+namespace {
+
+// RFC 0011's open border set of a level's chunk toward `face`, worked out
+// apart from the loop: its padded blocks from its level's streamer, the
+// border that way all air, its outermost slice meshed; with the main mesh's
+// border counts that way.
+struct OpenSet {
+    std::array<std::vector<vx::Quad>, 2> quads; // by pass
+    std::array<std::uint32_t, 2> main_border{};
+};
+
+OpenSet open_set(const WorldLoop& loop, LevelChunk chunk, vx::Face face,
+                 std::span<const vx::BlockVisual> visuals) {
+    const auto [level, x, y, z] = chunk;
+    const auto at = static_cast<std::uint8_t>(level);
+    std::array<vx::ChunkStorage, 27> uniform;
+    const auto chunk_at = [&](int dx, int dy, int dz) -> const vx::ChunkStorage* {
+        const vx::ChunkRecord* record =
+            loop.streamer(at).find({.x = x + dx, .y = y + dy, .z = z + dz});
+        REQUIRE(record != nullptr);
+        if (record->blocks != nullptr) {
+            return &record->blocks->value();
+        }
+        vx::ChunkStorage& made =
+            uniform.at(static_cast<std::size_t>((dx + 1) + (3 * (dz + 1)) + (9 * (dy + 1))));
+        made = vx::ChunkStorage::uniform(record->uniform);
+        return &made;
+    };
+    vx::ChunkNeighborhood neighborhood(*chunk_at(0, 0, 0));
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dz = -1; dz <= 1; ++dz) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (dx != 0 || dy != 0 || dz != 0) {
+                    neighborhood.set(dx, dy, dz, chunk_at(dx, dy, dz));
+                }
+            }
+        }
+    }
+    auto padded = std::make_unique<vx::PaddedChunk>();
+    vx::assemble_padded(neighborhood, *padded);
+    vx::MeshScratch scratch;
+    const vx::MeshOptions options{.merge = true, .occlusion = level == 0};
+    OpenSet set;
+    const vx::ChunkMesh main = vx::mesh_chunk(*padded, visuals, scratch, options);
+    for (std::size_t pass = 0; pass < 2; ++pass) {
+        set.main_border.at(pass) = main.border.at(pass).at(static_cast<std::size_t>(face));
+    }
+    vx::open_border(face, *padded);
+    const vx::ChunkMesh border = vx::mesh_border(*padded, visuals, scratch, face, options);
+    for (std::size_t pass = 0; pass < 2; ++pass) {
+        const std::span<const vx::Quad> quads = border.range(static_cast<vx::Pass>(pass), face);
+        set.quads.at(pass).assign(quads.begin(), quads.end());
+    }
+    return set;
+}
+
+} // namespace
+
+TEST_CASE("above level 0 a mesh with faces carries an open border set toward each side: its "
+          "outermost slice meshed as if nothing were drawn across") {
+    const vx::PlaceholderGenerator generator(0x5EED, blocks);
+    const std::vector<vx::BlockVisual> table = visuals();
+    vx::JobSystem jobs({});
+    vx::MeshResultPool pool;
+    WorldLoop loop(generator, table, jobs, pool,
+                   {.region = eight, .lod = small_window(), .unuploaded_limit = 1'000'000});
+    move_camera(loop, above_hills);
+    loop.settle();
+    std::vector<ToMain> messages;
+    loop.take(messages);
+    LevelMeshes main;
+    main.receive(messages);
+    std::size_t compared = 0;
+    std::size_t faces = 0;
+    for (const auto& [chunk, mesh] : main.held) {
+        const auto level = std::get<0>(chunk);
+        // Level 0 has no finer level to be drawn beside it; a mesh with no
+        // faces is not drawn.
+        if (level == 0 || mesh.empty) {
+            CHECK(std::ranges::all_of(mesh.open, [](std::uint32_t count) { return count == 0; }));
+            continue;
+        }
+        std::size_t start = 0;
+        for (const std::uint32_t count : mesh.counts) {
+            start += count;
+        }
+        for (std::size_t face = 0; face < 6; ++face) {
+            INFO("level " << level << " face " << face);
+            const OpenSet expected = open_set(loop, chunk, static_cast<vx::Face>(face), table);
+            for (std::size_t pass = 0; pass < 2; ++pass) {
+                CHECK(mesh.border.at((pass * 6) + face) == expected.main_border.at(pass));
+                const std::uint32_t count = mesh.open.at((face * 2) + pass);
+                REQUIRE(start + count <= mesh.quads.size());
+                const std::vector<vx::Quad> sent(
+                    mesh.quads.begin() + static_cast<std::ptrdiff_t>(start),
+                    mesh.quads.begin() + static_cast<std::ptrdiff_t>(start + count));
+                CHECK(sent == expected.quads.at(pass));
+                start += count;
+                faces += count;
+            }
+            ++compared;
+        }
+        CHECK(start == mesh.quads.size());
+    }
+    CHECK(compared > 100);
+    CHECK(faces > 500);
 }

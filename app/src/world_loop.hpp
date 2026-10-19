@@ -10,6 +10,7 @@
 #include <vx/core/wake_event.hpp>
 #include <vx/mesh/mesh_chunk.hpp>
 #include <vx/mesh/padded_chunk.hpp>
+#include <vx/mesh/quad.hpp>
 #include <vx/world/backlog.hpp>
 #include <vx/world/block_state.hpp>
 #include <vx/world/block_visual.hpp>
@@ -48,6 +49,14 @@ struct MeshUpdate {
     std::uint32_t generation = 0;
     std::array<std::uint32_t, 12> counts{}; // by pass, then face
     MeshBuffer quads;
+    // RFC 0011's open border sets, above level 0, for a mesh with faces:
+    // `border` counts the main mesh's quads in its outermost slice toward
+    // each face, by pass then face, which a side whose own level's neighbor
+    // is not drawn replaces with that side's open set, its slice meshed as if
+    // the neighbor were air. The open sets follow the main ranges, by face,
+    // then pass, `open` counting them.
+    std::array<std::uint32_t, 12> border{};
+    std::array<std::uint32_t, 12> open{};
 };
 
 // What a sample request asks for (RFC 0006's flythrough): whether the region
@@ -236,6 +245,7 @@ struct WorldLoopSettings {
 struct MeshWorkerScratch {
     PaddedChunk padded;
     MeshScratch mesh;
+    std::vector<Quad> joined; // a mesh's quads and its open border sets, back to back
 };
 
 // RFC 0005's world loop, which owns every chunk: it takes the main thread's
@@ -388,6 +398,7 @@ private:
         std::uint8_t level;
         std::uint32_t generation;
         MeshOptions options; // the job's own: the loop's may change while it runs
+        bool open;           // RFC 0011's open border sets, above level 0
         void operator()(JobContext& job) const noexcept;
     };
 
