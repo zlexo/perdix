@@ -22,7 +22,6 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
-#include <span>
 #include <vector>
 
 namespace vx {
@@ -175,12 +174,6 @@ public:
     // its state, with the chunk's load id and `sequence`. Null when no
     // record is free or the chunk is not complete.
     [[nodiscard]] JobRecord* pin_neighborhood(ChunkPos pos, std::uint32_t sequence) noexcept;
-    // For a finer level's mesh job (RFC 0011's border sets): a record pinning
-    // each chunk of `positions` that is ready, its blocks or, for a uniform
-    // chunk, its state, at the same index. A chunk not ready leaves its slot
-    // empty, and its bit in `ready` clear. Null when no record is free.
-    [[nodiscard]] JobRecord* pin_chunks(std::span<const ChunkPos> positions,
-                                        std::uint32_t& ready) noexcept;
     // The job reported back, or its cancel succeeded: unpins exactly what
     // the record names.
     void release(JobRecord& record) noexcept { job_records_.release(record); }
