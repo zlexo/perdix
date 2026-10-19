@@ -1,4 +1,5 @@
 #include "options.hpp"
+#include "overlay.hpp"
 
 #include <vx/core/job_system.hpp>
 #include <vx/core/result.hpp>
@@ -6,6 +7,7 @@
 
 #include <doctest/doctest.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <initializer_list>
 #include <string>
@@ -71,6 +73,21 @@ TEST_CASE("every option is read, and none at all is a run with nothing set") {
         CHECK(parsed.value().workers == 3U);
         CHECK(parsed.value().worker_qos == qos);
     }
+    // RFC 0006's view distance: unset by default, then any the slider offers.
+    CHECK_FALSE(none.value().view_distance.has_value());
+    for (const std::int32_t chunks :
+         {vx::app::least_view_distance, 16, vx::app::most_view_distance}) {
+        const std::string flag = "--view-distance=" + std::to_string(chunks);
+        const vx::Result<vx::app::Options> parsed = parse({flag, "--flythrough"});
+        REQUIRE(parsed.has_value());
+        CHECK(parsed.value().view_distance == chunks);
+        CHECK(parsed.value().flythrough == vx::app::Flythrough::full);
+    }
+}
+
+TEST_CASE("the command line's view distances are the overlay slider's") {
+    CHECK(vx::app::least_view_distance == vx::app::RenderDistance::least);
+    CHECK(vx::app::most_view_distance == vx::app::RenderDistance::most);
 }
 
 TEST_CASE("options that cannot be used say which, and why") {
@@ -90,6 +107,14 @@ TEST_CASE("options that cannot be used say which, and why") {
           "--workers takes a whole number from 1 to 64, not \"six\"");
     CHECK(error_of({"--worker-qos=fast"}) ==
           "--worker-qos takes switching, utility or user-initiated, not \"fast\"");
+    CHECK(error_of({"--view-distance=3"}) ==
+          "--view-distance takes a whole number of chunks from 4 to 64, not \"3\"");
+    CHECK(error_of({"--view-distance=65"}) ==
+          "--view-distance takes a whole number of chunks from 4 to 64, not \"65\"");
+    CHECK(error_of({"--view-distance=far"}) ==
+          "--view-distance takes a whole number of chunks from 4 to 64, not \"far\"");
+    CHECK(error_of({"--view-distance="}) ==
+          "--view-distance takes a whole number of chunks from 4 to 64, not \"\"");
 }
 
 TEST_CASE("--no-minecraft turns the game off, and the environment fills the search") {

@@ -463,19 +463,27 @@ int validation_result(const vx::render::Context& context) {
     return 0;
 }
 
-// The flythrough's plan, when one was asked for.
-std::optional<vx::app::FlythroughPlan> flythrough_plan(vx::app::Flythrough which) {
-    switch (which) {
+// The flythrough's plan, when one was asked for, at the view distance the
+// options name if they name one.
+std::optional<vx::app::FlythroughPlan> flythrough_plan(const vx::app::Options& options) {
+    std::optional<vx::app::FlythroughPlan> plan;
+    switch (options.flythrough) {
     case vx::app::Flythrough::none:
         break;
     case vx::app::Flythrough::full:
-        return vx::app::FlythroughPlan::full();
+        plan = vx::app::FlythroughPlan::full();
+        break;
     case vx::app::Flythrough::quick:
-        return vx::app::FlythroughPlan::quick();
+        plan = vx::app::FlythroughPlan::quick();
+        break;
     case vx::app::Flythrough::endurance:
-        return vx::app::FlythroughPlan::endurance();
+        plan = vx::app::FlythroughPlan::endurance();
+        break;
     }
-    return std::nullopt;
+    if (plan && options.view_distance) {
+        plan->view_distance = *options.view_distance;
+    }
+    return plan;
 }
 
 // The window drawing the plan's size, at whatever density.
@@ -779,7 +787,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "error: " << window.error().message << '\n';
         return 1;
     }
-    const std::optional<vx::app::FlythroughPlan> plan = flythrough_plan(options.value().flythrough);
+    const std::optional<vx::app::FlythroughPlan> plan = flythrough_plan(options.value());
     if (plan) {
         size_for_flythrough(window.value(), *plan);
     }
@@ -802,6 +810,8 @@ int main(int argc, char* argv[]) {
     if (plan) {
         settings.region.view_distance = plan->view_distance;
     } else {
+        settings.region.view_distance =
+            options.value().view_distance.value_or(settings.region.view_distance);
         settings.player = vx::app::WorldLoopSettings::PlayerStart{.spawn = spawn, .lowest = -64.0};
         // Perdix appears on the ground 5 blocks ahead of where you look at
         // first, facing you (RFC 0012, open question 8).

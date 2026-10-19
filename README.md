@@ -18,6 +18,7 @@ Click the window to walk: W A S D, Space to jump, Ctrl with W or W twice to spri
 --perdix=life|follow|still   what Perdix does from the start; his own life by default
 --skin=NAME[:slim]           your skin: perdix, zlex, one of the game's, or a skin file
 --perdix-skin=NAME[:slim]    his
+--view-distance=N            how far the world reaches, 4 to 64 chunks of 32 blocks; 32 by default
 ```
 
 ## Minecraft's textures

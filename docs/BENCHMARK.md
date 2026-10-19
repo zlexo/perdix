@@ -52,6 +52,8 @@ The block opens with the engine's version and the commit it was built from (`-di
 
 The app takes the same settings: `--workers=N` (1 to 64; the cores less two by default) and `--worker-qos=switching|utility|user-initiated`. The report's settings line names both.
 
+`--view-distance=N` (4 to 64 chunks) flies the same path at another view distance than the plan's, 32 for the full and long runs and 16 for the quick one, as the overlay's slider would set it. The report's settings line names it. Results at different view distances do not compare with each other.
+
 ## Sharing a result
 
 The "Benchmark result" issue template takes the report and a few lines about the machine.

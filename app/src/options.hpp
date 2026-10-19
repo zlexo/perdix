@@ -14,6 +14,11 @@
 
 namespace vx::app {
 
+// The view distances the command line takes, in chunks: the overlay
+// slider's range (RFC 0006's open question 1).
+inline constexpr std::int32_t least_view_distance = 4;
+inline constexpr std::int32_t most_view_distance = 64;
+
 // RFC 0006's benchmark flythrough: none, the full one, the few seconds CI
 // runs, or RFC 0005's ten minutes on the same path.
 enum class Flythrough : std::uint8_t { none, full, quick, endurance };
@@ -38,6 +43,9 @@ struct Options {
     // they pick their QoS class (the sweep compares them).
     std::optional<std::uint32_t> workers;
     WorkerQos worker_qos = WorkerQos::switching;
+    // RFC 0006's view distance in chunks; unset, the app starts at 32 and a
+    // flythrough flies at its plan's.
+    std::optional<std::int32_t> view_distance;
     // RFC 0012: the skins you and Perdix wear, by name (perdix, zlex, one of
     // the game's defaults) or a skin file's path, each with :slim or :wide.
     std::optional<std::string> skin;
