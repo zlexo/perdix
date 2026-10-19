@@ -10,6 +10,7 @@ module fog;
 public struct Fog {
     public float4 color; // the fog color, sRGB-encoded; w is 1 with the fog on, 0 off
     public float4 ramps; // the haze's end, the band's start and end, in blocks
+    public float4 sky;   // the sky's color, sRGB-encoded
 };
 
 // What the fog needs of a vertex `from_eye` blocks from the eye: its
@@ -42,4 +43,24 @@ public float3 apply_fog(Fog* fog, float3 color, float2 distances) {
     const float amount = max(ramp(distances.x, 0.0, frame.ramps.x),
                              ramp(distances.y, frame.ramps.y, frame.ramps.z));
     return decode(lerp(encode(color), frame.color.rgb, amount));
+}
+
+// 26.2's daytime sky where a view ray rises by `rise`, the sine of its
+// elevation, in linear light: its disc 16 blocks above the eye, 512 across
+// from its middle, the disc's distance from the eye interpolated from 16 at
+// the middle to its rim's and fogged from 0 to 512 blocks toward the fog
+// color; under the rim, the fog color. As vx::render::sky_fog_amount.
+public float3 sky_color(Fog* fog, float rise) {
+    const float height = 16.0;
+    const float radius = 512.0;
+    const float fog_end = 512.0;
+    const Fog frame = fog[0];
+    const float across = sqrt(max(1.0 - (rise * rise), 0.0));
+    if (rise <= 0.0 || height * across >= radius * rise) {
+        return decode(frame.color.rgb);
+    }
+    const float out = height * across / rise;
+    const float rim = sqrt((radius * radius) + (height * height));
+    const float distance = height + ((rim - height) * out / radius);
+    return decode(lerp(frame.sky.rgb, frame.color.rgb, min(distance / fog_end, 1.0)));
 }

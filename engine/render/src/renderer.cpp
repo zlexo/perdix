@@ -23,6 +23,7 @@
 #include <vx/shaders/body.hpp>
 #include <vx/shaders/chunk.hpp>
 #include <vx/shaders/cube.hpp>
+#include <vx/shaders/sky.hpp>
 #include <vx/shaders/text.hpp>
 #include <vx/world/block_registry.hpp>
 #include <vx/world/font.hpp>
@@ -345,19 +346,25 @@ ChunkPush make_chunk_push(const Camera& camera, const BlockAndFraction& split, V
 struct FogBlock {
     glm::vec4 color; // sRGB-encoded, 0 to 1; w is 1 with the fog on, 0 off
     glm::vec4 ramps; // the haze's end, the band's start and end, in blocks
+    glm::vec4 sky;   // sRGB-encoded, 0 to 1
 };
-static_assert(sizeof(FogBlock) == 32);
+static_assert(sizeof(FogBlock) == 48);
+
+// An 8-bit sRGB color as the shaders read it, 0 to 1, still encoded.
+glm::vec4 encoded(Srgb8 color, float w) {
+    return {static_cast<float>(color.r) / 255.0F, static_cast<float>(color.g) / 255.0F,
+            static_cast<float>(color.b) / 255.0F, w};
+}
 
 // Writes a frame's fog, or none, into its slot's buffer.
 Result<void> write_fog(VmaAllocator allocator, const Buffer& buffer,
                        const std::optional<Fog>& fog) {
-    FogBlock block{.color = glm::vec4(0.0F), .ramps = glm::vec4(0.0F)};
+    FogBlock block{.color = glm::vec4(0.0F), .ramps = glm::vec4(0.0F), .sky = glm::vec4(0.0F)};
     if (fog) {
-        block.color = glm::vec4(static_cast<float>(fog->color.r) / 255.0F,
-                                static_cast<float>(fog->color.g) / 255.0F,
-                                static_cast<float>(fog->color.b) / 255.0F, 1.0F);
+        block.color = encoded(fog->color, 1.0F);
         block.ramps =
             glm::vec4(fog->ramps.haze_end, fog->ramps.band_start, fog->ramps.band_end, 0.0F);
+        block.sky = encoded(fog->sky, 1.0F);
     }
     std::memcpy(buffer.mapping().data(), &block, sizeof(block));
     if (const VkResult result =
@@ -385,6 +392,24 @@ Result<void> write_cube_origins(VmaAllocator allocator, const Buffer& origins,
         return Error{"vmaFlushAllocation failed: " + vk_result_name(result)};
     }
     return {};
+}
+
+// An 8-bit sRGB channel in linear light.
+float linear(std::uint8_t channel) {
+    const float encoded = static_cast<float>(channel) / 255.0F;
+    return encoded <= 0.04045F ? encoded / 12.92F : std::pow((encoded + 0.055F) / 1.055F, 2.4F);
+}
+
+// What a frame clears to: with fog, the fog color, as 26.2 clears to it;
+// without, the sky.
+Color clear_color(const FrameInputs& inputs) {
+    if (!inputs.fog) {
+        return inputs.sky;
+    }
+    return {.r = linear(inputs.fog->color.r),
+            .g = linear(inputs.fog->color.g),
+            .b = linear(inputs.fog->color.b),
+            .a = 1.0F};
 }
 
 // Writes a frame's cube origins and its fog into its slot's buffers.
@@ -419,12 +444,40 @@ Result<GraphicsPipeline> make_chunk_pipeline(const Device& device, VkFormat colo
                                     name);
 }
 
+// The sky's push constants (sky.slang).
+struct SkyPush {
+    glm::mat4 inverse_view_projection; // offset 0: from the target to directions from the eye
+    VkDeviceAddress fog;               // offset 64: the frame's fog and sky (RFC 0013)
+    std::uint64_t padding;             // to 80, a multiple of 16 as the shader rounds it
+};
+static_assert(sizeof(SkyPush) == 80 && offsetof(SkyPush, fog) == 64);
+
+// The sky (RFC 0013): one triangle over the target at the far end, its
+// depth tested for equal, so it draws only where nothing was; it writes no
+// depth.
+Result<GraphicsPipeline> make_sky_pipeline(const Device& device, VkFormat color_format) {
+    return GraphicsPipeline::create(device,
+                                    {.spirv = shaders::sky,
+                                     .vertex_entry = "vertex_main",
+                                     .fragment_entry = "fragment_main",
+                                     .color_format = color_format,
+                                     .depth_format = depth_format,
+                                     .cull_mode = VK_CULL_MODE_NONE,
+                                     .depth_write = false,
+                                     .depth_compare = VK_COMPARE_OP_EQUAL,
+                                     .push_constant_size = sizeof(SkyPush),
+                                     .push_constant_stages = VK_SHADER_STAGE_FRAGMENT_BIT},
+                                    "sky");
+}
+
 // The chunk shader's pipelines: opaque, cutout, and where the device offers
-// fillModeNonSolid, the wireframe, the opaque one drawn as lines.
+// fillModeNonSolid, the wireframe, the opaque one drawn as lines; and the
+// sky's, drawn after them where none drew (RFC 0013).
 struct ChunkPipelines {
     GraphicsPipeline opaque;
     GraphicsPipeline cutout;
     std::optional<GraphicsPipeline> wireframe;
+    GraphicsPipeline sky;
 };
 
 Result<ChunkPipelines> make_chunk_pipelines(const Device& device, VkFormat color_format,
@@ -449,9 +502,14 @@ Result<ChunkPipelines> make_chunk_pipelines(const Device& device, VkFormat color
         }
         wireframe = std::move(lines).value();
     }
+    Result<GraphicsPipeline> sky = make_sky_pipeline(device, color_format);
+    if (!sky.has_value()) {
+        return sky.error();
+    }
     return ChunkPipelines{.opaque = std::move(opaque).value(),
                           .cutout = std::move(cutout).value(),
-                          .wireframe = std::move(wireframe)};
+                          .wireframe = std::move(wireframe),
+                          .sky = std::move(sky).value()};
 }
 
 // The shared index buffer's contents: 0, 1, 2, 2, 3, 0 for the first quad,
@@ -511,6 +569,29 @@ struct TagDraw {
     std::array<TagRun, Renderer::max_tags> runs;
 };
 
+// The sky to draw (RFC 0013): its pipeline, none without fog, and its push
+// constants.
+struct SkyDraw {
+    const GraphicsPipeline* pipeline;
+    SkyPush push;
+};
+
+// The frame's sky on a target of `extent` (RFC 0013): with fog, its
+// pipeline and the inverse of the camera's rotation and projection; without,
+// none.
+SkyDraw make_sky_draw(const GraphicsPipeline& pipeline, const FrameInputs& inputs,
+                      VkExtent2D extent, VkDeviceAddress fog) {
+    if (!inputs.fog) {
+        return {.pipeline = nullptr, .push = {}};
+    }
+    const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    return {
+        .pipeline = &pipeline,
+        .push = {.inverse_view_projection = glm::inverse(view_projection(inputs.camera, aspect)),
+                 .fog = fog,
+                 .padding = 0}};
+}
+
 struct FrameDraw {
     Color clear;
     const GraphicsPipeline* pipeline;
@@ -518,6 +599,7 @@ struct FrameDraw {
     DrawPush push;
     std::uint32_t cubes;
     ChunkDraw chunk;
+    SkyDraw sky;
     BodyDraw bodies;
     TagDraw tags;
     ImDrawData* overlay; // null: no overlay
@@ -612,6 +694,18 @@ void record_chunks(VkCommandBuffer commands, VkDescriptorSet textures, const Chu
 // stores the whole target again, which took 0.57 ms of GPU time a frame on
 // MoltenVK and 0.92 ms on KosmicKrisp at 2560 by 1440, where drawing it here
 // takes 0.10 ms and 0.16 ms.
+// Draws the sky where nothing was drawn (RFC 0013): after the chunks, so
+// that their depth hides it, and before the name tags, which write none.
+void record_sky(VkCommandBuffer commands, const SkyDraw& sky) {
+    if (sky.pipeline == nullptr) {
+        return;
+    }
+    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, sky.pipeline->handle());
+    vkCmdPushConstants(commands, sky.pipeline->layout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(sky.push), &sky.push);
+    vkCmdDraw(commands, 3, 1, 0, 0);
+}
+
 void record_main_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_profiler,
                       const FrameTarget& target, const FrameDraw& draw) {
     TracyVkNamedZone(gpu_profiler, pass_zone, commands, "Main pass", gpu_profiler != nullptr);
@@ -676,6 +770,7 @@ void record_main_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* g
                        &draw.push);
     vkCmdDraw(commands, static_cast<std::uint32_t>(cube_vertices.size()), draw.cubes, 0, 0);
     record_chunks(commands, draw.textures, draw.chunk);
+    record_sky(commands, draw.sky);
     record_bodies(commands, draw.textures, draw.bodies);
     record_tags(commands, draw.textures, draw.tags);
     if (draw.overlay != nullptr) {
@@ -1209,6 +1304,7 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
                       {.opaque = std::move(chunk_resources.value().pipelines.opaque),
                        .cutout = std::move(chunk_resources.value().pipelines.cutout),
                        .wireframe = std::move(chunk_resources.value().pipelines.wireframe),
+                       .sky = std::move(chunk_resources.value().pipelines.sky),
                        .indices = std::move(chunk_resources.value().indices)},
                       std::move(chunks).value(), desc.framebuffer, desc.present_mode);
     if (const Result<void> made = renderer.create_frame_objects(); !made.has_value()) {
@@ -1530,6 +1626,7 @@ Result<void> Renderer::rebuild_pipelines(VkFormat format) {
     chunk_drawing_.opaque = std::move(chunk_pipelines.value().opaque);
     chunk_drawing_.cutout = std::move(chunk_pipelines.value().cutout);
     chunk_drawing_.wireframe = std::move(chunk_pipelines.value().wireframe);
+    chunk_drawing_.sky = std::move(chunk_pipelines.value().sky);
     if (overlay_ != nullptr) {
         ImGui::SetCurrentContext(overlay_);
         const ImGui_ImplVulkan_PipelineInfo overlay_pipeline = overlay_pipeline_info(&format);
@@ -1836,13 +1933,14 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
                  .extent = extent,
                  .depth_image = depth_.image(),
                  .depth_view = depth_.view()},
-                {.clear = inputs.sky,
+                {.clear = clear_color(inputs),
                  .pipeline = &cube_.pipeline,
                  .textures = textures_.set(),
                  .push = make_draw_push(inputs.camera, split, extent, cube_.vertices.address(),
                                         origins.address(), cube_.checker_slot),
                  .cubes = cubes,
                  .chunk = chunk_draw(extent),
+                 .sky = make_sky_draw(chunk_drawing_.sky, inputs, extent, fog.address()),
                  .bodies = body_draw(extent),
                  .tags = tag_draw(extent),
                  .overlay = inputs.overlay},
@@ -1886,13 +1984,14 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
              .extent = extent,
              .depth_image = depth_.image(),
              .depth_view = depth_.view()},
-            {.clear = inputs.sky,
+            {.clear = clear_color(inputs),
              .pipeline = &cube_.pipeline,
              .textures = textures_.set(),
              .push = make_draw_push(inputs.camera, split, extent, cube_.vertices.address(),
                                     origins.address(), cube_.checker_slot),
              .cubes = cubes,
              .chunk = chunk_draw(extent),
+             .sky = make_sky_draw(chunk_drawing_.sky, inputs, extent, fog.address()),
              .bodies = body_draw(extent),
              .tags = tag_draw(extent),
              .overlay = inputs.overlay},

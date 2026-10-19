@@ -156,15 +156,15 @@ Result<GraphicsPipeline> GraphicsPipeline::create(const Device& device,
         .blendConstants = {0.0F, 0.0F, 0.0F, 0.0F},
     };
     const bool depth = desc.depth_format != VK_FORMAT_UNDEFINED;
-    // Reversed-Z (RFC 0001): depth clears to 0, the far end, and a fragment
-    // passes where its depth is greater, that is nearer.
+    // Reversed-Z (RFC 0001): depth clears to 0, the far end, and by default a
+    // fragment passes where its depth is greater, that is nearer.
     const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
         .depthTestEnable = desc.depth_test ? VK_TRUE : VK_FALSE,
         .depthWriteEnable = desc.depth_write ? VK_TRUE : VK_FALSE,
-        .depthCompareOp = VK_COMPARE_OP_GREATER,
+        .depthCompareOp = desc.depth_compare,
         .depthBoundsTestEnable = VK_FALSE,
         .stencilTestEnable = VK_FALSE,
         .front = {},

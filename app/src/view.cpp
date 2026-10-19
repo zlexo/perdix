@@ -33,8 +33,9 @@ std::optional<render::Fog> frame_fog(bool on, std::int32_t held_chunks) {
         return std::nullopt;
     }
     const double view = static_cast<double>(held_chunks) * chunk_size;
-    return render::Fog{.color = render::fog_color(render::FogLook{}, view),
-                       .ramps = render::fog_ramps(view)};
+    const render::FogLook look;
+    return render::Fog{
+        .color = render::fog_color(look, view), .ramps = render::fog_ramps(view), .sky = look.sky};
 }
 
 } // namespace vx::app

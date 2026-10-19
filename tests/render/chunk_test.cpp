@@ -595,7 +595,7 @@ TEST_CASE("fog mixes a face toward the fog color by the larger ramp, in encoded 
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }
 
-TEST_CASE("full fog turns a cutout block's texels the fog color and leaves its holes") {
+TEST_CASE("fog mixes a cutout block's texels, and through its holes the sky shows") {
     const std::array<Quarters, 1> layers = {Quarters{see_through, white, see_through, white}};
     const std::vector<std::byte> textures = texture_bytes(layers);
     vx::Result<vx::render::Renderer> created = renderer_with(textures);
@@ -604,14 +604,92 @@ TEST_CASE("full fog turns a cutout block's texels the fog color and leaves its h
     vx::render::Renderer& renderer = created.value();
     OneBlock cutout(vx::Opacity::cutout);
     REQUIRE(renderer.set_chunk({.x = 0, .y = 0, .z = 0}, cutout.mesh()).has_value());
-    const vx::render::Fog full{
-        .color = {.r = 64, .g = 128, .b = 192},
-        .ramps = {.haze_end = 0.01F, .band_start = 100.0F, .band_end = 200.0F}};
-    const std::vector<std::uint8_t> pixels = draw_fogged(renderer, facing(vx::Face::pos_z), full);
-    CHECK(pixel_at(pixels, 22, 32) == Pixel{0, 0, 0, 255});
+    // The haze half way at the face, as in the test above.
+    constexpr vx::render::Srgb8 color{.r = 64, .g = 128, .b = 192};
+    const auto distance = static_cast<float>(std::sqrt(1.94));
+    const vx::render::Fog half{
+        .color = color,
+        .ramps = {.haze_end = 2.0F * distance, .band_start = 100.0F, .band_end = 200.0F},
+        .sky = {.r = 0, .g = 0, .b = 255}};
+    const std::vector<std::uint8_t> pixels = draw_fogged(renderer, facing(vx::Face::pos_z), half);
+    // Through the hole, level with the eye: the sky at the horizon, all fog.
+    const Pixel hole = pixel_at(pixels, 22, 32);
+    CHECK(std::abs(int{hole[0]} - 64) <= 1);
+    CHECK(std::abs(int{hole[1]} - 128) <= 1);
+    CHECK(std::abs(int{hole[2]} - 192) <= 1);
+    // The white texel, half fogged.
     const Pixel texel = pixel_at(pixels, 42, 32);
-    CHECK(std::abs(int{texel[0]} - 64) <= 1);
-    CHECK(std::abs(int{texel[1]} - 128) <= 1);
-    CHECK(std::abs(int{texel[2]} - 192) <= 1);
+    CHECK(std::abs(texel[0] - fogged(0.8, color.r, 0.5)) <= 1.5);
+    CHECK(std::abs(texel[1] - fogged(0.8, color.g, 0.5)) <= 1.5);
+    CHECK(std::abs(texel[2] - fogged(0.8, color.b, 0.5)) <= 1.5);
     CHECK(renderer.context().instance().validation_counts().errors == 0);
+}
+
+namespace {
+
+// How far a view ray through the middle of row `row` rises: the sine of its
+// elevation, for a camera looking level with the image's 70-degree field.
+double rise_of_row(std::uint32_t row) {
+    const double up =
+        1.0 - ((2.0 * (static_cast<double>(row) + 0.5)) / static_cast<double>(image_size.height));
+    const double slope = up * std::tan(35.0 * std::numbers::pi / 180.0);
+    return slope / std::sqrt(1.0 + (slope * slope));
+}
+
+} // namespace
+
+TEST_CASE("the sky fades from its color to the fog color toward the horizon, where nothing was "
+          "drawn") {
+    const std::array<Quarters, 1> layers = {Quarters{white, white, white, white}};
+    const std::vector<std::byte> textures = texture_bytes(layers);
+    vx::Result<vx::render::Renderer> created = renderer_with(textures);
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    constexpr vx::render::Srgb8 fog{.r = 192, .g = 216, .b = 255};
+    constexpr vx::render::Srgb8 sky{.r = 120, .g = 167, .b = 255};
+    // No ramp reaches the block in front, so only the sky is fogged.
+    const vx::render::Fog daytime{
+        .color = fog,
+        .ramps = {.haze_end = 1.0e6F, .band_start = 1.0e6F, .band_end = 2.0e6F},
+        .sky = sky};
+
+    // Looking level, nothing drawn: each row the disc's color at its rise,
+    // mixed in encoded values, the fog color from the rim down.
+    vx::render::Camera level;
+    level.position = {0.5, 300.5, 0.5};
+    const std::vector<std::uint8_t> open = draw_fogged(renderer, level, daytime);
+    for (const std::uint32_t row : {1U, 8U, 16U, 24U, 29U, 31U, 33U, 48U, 62U}) {
+        const auto amount =
+            static_cast<double>(vx::render::sky_fog_amount(static_cast<float>(rise_of_row(row))));
+        CAPTURE(row);
+        CAPTURE(amount);
+        const Pixel at = pixel_at(open, 32, row);
+        CHECK(std::abs(at[0] - (sky.r + (amount * (fog.r - sky.r)))) <= 2.0);
+        CHECK(std::abs(at[1] - (sky.g + (amount * (fog.g - sky.g)))) <= 2.0);
+        CHECK(std::abs(at[2] - (sky.b + (amount * (fog.b - sky.b)))) <= 2.0);
+    }
+    // High up, nearly the sky's color; at and under the horizon, the fog's.
+    CHECK(pixel_at(open, 32, 1)[0] < 130);
+    CHECK(pixel_at(open, 32, 40) == Pixel{fog.r, fog.g, fog.b, 255});
+
+    // A block in front keeps its face: the sky draws only where nothing was.
+    OneBlock block(vx::Opacity::opaque);
+    REQUIRE(renderer.set_chunk({.x = 0, .y = 0, .z = 0}, block.mesh()).has_value());
+    const std::vector<std::uint8_t> blocked =
+        draw_fogged(renderer, facing(vx::Face::pos_z), daytime);
+    CHECK(std::abs(pixel_at(blocked, 32, 32)[0] - fogged(0.8, fog.r, 0.0)) <= 1.5);
+    CHECK(std::abs(pixel_at(blocked, 32, 32)[2] - fogged(0.8, fog.b, 0.0)) <= 1.5);
+
+    // Without fog, no sky pass: the frame keeps the color it clears to.
+    constexpr vx::render::Color clear = {.r = 0.2F, .g = 0.4F, .b = 1.0F, .a = 1.0F};
+    REQUIRE(renderer.render({.sky = clear, .camera = level, .cubes = {}}).has_value());
+    const vx::Result<std::vector<std::uint8_t>> flat = renderer.capture();
+    REQUIRE(flat.has_value());
+    const Pixel top = pixel_at(flat.value(), 32, 1);
+    CHECK(top == pixel_at(flat.value(), 32, 40));
+    CHECK(top[2] > 250);
+    CHECK(top[0] < 130);
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }

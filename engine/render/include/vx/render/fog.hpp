@@ -51,10 +51,20 @@ struct FogLook {
 // arithmetic: 15% of the way at 12 chunks, none from 32.
 [[nodiscard]] Srgb8 fog_color(const FogLook& look, double view_blocks) noexcept;
 
-// A frame's fog (RFC 0013): the color it mixes toward and its ramps.
+// How much of the fog color 26.2's daytime sky has where a view ray rises
+// by `rise`, the sine of its elevation, 0 to 1. Its sky is a disc 16 blocks
+// above the eye, 512 across from its middle, its distance from the eye
+// interpolated from 16 at the middle to its rim's, and fogged from 0 to 512
+// blocks; under the rim's elevation, 1.79 degrees, the fog color shows.
+[[nodiscard]] float sky_fog_amount(float rise) noexcept;
+
+// A frame's fog (RFC 0013): the color it mixes toward, its ramps, and the
+// sky's color, which fades into it toward the horizon: 26.2's noon sky
+// unless given.
 struct Fog {
     Srgb8 color;
     FogRamps ramps;
+    Srgb8 sky = FogLook{}.sky;
 };
 
 } // namespace vx::render
