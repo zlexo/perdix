@@ -71,15 +71,34 @@ Result<Image> make_offscreen_target(const Device& device, VkExtent2D extent) {
 // device without this one is told why here.
 constexpr VkFormat depth_format = VK_FORMAT_D32_SFLOAT;
 
-Result<Image> make_depth_target(const Device& device, VkExtent2D extent) {
+Result<Image> make_depth_target(const Device& device, VkExtent2D extent,
+                                VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT) {
     VkFormatProperties properties{};
     vkGetPhysicalDeviceFormatProperties(device.physical_device(), depth_format, &properties);
     if ((properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) == 0) {
         return Error{"the device cannot draw depth into 32-bit floats, which RFC 0001's "
                      "reversed-Z needs"};
     }
+    if (samples != VK_SAMPLE_COUNT_1_BIT) {
+        return Image::create_attachment(device, extent, depth_format,
+                                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                                        VK_IMAGE_ASPECT_DEPTH_BIT, samples, "depth target");
+    }
     return Image::create(device, extent, depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                          VK_IMAGE_ASPECT_DEPTH_BIT, "depth target");
+}
+
+// RFC 0013's MSAA: the samples a pixel of the world takes.
+VkSampleCountFlagBits sample_bits(Antialiasing samples) noexcept {
+    switch (samples) {
+    case Antialiasing::x2:
+        return VK_SAMPLE_COUNT_2_BIT;
+    case Antialiasing::x4:
+        return VK_SAMPLE_COUNT_4_BIT;
+    case Antialiasing::off:
+        break;
+    }
+    return VK_SAMPLE_COUNT_1_BIT;
 }
 
 enum class Target : std::uint8_t { swapchain, offscreen };
@@ -93,7 +112,24 @@ struct FrameTarget {
     VkExtent2D extent;
     VkImage depth_image;
     VkImageView depth_view;
+    // With MSAA (RFC 0013), the world's color, resolved into `image`.
+    VkImage msaa_image = VK_NULL_HANDLE;
+    VkImageView msaa_view = VK_NULL_HANDLE;
 };
+
+// A frame's target: `image` and the depth beside it, and with MSAA the
+// world's color.
+FrameTarget frame_target(Target kind, VkImage image, VkImageView view, VkExtent2D extent,
+                         const Image& depth, const std::optional<Image>& msaa) {
+    return {.kind = kind,
+            .image = image,
+            .view = view,
+            .extent = extent,
+            .depth_image = depth.image(),
+            .depth_view = depth.view(),
+            .msaa_image = msaa ? msaa->image() : VK_NULL_HANDLE,
+            .msaa_view = msaa ? msaa->view() : VK_NULL_HANDLE};
+}
 
 // Cube vertices as cube.slang reads them: a corner within the block and
 // the face's linear color.
@@ -205,7 +241,8 @@ static_assert(sizeof(BodyVertex) == 32 && offsetof(BodyVertex, texel) == 12 &&
 // Bodies are drawn from both sides, as the game draws them: through an outer
 // layer's clear texels, the inside of the box behind shows.
 Result<GraphicsPipeline> make_body_pipeline(const Device& device, VkFormat color_format,
-                                            VkDescriptorSetLayout textures) {
+                                            VkDescriptorSetLayout textures,
+                                            VkSampleCountFlagBits samples) {
     return GraphicsPipeline::create(device,
                                     {.spirv = shaders::body,
                                      .vertex_entry = "vertex_main",
@@ -214,6 +251,7 @@ Result<GraphicsPipeline> make_body_pipeline(const Device& device, VkFormat color
                                      .depth_format = depth_format,
                                      .cull_mode = VK_CULL_MODE_NONE,
                                      .set_layout = textures,
+                                     .samples = samples,
                                      .push_constant_size = sizeof(BodyPush),
                                      .push_constant_stages = push_stages},
                                     "body");
@@ -247,7 +285,8 @@ constexpr TagColors normal_colors = {.box = {0.0F, 0.0F, 0.0F, 0.0F},
 // pass seen through walls neither tests nor writes depth, the normal one
 // does both, as the game's see-through and normal text do.
 Result<GraphicsPipeline> make_text_pipeline(const Device& device, VkFormat color_format,
-                                            VkDescriptorSetLayout textures, bool see_through) {
+                                            VkDescriptorSetLayout textures, bool see_through,
+                                            VkSampleCountFlagBits samples) {
     return GraphicsPipeline::create(device,
                                     {.spirv = shaders::text,
                                      .vertex_entry = "vertex_main",
@@ -259,6 +298,7 @@ Result<GraphicsPipeline> make_text_pipeline(const Device& device, VkFormat color
                                      .blend = true,
                                      .depth_test = !see_through,
                                      .depth_write = !see_through,
+                                     .samples = samples,
                                      .push_constant_size = sizeof(TagPush),
                                      .push_constant_stages = push_stages},
                                     see_through ? "text, seen through walls" : "text");
@@ -289,7 +329,8 @@ std::array<std::byte, std::size_t{skin_size} * skin_size * 4> make_missing_skin(
 }
 
 Result<GraphicsPipeline> make_cube_pipeline(const Device& device, VkFormat color_format,
-                                            VkDescriptorSetLayout textures) {
+                                            VkDescriptorSetLayout textures,
+                                            VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT) {
     return GraphicsPipeline::create(device,
                                     {.spirv = shaders::cube,
                                      .vertex_entry = "vertex_main",
@@ -298,6 +339,7 @@ Result<GraphicsPipeline> make_cube_pipeline(const Device& device, VkFormat color
                                      .depth_format = depth_format,
                                      .cull_mode = VK_CULL_MODE_BACK_BIT,
                                      .set_layout = textures,
+                                     .samples = samples,
                                      .push_constant_size = sizeof(DrawPush),
                                      .push_constant_stages = push_stages},
                                     "cube");
@@ -435,7 +477,7 @@ Result<void> write_cubes_and_fog(VmaAllocator allocator, const Buffer& origins, 
 Result<GraphicsPipeline> make_chunk_pipeline(const Device& device, VkFormat color_format,
                                              VkDescriptorSetLayout textures,
                                              const char* fragment_entry, VkPolygonMode polygon_mode,
-                                             std::string_view name) {
+                                             std::string_view name, VkSampleCountFlagBits samples) {
     return GraphicsPipeline::create(device,
                                     {.spirv = shaders::chunk,
                                      .vertex_entry = "vertex_main",
@@ -445,6 +487,7 @@ Result<GraphicsPipeline> make_chunk_pipeline(const Device& device, VkFormat colo
                                      .cull_mode = VK_CULL_MODE_BACK_BIT,
                                      .polygon_mode = polygon_mode,
                                      .set_layout = textures,
+                                     .samples = samples,
                                      .push_constant_size = sizeof(ChunkPush),
                                      .push_constant_stages = chunk_push_stages},
                                     name);
@@ -461,7 +504,8 @@ static_assert(sizeof(SkyPush) == 80 && offsetof(SkyPush, fog) == 64);
 // The sky (RFC 0013): one triangle over the target at the far end, its
 // depth tested for equal, so it draws only where nothing was; it writes no
 // depth.
-Result<GraphicsPipeline> make_sky_pipeline(const Device& device, VkFormat color_format) {
+Result<GraphicsPipeline> make_sky_pipeline(const Device& device, VkFormat color_format,
+                                           VkSampleCountFlagBits samples) {
     return GraphicsPipeline::create(device,
                                     {.spirv = shaders::sky,
                                      .vertex_entry = "vertex_main",
@@ -471,6 +515,7 @@ Result<GraphicsPipeline> make_sky_pipeline(const Device& device, VkFormat color_
                                      .cull_mode = VK_CULL_MODE_NONE,
                                      .depth_write = false,
                                      .depth_compare = VK_COMPARE_OP_EQUAL,
+                                     .samples = samples,
                                      .push_constant_size = sizeof(SkyPush),
                                      .push_constant_stages = VK_SHADER_STAGE_FRAGMENT_BIT},
                                     "sky");
@@ -487,14 +532,17 @@ struct ChunkPipelines {
 };
 
 Result<ChunkPipelines> make_chunk_pipelines(const Device& device, VkFormat color_format,
-                                            VkDescriptorSetLayout textures) {
-    Result<GraphicsPipeline> opaque = make_chunk_pipeline(
-        device, color_format, textures, "fragment_opaque", VK_POLYGON_MODE_FILL, "chunk, opaque");
+                                            VkDescriptorSetLayout textures,
+                                            VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT) {
+    Result<GraphicsPipeline> opaque =
+        make_chunk_pipeline(device, color_format, textures, "fragment_opaque", VK_POLYGON_MODE_FILL,
+                            "chunk, opaque", samples);
     if (!opaque.has_value()) {
         return opaque.error();
     }
-    Result<GraphicsPipeline> cutout = make_chunk_pipeline(
-        device, color_format, textures, "fragment_cutout", VK_POLYGON_MODE_FILL, "chunk, cutout");
+    Result<GraphicsPipeline> cutout =
+        make_chunk_pipeline(device, color_format, textures, "fragment_cutout", VK_POLYGON_MODE_FILL,
+                            "chunk, cutout", samples);
     if (!cutout.has_value()) {
         return cutout.error();
     }
@@ -502,13 +550,13 @@ Result<ChunkPipelines> make_chunk_pipelines(const Device& device, VkFormat color
     if (device.optional().fill_mode_non_solid) {
         Result<GraphicsPipeline> lines =
             make_chunk_pipeline(device, color_format, textures, "fragment_opaque",
-                                VK_POLYGON_MODE_LINE, "chunk, wireframe");
+                                VK_POLYGON_MODE_LINE, "chunk, wireframe", samples);
         if (!lines.has_value()) {
             return lines.error();
         }
         wireframe = std::move(lines).value();
     }
-    Result<GraphicsPipeline> sky = make_sky_pipeline(device, color_format);
+    Result<GraphicsPipeline> sky = make_sky_pipeline(device, color_format, samples);
     if (!sky.has_value()) {
         return sky.error();
     }
@@ -716,16 +764,20 @@ void record_main_pass(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* g
                       const FrameTarget& target, const FrameDraw& draw) {
     TracyVkNamedZone(gpu_profiler, pass_zone, commands, "Main pass", gpu_profiler != nullptr);
 
+    // With MSAA (RFC 0013) the pass draws into the world's samples and
+    // averages them into the target as it ends; the samples are not kept.
+    const bool msaa = target.msaa_view != VK_NULL_HANDLE;
     const VkRenderingAttachmentInfo attachment = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .pNext = nullptr,
-        .imageView = target.view,
+        .imageView = msaa ? target.msaa_view : target.view,
         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .resolveMode = VK_RESOLVE_MODE_NONE,
-        .resolveImageView = VK_NULL_HANDLE,
-        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .resolveMode = msaa ? VK_RESOLVE_MODE_AVERAGE_BIT : VK_RESOLVE_MODE_NONE,
+        .resolveImageView = msaa ? target.view : VK_NULL_HANDLE,
+        .resolveImageLayout =
+            msaa ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .storeOp = msaa ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE,
         .clearValue = {.color = {.float32 = {draw.clear.r, draw.clear.g, draw.clear.b,
                                              draw.clear.a}}},
     };
@@ -818,6 +870,15 @@ void record_passes(VkCommandBuffer commands, [[maybe_unused]] tracy::VkCtx* gpu_
                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                VK_IMAGE_ASPECT_DEPTH_BIT);
 
+    // The world's samples, with MSAA: never kept from one frame to the next.
+    if (target.msaa_image != VK_NULL_HANDLE) {
+        transition(commands, target.msaa_image, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    }
+
     record_main_pass(commands, gpu_profiler, target, draw);
 
     if (target.kind == Target::swapchain) {
@@ -894,8 +955,11 @@ Result<void> record_frame(VkCommandBuffer commands, GpuTimer& timer, std::uint32
 // The overlay's pipeline, for the main pass: one color attachment of
 // `format`, which must outlive the call it is passed to, and the pass's
 // depth attachment, which the pipeline neither tests nor writes.
-ImGui_ImplVulkan_PipelineInfo overlay_pipeline_info(const VkFormat* format) {
+ImGui_ImplVulkan_PipelineInfo
+overlay_pipeline_info(const VkFormat* format,
+                      VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT) {
     ImGui_ImplVulkan_PipelineInfo info{};
+    info.MSAASamples = samples; // the pass's, with MSAA (RFC 0013)
     info.PipelineRenderingCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
         .pNext = nullptr,
@@ -1132,12 +1196,15 @@ struct TextResources {
 };
 
 Result<TextResources> make_text_resources(const Device& device, VkFormat color_format,
-                                          VkDescriptorSetLayout textures, bool font) {
-    Result<GraphicsPipeline> see_through = make_text_pipeline(device, color_format, textures, true);
+                                          VkDescriptorSetLayout textures, bool font,
+                                          VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT) {
+    Result<GraphicsPipeline> see_through =
+        make_text_pipeline(device, color_format, textures, true, samples);
     if (!see_through.has_value()) {
         return see_through.error();
     }
-    Result<GraphicsPipeline> normal = make_text_pipeline(device, color_format, textures, false);
+    Result<GraphicsPipeline> normal =
+        make_text_pipeline(device, color_format, textures, false, samples);
     if (!normal.has_value()) {
         return normal.error();
     }
@@ -1165,8 +1232,9 @@ struct BodyResources {
 };
 
 Result<BodyResources> make_body_resources(const Device& device, VkFormat color_format,
-                                          VkDescriptorSetLayout textures, std::size_t skins) {
-    Result<GraphicsPipeline> pipeline = make_body_pipeline(device, color_format, textures);
+                                          VkDescriptorSetLayout textures, std::size_t skins,
+                                          VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT) {
+    Result<GraphicsPipeline> pipeline = make_body_pipeline(device, color_format, textures, samples);
     if (!pipeline.has_value()) {
         return pipeline.error();
     }
@@ -1347,16 +1415,17 @@ Renderer::Renderer(Context context, std::optional<Swapchain> swapchain,
 Renderer::Renderer(Renderer&& other) noexcept
     : context_(std::move(other.context_)), swapchain_(std::move(other.swapchain_)),
       offscreen_(std::move(other.offscreen_)), depth_(std::move(other.depth_)),
-      textures_(std::move(other.textures_)), block_textures_(std::move(other.block_textures_)),
-      cube_(std::move(other.cube_)), body_drawing_(std::move(other.body_drawing_)),
-      text_drawing_(std::move(other.text_drawing_)),
+      msaa_color_(std::move(other.msaa_color_)), textures_(std::move(other.textures_)),
+      block_textures_(std::move(other.block_textures_)), cube_(std::move(other.cube_)),
+      body_drawing_(std::move(other.body_drawing_)), text_drawing_(std::move(other.text_drawing_)),
       chunk_drawing_(std::move(other.chunk_drawing_)), chunks_(std::move(other.chunks_)),
       set_chunk_at_(other.set_chunk_at_), set_chunk_generation_(other.set_chunk_generation_),
       block_filter_(other.block_filter_), occlusion_strength_(other.occlusion_strength_),
-      wireframe_(other.wireframe_), framebuffer_(other.framebuffer_),
-      target_framebuffer_(other.target_framebuffer_), present_mode_(other.present_mode_),
-      swapchain_stale_(other.swapchain_stale_), slots_(std::exchange(other.slots_, {})),
-      origins_(std::move(other.origins_)), body_vertices_(std::move(other.body_vertices_)),
+      wireframe_(other.wireframe_), antialiasing_(other.antialiasing_),
+      framebuffer_(other.framebuffer_), target_framebuffer_(other.target_framebuffer_),
+      present_mode_(other.present_mode_), swapchain_stale_(other.swapchain_stale_),
+      slots_(std::exchange(other.slots_, {})), origins_(std::move(other.origins_)),
+      body_vertices_(std::move(other.body_vertices_)),
       body_origins_(std::move(other.body_origins_)), posed_(other.posed_),
       tag_vertices_(std::move(other.tag_vertices_)), tag_origins_(std::move(other.tag_origins_)),
       fog_(std::move(other.fog_)), laid_(other.laid_), tag_order_(other.tag_order_),
@@ -1606,27 +1675,28 @@ Result<void> Renderer::start_overlay(ImGuiContext* overlay) {
 
 // Every pipeline again, for targets of `format`.
 Result<void> Renderer::rebuild_pipelines(VkFormat format) {
+    const VkSampleCountFlagBits samples = sample_bits(antialiasing_);
     Result<GraphicsPipeline> cube =
-        make_cube_pipeline(context_.device(), format, textures_.layout());
+        make_cube_pipeline(context_.device(), format, textures_.layout(), samples);
     if (!cube.has_value()) {
         return cube.error();
     }
     cube_.pipeline = std::move(cube).value();
     Result<BodyResources> bodies =
-        make_body_resources(context_.device(), format, textures_.layout(), 0);
+        make_body_resources(context_.device(), format, textures_.layout(), 0, samples);
     if (!bodies.has_value()) {
         return bodies.error();
     }
     body_drawing_.pipeline = std::move(bodies.value().pipeline);
     Result<TextResources> text =
-        make_text_resources(context_.device(), format, textures_.layout(), false);
+        make_text_resources(context_.device(), format, textures_.layout(), false, samples);
     if (!text.has_value()) {
         return text.error();
     }
     text_drawing_.see_through = std::move(text.value().see_through);
     text_drawing_.normal = std::move(text.value().normal);
     Result<ChunkPipelines> chunk_pipelines =
-        make_chunk_pipelines(context_.device(), format, textures_.layout());
+        make_chunk_pipelines(context_.device(), format, textures_.layout(), samples);
     if (!chunk_pipelines.has_value()) {
         return chunk_pipelines.error();
     }
@@ -1636,7 +1706,8 @@ Result<void> Renderer::rebuild_pipelines(VkFormat format) {
     chunk_drawing_.sky = std::move(chunk_pipelines.value().sky);
     if (overlay_ != nullptr) {
         ImGui::SetCurrentContext(overlay_);
-        const ImGui_ImplVulkan_PipelineInfo overlay_pipeline = overlay_pipeline_info(&format);
+        const ImGui_ImplVulkan_PipelineInfo overlay_pipeline =
+            overlay_pipeline_info(&format, samples);
         ImGui_ImplVulkan_CreateMainPipeline(&overlay_pipeline);
     }
     return {};
@@ -1673,13 +1744,63 @@ Result<void> Renderer::recreate_target() {
         }
         offscreen_ = std::move(replacement).value();
     }
-    Result<Image> depth = make_depth_target(context_.device(), extent);
+    if (const Result<void> made = make_attachments(extent, cube_.pipeline.color_format());
+        !made.has_value()) {
+        return made.error();
+    }
+    target_framebuffer_ = framebuffer_;
+    return add_rendered_semaphores();
+}
+
+Result<void> Renderer::make_attachments(VkExtent2D extent, VkFormat format) {
+    const VkSampleCountFlagBits samples = sample_bits(antialiasing_);
+    Result<Image> depth = make_depth_target(context_.device(), extent, samples);
     if (!depth.has_value()) {
         return depth.error();
     }
     depth_ = std::move(depth).value();
-    target_framebuffer_ = framebuffer_;
-    return add_rendered_semaphores();
+    msaa_color_.reset();
+    if (samples != VK_SAMPLE_COUNT_1_BIT) {
+        Result<Image> color = Image::create_attachment(
+            context_.device(), extent, format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, samples, "multisampled color");
+        if (!color.has_value()) {
+            return color.error();
+        }
+        msaa_color_ = std::move(color).value();
+    }
+    return {};
+}
+
+bool Renderer::offers(Antialiasing samples) const noexcept {
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(context_.device().physical_device(), &properties);
+    const VkSampleCountFlags both = properties.limits.framebufferColorSampleCounts &
+                                    properties.limits.framebufferDepthSampleCounts;
+    return (both & static_cast<VkSampleCountFlags>(sample_bits(samples))) != 0;
+}
+
+Result<void> Renderer::set_antialiasing(Antialiasing samples) {
+    if (samples == antialiasing_) {
+        return {};
+    }
+    if (!offers(samples)) {
+        return Error{"the device does not offer " +
+                     std::to_string(static_cast<int>(sample_bits(samples))) +
+                     " samples a pixel for both color and depth"};
+    }
+    // The frames in flight still use the pipelines and attachments.
+    vkDeviceWaitIdle(context_.device().handle());
+    antialiasing_ = samples;
+    const VkFormat format = cube_.pipeline.color_format();
+    if (const Result<void> rebuilt = rebuild_pipelines(format); !rebuilt.has_value()) {
+        return rebuilt.error();
+    }
+    // The target's own size: the swapchain's, which the surface may set,
+    // or the one the offscreen image was made for.
+    const VkExtent2D extent =
+        swapchain_.has_value() ? swapchain_->choice().extent : vk_extent(target_framebuffer_);
+    return make_attachments(extent, format);
 }
 
 void Renderer::set_present_mode(PresentMode mode) noexcept {
@@ -1935,12 +2056,8 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
         const VkExtent2D extent = offscreen_->extent();
         if (const Result<void> recorded = record_frame(
                 slot.command_buffer, gpu_timer_, slot_index, gpu_profiler_,
-                {.kind = Target::offscreen,
-                 .image = offscreen_->image(),
-                 .view = offscreen_->view(),
-                 .extent = extent,
-                 .depth_image = depth_.image(),
-                 .depth_view = depth_.view()},
+                frame_target(Target::offscreen, offscreen_->image(), offscreen_->view(), extent,
+                             depth_, msaa_color_),
                 {.clear = clear_color(inputs),
                  .pipeline = &cube_.pipeline,
                  .textures = textures_.set(),
@@ -1986,12 +2103,8 @@ Result<Frame> Renderer::render(const FrameInputs& inputs) {
     const VkExtent2D extent = swapchain.choice().extent;
     if (const Result<void> recorded = record_frame(
             slot.command_buffer, gpu_timer_, slot_index, gpu_profiler_,
-            {.kind = Target::swapchain,
-             .image = swapchain.images()[index],
-             .view = swapchain.views()[index],
-             .extent = extent,
-             .depth_image = depth_.image(),
-             .depth_view = depth_.view()},
+            frame_target(Target::swapchain, swapchain.images()[index], swapchain.views()[index],
+                         extent, depth_, msaa_color_),
             {.clear = clear_color(inputs),
              .pipeline = &cube_.pipeline,
              .textures = textures_.set(),

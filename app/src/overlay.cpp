@@ -274,6 +274,27 @@ void Overlay::draw_block_filter(render::Renderer& renderer) {
     }
 }
 
+void Overlay::draw_antialiasing(render::Renderer& renderer) {
+    // RFC 0013's MSAA switch, each count where the device offers it.
+    ImGui::TextUnformatted("Anti-aliasing:");
+    int samples = static_cast<int>(renderer.antialiasing());
+    for (const auto& [label, choice] : {std::pair{"Off##msaa", render::Antialiasing::off},
+                                        std::pair{"2x##msaa", render::Antialiasing::x2},
+                                        std::pair{"4x##msaa", render::Antialiasing::x4}}) {
+        if (!renderer.offers(choice)) {
+            continue;
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton(label, &samples, static_cast<int>(choice))) {
+            const Result<void> set = renderer.set_antialiasing(choice);
+            antialiasing_error_ = set.has_value() ? std::string() : set.error().message;
+        }
+    }
+    if (!antialiasing_error_.empty()) {
+        ImGui::TextWrapped("Anti-aliasing failed: %s", antialiasing_error_.c_str());
+    }
+}
+
 void Overlay::draw_chunk(render::Renderer& renderer, ChunkMeshing& meshing) {
     // RFC 0003's toggles for looking at the mesh: merging, which meshes the
     // chunk again, occlusion's strength, and the wireframe, shown only where
@@ -481,6 +502,7 @@ void Overlay::draw_overlay(render::Renderer& renderer, const render::Camera& cam
         draw_present_mode(renderer);
         ImGui::Separator();
         draw_block_filter(renderer);
+        draw_antialiasing(renderer);
         ImGui::Separator();
         draw_chunk(renderer, meshing);
         ImGui::Separator();

@@ -15,7 +15,9 @@
 
 #include <doctest/doctest.h>
 #include <glm/ext/vector_double3.hpp>
+#include <vk_mem_alloc.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -23,6 +25,7 @@
 #include <memory>
 #include <numbers>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -727,4 +730,97 @@ TEST_CASE("a chunk that appears fades in from the fog color, with fog, as 26.2's
         face(draw_fogged(renderer, facing(vx::Face::pos_z), std::nullopt, 1'000.0F));
     CHECK(unfogged == own);
     CHECK(renderer.context().instance().validation_counts().errors == 0);
+}
+
+namespace {
+
+// How many of a frame's pixels are blends: neither the black sky nor one of
+// a white block's three face shades (0.6, 0.8 and 1, encoded 203, 231 and
+// 255), each channel within 2.
+int blended_pixels(const std::vector<std::uint8_t>& pixels) {
+    int blended = 0;
+    for (std::uint32_t y = 0; y < image_size.height; ++y) {
+        for (std::uint32_t x = 0; x < image_size.width; ++x) {
+            const Pixel at = pixel_at(pixels, x, y);
+            const bool pure = std::ranges::any_of(std::array{0, 203, 231, 255}, [&](int level) {
+                return std::abs(at[0] - level) <= 2 && std::abs(at[1] - level) <= 2 &&
+                       std::abs(at[2] - level) <= 2;
+            });
+            blended += pure ? 0 : 1;
+        }
+    }
+    return blended;
+}
+
+// How many different blends a frame's edges hold: a pixel of n samples
+// covers 0 to n of them, so more samples give more in-between colors.
+std::size_t blend_levels(const std::vector<std::uint8_t>& pixels) {
+    std::set<std::array<std::uint8_t, 3>> levels;
+    for (std::uint32_t y = 0; y < image_size.height; ++y) {
+        for (std::uint32_t x = 0; x < image_size.width; ++x) {
+            const Pixel at = pixel_at(pixels, x, y);
+            if (at[0] > 2 && at[0] < 201) { // between the sky and the darkest face
+                levels.insert({at[0], at[1], at[2]});
+            }
+        }
+    }
+    return levels.size();
+}
+
+// What VMA holds for the renderer: its allocations.
+std::uint32_t allocations(const vx::render::Renderer& renderer) {
+    VmaTotalStatistics stats{};
+    vmaCalculateStatistics(renderer.context().device().allocator(), &stats);
+    return stats.total.statistics.allocationCount;
+}
+
+} // namespace
+
+TEST_CASE("MSAA blends the edges a block draws, and off leaves every pixel one sample's (RFC "
+          "0013)") {
+    using vx::render::Antialiasing;
+    const std::array<Quarters, 1> layers = {Quarters{white, white, white, white}};
+    const std::vector<std::byte> textures = texture_bytes(layers);
+    vx::Result<vx::render::Renderer> created = renderer_with(textures);
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    OneBlock block(vx::Opacity::opaque);
+    REQUIRE(renderer.set_chunk({.x = 0, .y = 0, .z = 0}, block.mesh()).has_value());
+    // Corner on, from above: every edge slants across the pixels.
+    vx::render::Camera corner;
+    corner.position = {18.0, 17.7, 18.0};
+    corner.yaw = quarter_turn / 2.0F;
+    corner.pitch = -0.515F;
+    const auto blends = [&] { return blended_pixels(draw(renderer, corner)); };
+
+    CHECK(renderer.antialiasing() == Antialiasing::off);
+    CHECK(blends() == 0);
+    const std::uint32_t before = allocations(renderer);
+    REQUIRE(renderer.offers(Antialiasing::x4));
+    REQUIRE(renderer.set_antialiasing(Antialiasing::x4).has_value());
+    CHECK(renderer.antialiasing() == Antialiasing::x4);
+    const int four = blends();
+    CHECK(four > 10);
+    const std::size_t four_levels = blend_levels(draw(renderer, corner));
+    if (renderer.offers(Antialiasing::x2)) {
+        REQUIRE(renderer.set_antialiasing(Antialiasing::x2).has_value());
+        const int two = blends();
+        CHECK(two > 0);
+        CHECK(two <= four);
+        // Two samples blend a sky edge only half way; four, a quarter at a time.
+        CHECK(blend_levels(draw(renderer, corner)) < four_levels);
+    }
+    REQUIRE(renderer.set_antialiasing(Antialiasing::off).has_value());
+    CHECK(blends() == 0);
+    // Back and forth, nothing piles up.
+    for (int round = 0; round < 10; ++round) {
+        REQUIRE(renderer.set_antialiasing(Antialiasing::x4).has_value());
+        static_cast<void>(draw(renderer, corner));
+        REQUIRE(renderer.set_antialiasing(Antialiasing::off).has_value());
+        static_cast<void>(draw(renderer, corner));
+    }
+    CHECK(allocations(renderer) == before);
+    CHECK(renderer.context().instance().validation_counts().errors == 0);
+    CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }

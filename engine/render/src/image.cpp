@@ -17,6 +17,13 @@ Result<Image> Image::create(const Device& device, VkExtent2D extent, VkFormat fo
     return make(device, extent, format, usage, aspect, name, 1, 1, VK_IMAGE_VIEW_TYPE_2D);
 }
 
+Result<Image> Image::create_attachment(const Device& device, VkExtent2D extent, VkFormat format,
+                                       VkImageUsageFlags usage, VkImageAspectFlags aspect,
+                                       VkSampleCountFlagBits samples, std::string_view name) {
+    return make(device, extent, format, usage | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT, aspect,
+                name, 1, 1, VK_IMAGE_VIEW_TYPE_2D, samples, true);
+}
+
 Result<Image> Image::create_array(const Device& device, VkExtent2D extent, VkFormat format,
                                   std::uint32_t levels, std::uint32_t layers,
                                   VkImageUsageFlags usage, std::string_view name) {
@@ -49,7 +56,8 @@ Result<Image> Image::create_array(const Device& device, VkExtent2D extent, VkFor
 
 Result<Image> Image::make(const Device& device, VkExtent2D extent, VkFormat format,
                           VkImageUsageFlags usage, VkImageAspectFlags aspect, std::string_view name,
-                          std::uint32_t levels, std::uint32_t layers, VkImageViewType view_type) {
+                          std::uint32_t levels, std::uint32_t layers, VkImageViewType view_type,
+                          VkSampleCountFlagBits samples, bool lazily) {
     Image image;
     image.device_ = device.handle();
     image.allocator_ = device.allocator();
@@ -68,7 +76,7 @@ Result<Image> Image::make(const Device& device, VkExtent2D extent, VkFormat form
         .extent = {.width = extent.width, .height = extent.height, .depth = 1},
         .mipLevels = levels,
         .arrayLayers = layers,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .samples = samples,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
         .usage = usage,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
@@ -76,11 +84,18 @@ Result<Image> Image::make(const Device& device, VkExtent2D extent, VkFormat form
         .pQueueFamilyIndices = nullptr,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
+    // A transient attachment in lazily allocated memory where the device
+    // has it, which tile-based GPUs need never back; elsewhere as any image.
     VmaAllocationCreateInfo allocation_info{};
-    allocation_info.usage = VMA_MEMORY_USAGE_AUTO;
-    if (const VkResult result = vmaCreateImage(image.allocator_, &image_info, &allocation_info,
-                                               &image.image_, &image.allocation_, nullptr);
-        result != VK_SUCCESS) {
+    allocation_info.usage = lazily ? VMA_MEMORY_USAGE_GPU_LAZILY_ALLOCATED : VMA_MEMORY_USAGE_AUTO;
+    VkResult created = vmaCreateImage(image.allocator_, &image_info, &allocation_info,
+                                      &image.image_, &image.allocation_, nullptr);
+    if (created == VK_ERROR_FEATURE_NOT_PRESENT && lazily) {
+        allocation_info.usage = VMA_MEMORY_USAGE_AUTO;
+        created = vmaCreateImage(image.allocator_, &image_info, &allocation_info, &image.image_,
+                                 &image.allocation_, nullptr);
+    }
+    if (const VkResult result = created; result != VK_SUCCESS) {
         return Error{"vmaCreateImage failed for the image \"" + std::string(name) +
                      "\": " + vk_result_name(result)};
     }

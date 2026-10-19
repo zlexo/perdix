@@ -28,6 +28,15 @@ public:
     // even with one layer: RFC 0004's block texture array. Levels run from 1
     // to the one of 1 by 1, layers from 1 to the device's maxImageArrayLayers;
     // anything else is an error, before Vulkan sees it.
+    // An attachment of `samples` that no frame keeps past its pass, RFC
+    // 0013's multisampled color and depth: transient, in lazily allocated
+    // memory where the device offers it, which tile-based GPUs need never
+    // write out.
+    [[nodiscard]] static Result<Image> create_attachment(const Device& device, VkExtent2D extent,
+                                                         VkFormat format, VkImageUsageFlags usage,
+                                                         VkImageAspectFlags aspect,
+                                                         VkSampleCountFlagBits samples,
+                                                         std::string_view name);
     [[nodiscard]] static Result<Image> create_array(const Device& device, VkExtent2D extent,
                                                     VkFormat format, std::uint32_t levels,
                                                     std::uint32_t layers, VkImageUsageFlags usage,
@@ -50,11 +59,11 @@ public:
 
 private:
     Image() = default;
-    [[nodiscard]] static Result<Image> make(const Device& device, VkExtent2D extent,
-                                            VkFormat format, VkImageUsageFlags usage,
-                                            VkImageAspectFlags aspect, std::string_view name,
-                                            std::uint32_t levels, std::uint32_t layers,
-                                            VkImageViewType view_type);
+    [[nodiscard]] static Result<Image>
+    make(const Device& device, VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
+         VkImageAspectFlags aspect, std::string_view name, std::uint32_t levels,
+         std::uint32_t layers, VkImageViewType view_type,
+         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, bool lazily = false);
     void destroy() noexcept;
 
     VkDevice device_ = VK_NULL_HANDLE;

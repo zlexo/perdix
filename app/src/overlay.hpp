@@ -172,6 +172,7 @@ private:
     void draw_frame_times() const;
     static void draw_present_mode(render::Renderer& renderer);
     static void draw_block_filter(render::Renderer& renderer);
+    void draw_antialiasing(render::Renderer& renderer);
     static void draw_chunk(render::Renderer& renderer, ChunkMeshing& meshing);
     void draw_chunk_rendering(render::Renderer& renderer);
     static void draw_camera(const render::Camera& camera);
@@ -192,6 +193,7 @@ private:
     bool reported_ = false;
     bool fog_ = true;
     float chunk_fade_ = 0.75F;
+    std::string antialiasing_error_; // the MSAA switch's last failure
     // The Render Distance slider's value while it is dragged, 0 otherwise:
     // the distance changes once it is let go.
     std::int32_t dragged_distance_ = 0;
