@@ -54,15 +54,27 @@ Result<std::uint32_t> worker_count(std::string_view value) {
     return *workers;
 }
 
-// The options that set how a run is measured: the flythroughs, the worker
-// count and their quality of service, and the frame limit. True when `arg`
-// was one of them, an error when its value was not, false when it is
-// another option.
+// --view-distance=N: in chunks, within the overlay slider's range.
+Result<std::int32_t> view_distance(std::string_view value) {
+    const std::optional<std::int32_t> chunks = whole_number<std::int32_t>(value);
+    if (!chunks || *chunks < least_view_distance || *chunks > most_view_distance) {
+        return Error{"--view-distance takes a whole number of chunks from " +
+                     std::to_string(least_view_distance) + " to " +
+                     std::to_string(most_view_distance) + ", not \"" + std::string(value) + "\""};
+    }
+    return *chunks;
+}
+
+// The options that set how a run is measured: the flythroughs, the view
+// distance, the worker count and their quality of service, and the frame
+// limit. True when `arg` was one of them, an error when its value was not,
+// false when it is another option.
 Result<bool> parse_run_option(std::string_view arg, Options& options) {
     constexpr std::string_view frames_flag = "--frames=";
     constexpr std::string_view flythrough_flag = "--flythrough";
     constexpr std::string_view quick_flythrough_flag = "--flythrough=quick";
     constexpr std::string_view endurance_flythrough_flag = "--flythrough=long";
+    constexpr std::string_view view_distance_flag = "--view-distance=";
     constexpr std::string_view workers_flag = "--workers=";
     constexpr std::string_view worker_qos_flag = "--worker-qos=";
     if (arg == flythrough_flag) {
@@ -71,6 +83,12 @@ Result<bool> parse_run_option(std::string_view arg, Options& options) {
         options.flythrough = Flythrough::quick;
     } else if (arg == endurance_flythrough_flag) {
         options.flythrough = Flythrough::endurance;
+    } else if (arg.starts_with(view_distance_flag)) {
+        const Result<std::int32_t> chunks = view_distance(arg.substr(view_distance_flag.size()));
+        if (!chunks.has_value()) {
+            return chunks.error();
+        }
+        options.view_distance = chunks.value();
     } else if (arg.starts_with(workers_flag)) {
         const Result<std::uint32_t> workers = worker_count(arg.substr(workers_flag.size()));
         if (!workers.has_value()) {
@@ -170,7 +188,8 @@ Result<Options> parse_options(std::span<const std::string_view> args) {
             return Error{"unknown option \"" + std::string(arg) +
                          "\": try --frames=N, --overlay, --pack=DIR, --minecraft=PATH, "
                          "--minecraft-version=ID, --no-minecraft, --flythrough[=quick|long], "
-                         "--workers=N, --worker-qos=switching|utility|user-initiated, "
+                         "--view-distance=N, --workers=N, "
+                         "--worker-qos=switching|utility|user-initiated, "
                          "--skin=NAME[:slim], --perdix-skin=NAME[:slim] or "
                          "--perdix=life|follow|still"};
         }

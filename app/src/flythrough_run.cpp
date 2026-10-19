@@ -59,6 +59,40 @@ void add_longest(PhaseResult& result, const FlythroughSample& sample) {
     result.longest_pass_ms = std::max(result.longest_pass_ms, milliseconds_of(sample.longest_pass));
 }
 
+// A phase's lowest view distance, with a sample's in it. A sample without
+// one says nothing.
+void add_view_distance(PhaseResult& result, const FlythroughSample& sample) {
+    if (sample.view_distance != 0 &&
+        (result.least_view_distance == 0 || sample.view_distance < result.least_view_distance)) {
+        result.least_view_distance = sample.view_distance;
+    }
+}
+
+// Whether the world held the plan's view distance at every full sample, or
+// the phases where it fell below and how far; nothing without a sample.
+std::string view_distance_note(std::int32_t planned, std::span<const PhaseResult> results) {
+    bool sampled = false;
+    std::string lowered;
+    for (const PhaseResult& result : results) {
+        if (result.least_view_distance == 0) {
+            continue;
+        }
+        sampled = true;
+        if (result.least_view_distance < planned) {
+            lowered += (lowered.empty() ? "" : ", ") + std::string(phase_name(result.phase)) +
+                       " to " + std::to_string(result.least_view_distance);
+        }
+    }
+    if (!sampled) {
+        return {};
+    }
+    if (lowered.empty()) {
+        return "\nThe world held view distance " + std::to_string(planned) + " at every sample.\n";
+    }
+    return "\nThe world's view distance fell below " + std::to_string(planned) + ": " + lowered +
+           ".\n";
+}
+
 } // namespace
 
 FlythroughRun::FlythroughRun(const FlythroughPlan& plan, Clock::time_point start)
@@ -142,6 +176,7 @@ void FlythroughRun::add(const FlythroughSample& sample) {
 void FlythroughRun::close(std::size_t index, const FlythroughSample& sample) {
     PhaseResult& over = results_[index];
     add_longest(over, sample);
+    add_view_distance(over, sample);
     over.broken += sample.broken;
     over.chunk_bytes_end = sample.chunk_bytes;
     over.chunk_bytes_peak = std::max(over.chunk_bytes_peak, sample.chunk_bytes);
@@ -174,6 +209,7 @@ void FlythroughRun::finish_phase(Clock::time_point now, bool capped) {
         std::vector<std::uint32_t> holes;
         for (const FlythroughSample& sample : samples_) {
             add_longest(result, sample);
+            add_view_distance(result, sample);
             near_holes.push_back(sample.near_holes);
             holes.push_back(sample.holes);
             result.chunk_bytes_peak = std::max(result.chunk_bytes_peak, sample.chunk_bytes);
@@ -224,7 +260,8 @@ void FlythroughRun::finish_phase(Clock::time_point now, bool capped) {
     }
 }
 
-std::vector<std::string> flythrough_problems(std::span<const PhaseResult> results) {
+std::vector<std::string> flythrough_problems(std::span<const PhaseResult> results,
+                                             std::int32_t view_distance) {
     std::vector<std::string> problems;
     const PhaseResult* load = nullptr;
     const PhaseResult* teleport = nullptr;
@@ -243,7 +280,8 @@ std::vector<std::string> flythrough_problems(std::span<const PhaseResult> result
     }
     if (load == nullptr || teleport == nullptr) {
         problems.emplace_back("the run ended before the teleport");
-    } else if (!load->capped && !teleport->capped) {
+    } else if (!load->capped && !teleport->capped &&
+               view_distance >= FlythroughPlan::level_check_distance) {
         const auto before = static_cast<double>(load->chunk_bytes_end);
         const auto after = static_cast<double>(teleport->chunk_bytes_end);
         if (before <= 0.0 || std::abs(after - before) > 0.05 * before) {
@@ -279,6 +317,9 @@ std::string flythrough_report(const FlythroughHeader& header,
             " / " + mebibytes(result.mesh_bytes_peak) + " MiB | " +
             mebibytes(result.footprint_bytes_end) + " / " + mebibytes(result.footprint_bytes_peak) +
             " MiB |\n";
+    }
+    if (header.view_distance > 0) {
+        report += view_distance_note(header.view_distance, results);
     }
     return report;
 }

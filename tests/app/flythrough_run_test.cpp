@@ -428,6 +428,28 @@ TEST_CASE("a phase's rates run between its first and last samples, with holes at
     CHECK_FALSE(run.results().at(1).generated_per_second.has_value());
 }
 
+TEST_CASE("a phase's view distance is the world's lowest at its own full samples and at the one "
+          "that closes it") {
+    const Clock::time_point start{};
+    FlythroughRun run(FlythroughPlan::full(), start);
+    const std::uint32_t id = next_sample(run, start);
+    run.add({.id = id, .at = start, .view_distance = 32, .complete = true});
+    const Clock::time_point cruise = start + 10s + 1ms;
+    REQUIRE(run.frame(start + 1ms).has_value());
+    REQUIRE(run.frame(cruise).has_value());
+    REQUIRE(run.phase() == Phase::cruise);
+    // The cruise's first sample closes the hover, which had none of its own;
+    // the cruise's own two follow.
+    for (const std::int32_t chunks : {20, 30, 26}) {
+        run.add({.id = next_sample(run, cruise), .at = cruise, .view_distance = chunks});
+    }
+    REQUIRE(run.frame(cruise + 30s).has_value());
+    REQUIRE(run.phase() == Phase::turns);
+    CHECK(run.results().at(0).least_view_distance == 32);
+    CHECK(run.results().at(1).least_view_distance == 20);
+    CHECK(run.results().at(2).least_view_distance == 26);
+}
+
 TEST_CASE("the report opens with what was run, then a row for each phase") {
     vx::app::PhaseResult load;
     load.phase = Phase::load;
@@ -463,6 +485,37 @@ TEST_CASE("the report opens with what was run, then a row for each phase") {
     CHECK(report.find("| - / - / - |") != std::string::npos);
 }
 
+TEST_CASE("under the table the report says whether the world held the view distance, and where "
+          "it did not") {
+    const auto phase = [](Phase which, std::int32_t least) {
+        vx::app::PhaseResult result;
+        result.phase = which;
+        result.least_view_distance = least;
+        return result;
+    };
+    const vx::app::FlythroughHeader header{.engine = "0.0.0 (c3a3bff)",
+                                           .build = "release",
+                                           .device = "Apple M3 (integrated GPU)",
+                                           .driver = "KosmicKrisp",
+                                           .settings = "2560x1440, view distance 64",
+                                           .view_distance = 64};
+    CHECK(vx::app::flythrough_report(
+              header,
+              std::vector{phase(Phase::load, 64), phase(Phase::hover, 0), phase(Phase::cruise, 64)})
+              .ends_with("|\n\nThe world held view distance 64 at every sample.\n"));
+    CHECK(vx::app::flythrough_report(header,
+                                     std::vector{phase(Phase::load, 64), phase(Phase::cruise, 48),
+                                                 phase(Phase::sprint, 40)})
+              .ends_with("|\n\nThe world's view distance fell below 64: cruise to 48, sprint to "
+                         "40.\n"));
+    // No sample, no claim; nor without a distance to check.
+    CHECK(vx::app::flythrough_report(header, std::vector{phase(Phase::load, 0)}).ends_with("|\n"));
+    vx::app::FlythroughHeader unplanned = header;
+    unplanned.view_distance = 0;
+    CHECK(vx::app::flythrough_report(unplanned, std::vector{phase(Phase::cruise, 48)})
+              .ends_with("|\n"));
+}
+
 TEST_CASE("a checked run's problems: invariants broken, a wait that hit its cap, and chunk data "
           "that did not come back") {
     const auto phase = [](Phase which, std::uint64_t chunk_bytes) {
@@ -472,34 +525,45 @@ TEST_CASE("a checked run's problems: invariants broken, a wait that hit its cap,
         result.chunk_bytes_end = chunk_bytes;
         return result;
     };
+    // At the quick plan's own view distance, as CI runs it.
+    const std::int32_t quick = FlythroughPlan::quick().view_distance;
     std::vector<vx::app::PhaseResult> results;
     for (const Phase which : vx::app::flythrough_phases) {
         results.push_back(phase(which, 100 * 1024 * 1024));
     }
-    CHECK(vx::app::flythrough_problems(results).empty());
+    CHECK(vx::app::flythrough_problems(results, quick).empty());
     // 4% more after the teleport is still the same level; 6% is not.
     results.back().chunk_bytes_end = 104 * 1024 * 1024;
-    CHECK(vx::app::flythrough_problems(results).empty());
+    CHECK(vx::app::flythrough_problems(results, quick).empty());
     results.back().chunk_bytes_end = 106 * 1024 * 1024;
-    REQUIRE(vx::app::flythrough_problems(results).size() == 1);
-    CHECK(vx::app::flythrough_problems(results).front().find("more than 5% off") !=
+    REQUIRE(vx::app::flythrough_problems(results, quick).size() == 1);
+    CHECK(vx::app::flythrough_problems(results, quick).front().find("more than 5% off") !=
           std::string::npos);
+    // Farther, the same; nearer than the quick plan's distance the terrain
+    // alone moves chunk data that much, and the level is left out.
+    CHECK(vx::app::flythrough_problems(results, 64).size() == 1);
+    CHECK(vx::app::flythrough_problems(results, FlythroughPlan::level_check_distance).size() == 1);
+    CHECK(vx::app::flythrough_problems(results, FlythroughPlan::level_check_distance - 1).empty());
     results.back().chunk_bytes_end = 100 * 1024 * 1024;
     // A broken invariant names its phase.
     results[2].broken = 3;
-    REQUIRE(vx::app::flythrough_problems(results).size() == 1);
-    CHECK(vx::app::flythrough_problems(results).front() ==
+    REQUIRE(vx::app::flythrough_problems(results, quick).size() == 1);
+    CHECK(vx::app::flythrough_problems(results, quick).front() ==
           "cruise: 3 invariants broken over its samples");
+    // Nearer, the invariants still count.
+    CHECK(vx::app::flythrough_problems(results, FlythroughPlan::level_check_distance - 1).size() ==
+          1);
     results[2].broken = 0;
     // A wait that ran into its cap says so, and the comparison is skipped.
     results.front().capped = true;
     results.front().chunk_bytes_end = 1;
-    REQUIRE(vx::app::flythrough_problems(results).size() == 1);
-    CHECK(vx::app::flythrough_problems(results).front() ==
+    REQUIRE(vx::app::flythrough_problems(results, quick).size() == 1);
+    CHECK(vx::app::flythrough_problems(results, quick).front() ==
           "load: the region was not complete by the wait's cap, 1 s");
     // A run that stopped before the teleport cannot compare.
     results.front().capped = false;
     results.pop_back();
-    REQUIRE(vx::app::flythrough_problems(results).size() == 1);
-    CHECK(vx::app::flythrough_problems(results).front() == "the run ended before the teleport");
+    REQUIRE(vx::app::flythrough_problems(results, quick).size() == 1);
+    CHECK(vx::app::flythrough_problems(results, quick).front() ==
+          "the run ended before the teleport");
 }

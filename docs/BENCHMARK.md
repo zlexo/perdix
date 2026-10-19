@@ -38,9 +38,11 @@ The block opens with the engine's version and the commit it was built from (`-di
 - **Holes p99 within 256 / all:** chunks of the drawn region in view with nothing on screen and not known empty, at the 99th percentile of the phase's samples: those within 256 blocks of the eye, and all of them. The world thread counts the chunks with no mesh sent, and the main thread those whose mesh waits for its upload. RFC 0006 wants none near the camera during `sprint`.
 - **Chunk data, GPU meshes, footprint:** at the phase's last sample and the most of any: the chunks' blocks and their bookkeeping, the arena's quads, and the process's memory (`phys_footprint` on macOS, the resident set on Linux).
 
+Under the table, one line says whether the world held the view distance in the settings at every full sample, or names the phases where it fell below and how far: RFC 0006's memory budget lowers it when chunk data or the GPU's meshes run out of room, and a frame time measured there is not one at the distance asked for.
+
 ## The quick run
 
-`perdix --flythrough=quick` takes the same path for a few seconds, at view distance 16 in a 640 by 360 window, and asks for a sample whenever none is out, each checking RFC 0006's invariants: every record's neighbor counts and state match its neighbors, the state counts add up, the mesh half holds exactly the chunks the world half shows (complete, so with their 26 neighbors ready), and no record is left outside the region grown by the hysteresis. The run fails (exit code 4) on a broken invariant, on a wait for the region that runs into its cap, or on chunk data after the teleport more than 5% off its level after the load; and with validation on, as in debug builds, on a Vulkan validation error (3). The waits' cap, 300 s, is far beyond what a software driver needs: it ends a hang and never fails a slow machine. CI runs it on lavapipe under Xvfb; it never asserts a frame time or a speed.
+`perdix --flythrough=quick` takes the same path for a few seconds, at view distance 16 in a 640 by 360 window, and asks for a sample whenever none is out, each checking RFC 0006's invariants: every record's neighbor counts and state match its neighbors, the state counts add up, the mesh half holds exactly the chunks the world half shows (complete, so with their 26 neighbors ready), and no record is left outside the region grown by the hysteresis. The run fails (exit code 4) on a broken invariant, on a wait for the region that runs into its cap, or on chunk data after the teleport more than 5% off its level after the load (at view distance 16 or more: in a smaller region the terrain alone moves chunk data more than that, 23% at 8 chunks); and with validation on, as in debug builds, on a Vulkan validation error (3). The waits' cap, 300 s, is far beyond what a software driver needs: it ends a hang and never fails a slow machine. CI runs it on lavapipe under Xvfb; it never asserts a frame time or a speed.
 
 ## The ten-minute run
 
@@ -51,6 +53,8 @@ The block opens with the engine's version and the commit it was built from (`-di
 `scripts/worker-sweep.sh` runs the full flythrough with 1 to 8 workers at each of the three QoS modes RFC 0005 compares: `switching` (utility, and user-initiated while streaming catches up, the default), `utility` and `user-initiated`, three runs of each, about two hours in all. It keeps every report in `build/sweep/<date>/` and prints one table of the medians: the load's time and throughput, the frame times of `hover`, `cruise` and `sprint`, the sprint's near holes and the world thread's longest pass. Run it plugged in with nothing else open: the flythrough's window takes the screen. `scripts/worker-sweep.sh 1 4 6` runs one round of 4 and 6 workers; `QOS=utility` runs one mode; `SUMMARIZE=build/sweep/<date>` prints a sweep's table again without running anything.
 
 The app takes the same settings: `--workers=N` (1 to 64; the cores less two by default) and `--worker-qos=switching|utility|user-initiated`. The report's settings line names both.
+
+`--view-distance=N` (4 to 64 chunks) flies the same path at another view distance than the plan's, 32 for the full and long runs and 16 for the quick one, as the overlay's slider would set it. The report's settings line names it. Results at different view distances do not compare with each other.
 
 ## Sharing a result
 

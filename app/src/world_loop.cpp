@@ -796,6 +796,7 @@ WorldSample WorldLoop::sample(SampleKind kind) {
     out.longest_step = streamer_.take_longest_step();
     out.longest_pass = std::exchange(longest_pass_, std::chrono::nanoseconds{0});
     out.chunk_bytes = streamer_.chunk_bytes();
+    out.view_distance = streamer_.limits().view_distance;
     if (out.kind == SampleKind::checked) {
         out.broken = broken_invariants(stats);
     }

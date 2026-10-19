@@ -463,19 +463,27 @@ int validation_result(const vx::render::Context& context) {
     return 0;
 }
 
-// The flythrough's plan, when one was asked for.
-std::optional<vx::app::FlythroughPlan> flythrough_plan(vx::app::Flythrough which) {
-    switch (which) {
+// The flythrough's plan, when one was asked for, at the view distance the
+// options name if they name one.
+std::optional<vx::app::FlythroughPlan> flythrough_plan(const vx::app::Options& options) {
+    std::optional<vx::app::FlythroughPlan> plan;
+    switch (options.flythrough) {
     case vx::app::Flythrough::none:
         break;
     case vx::app::Flythrough::full:
-        return vx::app::FlythroughPlan::full();
+        plan = vx::app::FlythroughPlan::full();
+        break;
     case vx::app::Flythrough::quick:
-        return vx::app::FlythroughPlan::quick();
+        plan = vx::app::FlythroughPlan::quick();
+        break;
     case vx::app::Flythrough::endurance:
-        return vx::app::FlythroughPlan::endurance();
+        plan = vx::app::FlythroughPlan::endurance();
+        break;
     }
-    return std::nullopt;
+    if (plan && options.view_distance) {
+        plan->view_distance = *options.view_distance;
+    }
+    return plan;
 }
 
 // The window drawing the plan's size, at whatever density.
@@ -522,6 +530,7 @@ vx::app::FlythroughSample flythrough_sample(const vx::app::WorldSample& world,
             .mesh_bytes =
                 (std::uint64_t{arena.live} + arena.retired) * vx::render::ChunkArena::quad_bytes,
             .footprint_bytes = vx::app::process_footprint(),
+            .view_distance = world.view_distance,
             .complete = complete,
             .broken = world.broken};
 }
@@ -615,13 +624,15 @@ vx::app::FlythroughHeader flythrough_header(const vx::render::Renderer& renderer
             .driver = device.driver_name + " " + device.driver_info,
             .settings = std::to_string(size.width) + "x" + std::to_string(size.height) +
                         ", view distance " + std::to_string(view_distance) + ", " + workers + ", " +
-                        (immediate ? "immediate" : "FIFO") + " present"};
+                        (immediate ? "immediate" : "FIFO") + " present",
+            .view_distance = view_distance};
 }
 
 // A checked flythrough's result: what it found wrong, each said, then the
 // validation's (RFC 0006's CI run).
-int checked(std::span<const vx::app::PhaseResult> results, const vx::render::Context& context) {
-    const std::vector<std::string> problems = vx::app::flythrough_problems(results);
+int checked(std::span<const vx::app::PhaseResult> results, std::int32_t view_distance,
+            const vx::render::Context& context) {
+    const std::vector<std::string> problems = vx::app::flythrough_problems(results, view_distance);
     for (const std::string& problem : problems) {
         std::cerr << "error: " << problem << '\n';
     }
@@ -658,7 +669,7 @@ int fly(const vx::app::FlythroughPlan& plan, vx::app::Window& window,
                                                                       window.framebuffer_size(),
                                                                       plan.view_distance, workers),
                                                     run.results());
-            return plan.check ? checked(run.results(), renderer.context())
+            return plan.check ? checked(run.results(), plan.view_distance, renderer.context())
                               : validation_result(renderer.context());
         }
         camera.position = {pose->eye.x, pose->eye.y, pose->eye.z};
@@ -779,7 +790,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "error: " << window.error().message << '\n';
         return 1;
     }
-    const std::optional<vx::app::FlythroughPlan> plan = flythrough_plan(options.value().flythrough);
+    const std::optional<vx::app::FlythroughPlan> plan = flythrough_plan(options.value());
     if (plan) {
         size_for_flythrough(window.value(), *plan);
     }
@@ -802,6 +813,8 @@ int main(int argc, char* argv[]) {
     if (plan) {
         settings.region.view_distance = plan->view_distance;
     } else {
+        settings.region.view_distance =
+            options.value().view_distance.value_or(settings.region.view_distance);
         settings.player = vx::app::WorldLoopSettings::PlayerStart{.spawn = spawn, .lowest = -64.0};
         // Perdix appears on the ground 5 blocks ahead of where you look at
         // first, facing you (RFC 0012, open question 8).

@@ -35,6 +35,7 @@ struct FlythroughSample {
     std::uint64_t chunk_bytes = 0;
     std::uint64_t mesh_bytes = 0;      // the arena's quads, live and retired
     std::uint64_t footprint_bytes = 0; // the process's
+    std::int32_t view_distance = 0;    // the world's, which its memory budget lowers
     // The region is complete, and every mesh is uploaded.
     bool complete = false;
     // RFC 0006's invariants found broken, when the plan checks them.
@@ -67,6 +68,9 @@ struct PhaseResult {
     std::uint64_t mesh_bytes_peak = 0;
     std::uint64_t footprint_bytes_end = 0;
     std::uint64_t footprint_bytes_peak = 0;
+    // The world's lowest view distance at the phase's full samples; 0
+    // without one.
+    std::int32_t least_view_distance = 0;
     std::uint64_t broken = 0; // invariants broken, over the phase's samples
 };
 
@@ -152,13 +156,17 @@ struct FlythroughHeader {
     std::string device; // the GPU
     std::string driver;
     std::string settings; // resolution, view distance, workers, present mode
+    // The view distance the plan flies at, which the report checks the
+    // world held; 0 leaves the check out.
+    std::int32_t view_distance = 0;
 };
 
 // What a checked flythrough found wrong (RFC 0006's CI run): invariants
 // broken, a wait for the region that ran into its cap, or chunk data after
 // the teleport more than 5% off its level after the load. Empty when all is
 // well.
-[[nodiscard]] std::vector<std::string> flythrough_problems(std::span<const PhaseResult> results);
+[[nodiscard]] std::vector<std::string> flythrough_problems(std::span<const PhaseResult> results,
+                                                           std::int32_t view_distance);
 
 // RFC 0006's Markdown block, for pull requests and benchmark results.
 [[nodiscard]] std::string flythrough_report(const FlythroughHeader& header,
