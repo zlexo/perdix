@@ -314,9 +314,11 @@ public:
                 return true;
             }
             out_->resize(mark);
-            // Until then itself, unless it draws nothing where finer
-            // columns drawn before still can be.
-            if (!scan.waiting && !scan.faces && keep(column)) {
+            // Until then what was drawn inside it before, while all of that
+            // can still be: itself again, or finer columns, which its own
+            // rows may not cover (a coarse surface can lie a row lower).
+            // Itself only where nothing was.
+            if (keep(column)) {
                 return true;
             }
         }
