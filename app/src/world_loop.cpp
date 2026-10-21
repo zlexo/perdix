@@ -59,9 +59,12 @@ ChunkPos on_level(ChunkPos chunk, std::uint8_t level) noexcept {
 // RFC 0011's open border sets of a mesh job's chunk: the main mesh's border
 // counts toward each face, then each face's outermost slice meshed with the
 // border that way all air, appended to the scratch's quads. `mesh` points
-// into the scratch, so it is read first.
+// into the scratch, so it is read first. Each side's border stays air for
+// the sides after it, which only corner shadows would see: open sets are
+// made only past level 0, where those are off.
 void add_open_sets(const ChunkMesh& mesh, std::span<const BlockVisual> visuals, MeshOptions options,
                    MeshWorkerScratch& scratch, MeshUpdate& update) {
+    assert(!options.occlusion);
     for (std::size_t pass = 0; pass < 2; ++pass) {
         for (std::size_t face = 0; face < 6; ++face) {
             update.border.at((pass * 6) + face) = mesh.border.at(pass).at(face);
