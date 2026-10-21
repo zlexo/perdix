@@ -30,8 +30,11 @@ std::optional<std::string> read_file(const std::filesystem::path& path) {
     for (;;) {
         const std::size_t got = std::fread(chunk.data(), 1, chunk.size(), file.get());
         bytes.append(chunk.data(), got);
-        if (got < chunk.size()) {
-            break; // the end of the file, or an error
+        // A short read is the end of the file or an error. A full one can
+        // end there too, and reading on from the end or after an error is
+        // what the stream checks flag: ask the stream first.
+        if (got < chunk.size() || std::feof(file.get()) != 0 || std::ferror(file.get()) != 0) {
+            break;
         }
     }
     if (std::ferror(file.get()) != 0) {
