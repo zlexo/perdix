@@ -240,12 +240,16 @@ set_tests_properties("a validation message names the object it is about" PROPERT
 
 # A frame's heap allocations, counted by replacing the global operator new:
 # an executable of its own, since the count would take in every other test.
-add_executable(vx_render_allocation_tests
-    main.cpp
-    render/allocation_test.cpp)
-target_link_libraries(vx_render_allocation_tests PRIVATE vx::render doctest::doctest)
-vx_target_warnings(vx_render_allocation_tests)
-doctest_discover_tests(vx_render_allocation_tests PROPERTIES ${VX_VULKAN_DOCTEST_PROPERTIES})
+# Not under ThreadSanitizer, whose runtime defines operator new itself, so
+# the program would not link.
+if(vx_thread_sanitizer EQUAL -1)
+    add_executable(vx_render_allocation_tests
+        main.cpp
+        render/allocation_test.cpp)
+    target_link_libraries(vx_render_allocation_tests PRIVATE vx::render doctest::doctest)
+    vx_target_warnings(vx_render_allocation_tests)
+    doctest_discover_tests(vx_render_allocation_tests PROPERTIES ${VX_VULKAN_DOCTEST_PROPERTIES})
+endif()
 
 add_executable(vx_minecraft_tests
     main.cpp
