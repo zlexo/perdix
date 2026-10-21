@@ -126,8 +126,11 @@ jobs:
         run: cmake --preset mac-debug
       - name: Build
         run: cmake --build --preset mac-debug
+      # GitHub's macOS runners have no Vulkan driver, so the GPU tests stay
+      # out, as in the Linux jobs: lavapipe runs them on Linux, and
+      # scripts/ci-local.sh on a Mac with its GPU.
       - name: Test
-        run: ctest --preset mac-debug
+        run: ctest --preset mac-debug --label-exclude vulkan
 
   format:
     name: Format
