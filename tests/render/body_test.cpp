@@ -232,8 +232,11 @@ TEST_CASE("seen from above a body's tops are lit fully and its insides as the ga
     const std::vector<std::uint8_t> seen = draw(renderer.value(), above, players);
     // Through the head's clear top, the inside of its bottom: a face seen
     // from inside its box is lit as if it faced the other way, so this one,
-    // facing down, is lit as a top is, fully: cyan.
-    const OnImage inside = project(above, {.x = 0.5, .y = 65.41, .z = 0.5});
+    // facing down, is lit as a top is, fully: cyan. Read 3 px off the
+    // middle, where no torso lies under it: over the torso the head's bottom
+    // and the torso's top are one plane, and which of the two a GPU shows
+    // there differs (llvmpipe shows the torso's top).
+    const OnImage inside = project(above, {.x = 0.5, .y = 65.41, .z = 0.5 + (3.0 / 16.0)});
     const Pixel inside_seen = pixel_at(seen, inside.x, inside.y);
     INFO("inside at ", inside.x, ", ", inside.y, ": ", text(inside_seen));
     CHECK(near(inside_seen, {0, 255, 255, 255}));
