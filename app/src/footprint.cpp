@@ -32,7 +32,9 @@ std::uint64_t process_footprint() noexcept {
     }
     unsigned long long size = 0;
     unsigned long long resident = 0;
-    const int read = std::fscanf(statm, "%llu %llu", &size, &resident); // NOLINT(cert-err34-c)
+    // Two decimal page counts, checked by read == 2 below.
+    // NOLINTNEXTLINE(bugprone-unchecked-string-to-number-conversion,cert-err34-c)
+    const int read = std::fscanf(statm, "%llu %llu", &size, &resident);
     std::fclose(statm);
     const long page = sysconf(_SC_PAGESIZE);
     return read == 2 && page > 0 ? resident * static_cast<std::uint64_t>(page) : 0;
