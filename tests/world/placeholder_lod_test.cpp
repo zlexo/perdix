@@ -315,9 +315,9 @@ TEST_CASE("grass caps every coarse column, as it caps the full-detail ones") {
                     }
                     ++columns;
                     const auto at = static_cast<std::size_t>(x + (z * vx::chunk_size));
-                    grass += top[at] == blocks.grass ? 1 : 0;
+                    grass += top[at] == blocks.grass ? 1U : 0U;
                     // Under the grass, dirt or stone, as at level 0.
-                    grass_under += under[at] == blocks.grass ? 1 : 0;
+                    grass_under += under[at] == blocks.grass ? 1U : 0U;
                 }
             }
         }

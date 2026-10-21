@@ -1783,7 +1783,7 @@ private:
             const LevelChunk at =
                 level_chunk_of(chunk.level, {.x = chunk.x, .y = chunk.y, .z = chunk.z});
             const auto mesh = held.find(at);
-            shown_bare += mesh == held.end() || mesh->second.empty ? 1 : 0;
+            shown_bare += mesh == held.end() || mesh->second.empty ? 1U : 0U;
             shown.insert(at);
         }
     }
@@ -2196,7 +2196,7 @@ std::size_t unfilled(const WorldLoop& loop, const LevelMeshes& main, const vx::L
                           level_chunk_of(up.level, {.x = up.x, .y = up.y, .z = up.z})) ==
                     vx::LodReady::mesh;
         }
-        count += coarser_ready && !covered_now(loop, main, rings, eye, at, true) ? 1 : 0;
+        count += coarser_ready && !covered_now(loop, main, rings, eye, at, true) ? 1U : 0U;
     }
     return count;
 }
@@ -2292,7 +2292,7 @@ TEST_CASE("while the world streams in and the camera walks, a swap shows only ch
         loop.take(messages);
         main.receive(messages);
         for (const LevelChunk& chunk : main.shown) {
-            overlaps += under_shown(main.shown, chunk) ? 1 : 0;
+            overlaps += under_shown(main.shown, chunk) ? 1U : 0U;
         }
         // Never neither: what a swap hid, still in view and streamed, is
         // drawn by something else, or has nothing left to draw.
@@ -2306,7 +2306,7 @@ TEST_CASE("while the world streams in and the camera walks, a swap shows only ch
                 continue;
             }
             ++hidden;
-            uncovered += covered_now(loop, main, rings, eye, chunk) ? 0 : 1;
+            uncovered += covered_now(loop, main, rings, eye, chunk) ? 0U : 1U;
         }
         main.hidden.clear();
         if (frame == 71) {

@@ -730,7 +730,7 @@ TEST_CASE("under random uploads, batches, stale offers, removals, frames, compac
             static_cast<void>(uploads.compact(4, capacity, moves));
             REQUIRE(sources_and_destinations_apart(moves));
             copy_moves(moves, std::vector<Quad>(arena.quads), arena.quads);
-            compactions += moves.empty() ? 0 : 1;
+            compactions += moves.empty() ? 0U : 1U;
         } else if (kind < 9) {
             // A repack into a new buffer of the same size, from which the
             // old one's retired ranges are gone.

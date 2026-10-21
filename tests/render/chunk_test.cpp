@@ -55,7 +55,8 @@ std::vector<std::byte> texture_bytes(std::span<const Quarters> layers) {
                 if (layer > 0 && side > 1) {
                     const std::size_t x = texel % side;
                     const std::size_t y = texel / side;
-                    const std::size_t quarter = (y * 2 >= side ? 2 : 0) + (x * 2 >= side ? 1 : 0);
+                    const std::size_t quarter =
+                        (y * 2 >= side ? 2U : 0U) + (x * 2 >= side ? 1U : 0U);
                     color = layers[layer - 1][quarter];
                 } else if (layer > 0) {
                     color = layers[layer - 1][0];
