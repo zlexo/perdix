@@ -45,8 +45,8 @@ using Clock = std::chrono::steady_clock;
 constexpr std::uint32_t draws = 10'000;
 constexpr std::uint32_t quads_per_run = 16;
 constexpr std::uint32_t cluster_quads = 64;
-constexpr std::uint32_t total_quads = draws * quads_per_run;    // 160,000
-constexpr std::uint32_t clusters = total_quads / cluster_quads; // 2,500
+constexpr std::uint32_t total_quads = draws * quads_per_run;         // 160,000
+constexpr std::uint32_t cluster_count = total_quads / cluster_quads; // 2,500
 constexpr VkExtent2D extent{.width = 1280, .height = 720};
 
 // The shader's quad and push constants, as draw_overhead.slang lays them out.
@@ -214,7 +214,7 @@ void record(const Scene& scene, Variant variant, VkCommandBuffer commands,
                                  sizeof(VkDrawIndexedIndirectCommand));
         break;
     case Variant::clusters:
-        vkCmdDrawIndexed(commands, cluster_quads * 6, clusters, 0, 0, 0);
+        vkCmdDrawIndexed(commands, cluster_quads * 6, cluster_count, 0, 0, 0);
         break;
     }
     draw_call = Clock::now() - before;
