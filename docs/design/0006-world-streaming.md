@@ -363,4 +363,10 @@ After item 9, the Render distance slider (#332) landed as one pull request of th
 - **`WorldStreamer::set_view_distance` makes the region again around the camera,** and chunks join and leave as on a move, the hysteresis included. The review, over 550 randomized seeds, found a nearer distance stranding the plans parked for the farther ring's columns while their surfaces were still queued, so the region never read complete until the next border crossing; parked plans are now tried again.
 - **The arena keeps its startup size,** made for 32 chunks: 21.7 million quads (165 MiB) against about 25 MiB of meshes on the placeholder hills, so 64 fits. Rough terrain at 64 would overflow it, its far meshes waiting until something unloads, until RFC 0007's repack, which has to land before RFC 0008's terrain. A shrink from 64 to 4 is a one-time pass of about 52 ms on the world thread. In the app, 32, then 8, then 16 chunks took the arena from 3,172 meshes to 475 and 1,373.
 
+Later changes made two of the lines above out of date, and limited one check:
+
+- **`--view-distance=N` (#404)** sets where the world and the slider start: 4 to 64 chunks, up to 512 with `--horizon` (#420). The slider starts at 32 only by default. A flythrough's report says whether the world held the distance it planned: the lowest it streamed in each phase.
+- **The 5% chunk-data check applies from 16 chunks up** (`level_check_distance`, #404). In a smaller region the terrain alone moves chunk data by more than that (23% at 8 chunks), so a nearer run leaves the check out. CI's quick run is at 16 and still checks it.
+- **The arena no longer keeps its startup size** (#420): it starts sized for the start distance, at most 32 chunks' worth, and RFC 0007's repacks grow it as meshes stream in, up to a quarter of the device's memory budget.
+
 GitHub Actions was blocked by billing while M3 was built, so these pull requests merged on local runs of CI's jobs; GCC, AddressSanitizer, ThreadSanitizer and lavapipe have not built them yet.
