@@ -28,6 +28,10 @@ public:
     // even with one layer: RFC 0004's block texture array. Levels run from 1
     // to the one of 1 by 1, layers from 1 to the device's maxImageArrayLayers;
     // anything else is an error, before Vulkan sees it.
+    [[nodiscard]] static Result<Image> create_array(const Device& device, VkExtent2D extent,
+                                                    VkFormat format, std::uint32_t levels,
+                                                    std::uint32_t layers, VkImageUsageFlags usage,
+                                                    std::string_view name);
     // An attachment of `samples` that no frame keeps past its pass, RFC
     // 0013's multisampled color and depth: transient, in lazily allocated
     // memory where the device offers it, which tile-based GPUs need never
@@ -37,10 +41,6 @@ public:
                                                          VkImageAspectFlags aspect,
                                                          VkSampleCountFlagBits samples,
                                                          std::string_view name);
-    [[nodiscard]] static Result<Image> create_array(const Device& device, VkExtent2D extent,
-                                                    VkFormat format, std::uint32_t levels,
-                                                    std::uint32_t layers, VkImageUsageFlags usage,
-                                                    std::string_view name);
 
     Image(Image&& other) noexcept;
     Image& operator=(Image&& other) noexcept;
