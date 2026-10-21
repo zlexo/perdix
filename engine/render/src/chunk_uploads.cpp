@@ -314,7 +314,13 @@ Result<Uploaded> ChunkUploads::place(const ChunkMeshUpdate& update, const ArenaR
         record.open = open;
     } else {
         // A new record shown at once appeared now: it fades in (RFC 0013).
+        // Not a chunk meshed empty since it loaded, as one of air is: its
+        // first mesh with faces, after an edit, is a remesh, and a remesh
+        // does not fade again (26.2).
         const bool shown = !swaps_ || shown_[update.level].find(update.pos).has_value();
+        const bool remesh = emptied_[update.level].find(update.pos).has_value();
+        const std::optional<Clock::time_point> appeared =
+            shown && !remesh ? std::optional(appearing) : std::nullopt;
         index_[update.level].insert(update.pos, static_cast<std::uint32_t>(records_.size()));
         records_.push_back({.pos = update.pos,
                             .generation = update.generation,
@@ -324,7 +330,7 @@ Result<Uploaded> ChunkUploads::place(const ChunkMeshUpdate& update, const ArenaR
                             .shown = shown,
                             .border = border,
                             .open = open,
-                            .appeared = shown ? std::optional(appearing) : std::nullopt});
+                            .appeared = appeared});
         emptied_[update.level].erase(update.pos);
         ++stats_.meshes;
     }

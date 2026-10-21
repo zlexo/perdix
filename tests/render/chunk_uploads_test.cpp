@@ -968,6 +968,55 @@ TEST_CASE(
     CHECK(uploads.find(here)->appeared == start);
 }
 
+TEST_CASE("a chunk meshed empty since it loaded does not fade in when an edit gives it faces") {
+    using std::chrono::milliseconds;
+    ArenaSpace space = make_space(1'024, 3);
+    FakeArena arena(1'024);
+    ChunkUploads uploads(space);
+    const TestMesh air(none, 1);
+    const TestMesh edited(few, 2);
+    const TestMesh reloaded(some, 3);
+    const Time start{};
+    // Loaded all air: its empty mesh draws nothing and keeps no record.
+    uploads.begin_frame(0, start);
+    REQUIRE(uploads.upload(air.update(here, 1), arena, start).value() == Uploaded::removed);
+    CHECK(uploads.find(here) == nullptr);
+    // A block placed in it: the edit's batch remeshes a chunk that was
+    // there, which shows at once, as in 26.2.
+    uploads.begin_frame(1, start + milliseconds(16));
+    const ChunkMeshUpdate edit = edited.update(here, 2);
+    REQUIRE(uploads.upload_batch(std::span(&edit, 1), arena).value() == Uploaded::written);
+    REQUIRE(uploads.find(here) != nullptr);
+    CHECK_FALSE(uploads.find(here)->appeared.has_value());
+    // Unloaded and loaded again, its first mesh is new and fades in.
+    uploads.remove(here);
+    uploads.begin_frame(2, start + milliseconds(32));
+    REQUIRE(uploads.upload(reloaded.update(here, 3), arena, start + milliseconds(32)).value() ==
+            Uploaded::written);
+    CHECK(uploads.find(here)->appeared == start + milliseconds(32));
+}
+
+TEST_CASE("with RFC 0011's swaps, a chunk shown while empty does not fade in when it gets faces") {
+    using std::chrono::milliseconds;
+    ArenaSpace space = make_space(1'024, 3);
+    FakeArena arena(1'024);
+    ChunkUploads uploads(space);
+    uploads.use_swaps();
+    const TestMesh air(none, 1);
+    const TestMesh edited(few, 2);
+    const Time start{};
+    uploads.begin_frame(0, start);
+    REQUIRE(uploads.upload(air.update(here, 1), arena, start).value() == Uploaded::removed);
+    // A swap shows it with a fade, where it draws nothing yet.
+    uploads.set_shown(here, 0, true, true);
+    uploads.begin_frame(1, start + milliseconds(16));
+    const ChunkMeshUpdate edit = edited.update(here, 2);
+    REQUIRE(uploads.upload_batch(std::span(&edit, 1), arena).value() == Uploaded::written);
+    REQUIRE(uploads.find(here) != nullptr);
+    CHECK(uploads.find(here)->shown);
+    CHECK_FALSE(uploads.find(here)->appeared.has_value());
+}
+
 TEST_CASE("with RFC 0011's swaps, a chunk fades in from the frame a swap shows it with a fade") {
     using std::chrono::milliseconds;
     ArenaSpace space = make_space(1'024, 3);
