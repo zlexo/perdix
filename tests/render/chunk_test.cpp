@@ -419,7 +419,11 @@ TEST_CASE("binding 3 filters anisotropically where the device offers it, binding
         }
     }
     const float anisotropy = renderer.textures().block_anisotropy();
-    INFO("anisotropy ", static_cast<double>(anisotropy), ", difference ", difference);
+    VkPhysicalDeviceProperties device{};
+    vkGetPhysicalDeviceProperties(renderer.context().device().physical_device(), &device);
+    INFO("anisotropy ", static_cast<double>(anisotropy), ", difference ", difference, ", on ",
+         std::string(static_cast<const char*>(device.deviceName)), " (type ",
+         static_cast<int>(device.deviceType), ")");
     if (anisotropy > 1.0F) {
         CHECK(difference > 2'000);
     } else {
