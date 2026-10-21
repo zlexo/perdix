@@ -69,7 +69,7 @@ struct ChunkMeshRecord {
     std::array<std::uint16_t, 12> open{};
     // RFC 0013's fade: the frame it appeared where nothing was drawn, from
     // which it fades in from the fog color; none for a chunk shown at once,
-    // as a level swap shows one.
+    // as a level swap shows one, or for one meshed empty before.
     std::optional<std::chrono::steady_clock::time_point> appeared = std::nullopt;
 };
 
