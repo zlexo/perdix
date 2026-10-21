@@ -1,7 +1,9 @@
 // Needs a Vulkan loader and at least one driver: labeled "vulkan" in CTest. The
 // window is a hidden one of SDL's dummy video driver, so no display is needed.
 
+#include "frame.hpp"
 #include "overlay.hpp"
+#include "view.hpp"
 
 #include <vx/render/camera.hpp>
 #include <vx/render/chunk_renderer.hpp>
@@ -557,12 +559,26 @@ TEST_CASE("the overlay's Fog switch turns the fog off and on, and it reports the
     };
 
     // No distance held before streaming's first report; then the report's.
+    // A frame's fog follows: at the distance chosen, then at the one held.
+    const auto frame_ramps = [&] {
+        const std::optional<vx::render::Fog> drawn =
+            vx::app::frame_inputs(overlay, distance, {}).fog;
+        REQUIRE(drawn.has_value());
+        return drawn.value().ramps;
+    };
     CHECK_FALSE(overlay.held_view_distance().has_value());
+    CHECK(frame_ramps() == vx::app::frame_fog(true, distance.chunks).value().ramps);
     vx::app::WorldReport report;
     report.limits.view_distance = 24;
     overlay.set_world_report(report);
     REQUIRE(overlay.held_view_distance().has_value());
     CHECK(*overlay.held_view_distance() == 24);
+    CHECK(frame_ramps() == vx::app::frame_fog(true, 24).value().ramps);
+    // The frame's chunk fade is the overlay's, whatever the scene had.
+    vx::render::FrameInputs unfaded{};
+    unfaded.chunk_fade_seconds = 0.0F;
+    CHECK(vx::app::frame_inputs(overlay, distance, unfaded).chunk_fade_seconds ==
+          overlay.chunk_fade());
 
     // The switch shares View bobbing's row.
     frame();
@@ -588,6 +604,7 @@ TEST_CASE("the overlay's Fog switch turns the fog off and on, and it reports the
     CHECK(overlay.fog());
     click(fog);
     CHECK_FALSE(overlay.fog());
+    CHECK_FALSE(vx::app::frame_inputs(overlay, distance, {}).fog.has_value());
     CHECK(bobbing);
     click(fog);
     CHECK(overlay.fog());

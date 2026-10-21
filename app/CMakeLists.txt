@@ -79,6 +79,14 @@ target_link_libraries(vx_app_view PUBLIC vx::render vx_app_play)
 vx_target_warnings(vx_app_view)
 vx_target_engine_options(vx_app_view)
 
+# A frame's inputs with the look the overlay chose (RFC 0013's fog and
+# fade): a library of its own so that the overlay's tests check the frame.
+add_library(vx_app_frame STATIC src/frame.cpp)
+target_include_directories(vx_app_frame PUBLIC src)
+target_link_libraries(vx_app_frame PUBLIC vx::render vx_app_overlay vx_app_view)
+vx_target_warnings(vx_app_frame)
+vx_target_engine_options(vx_app_frame)
+
 add_executable(vx_app
     src/allocation_profiling.cpp
     src/fly_controls.cpp
@@ -86,7 +94,7 @@ add_executable(vx_app
     src/pack.cpp
     src/window.cpp)
 target_link_libraries(vx_app PRIVATE vx::core vx::world vx::mesh vx::render vx::minecraft
-    vx_app_flythrough vx_app_overlay vx_app_play vx_app_startup vx_app_stream vx_app_view
+    vx_app_flythrough vx_app_frame vx_app_overlay vx_app_play vx_app_startup vx_app_stream vx_app_view
     vx_app_world vx_imgui_sdl3 SDL3::SDL3-static)
 set_target_properties(vx_app PROPERTIES OUTPUT_NAME perdix)
 # The commit the source tree is at, for the flythrough's report: the script

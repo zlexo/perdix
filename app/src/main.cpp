@@ -3,6 +3,7 @@
 #include "flythrough.hpp"
 #include "flythrough_run.hpp"
 #include "footprint.hpp"
+#include "frame.hpp"
 #include "options.hpp"
 #include "overlay.hpp"
 #include "pack.hpp"
@@ -496,18 +497,15 @@ draw_frame(vx::render::Renderer& renderer, vx::app::Overlay& overlay, const vx::
     overlay.set_chunk_backlog(meshes.waiting());
     ImDrawData* const shown =
         overlay.build(renderer, camera, window.mouse_captured(), meshing, bobbing, distance);
-    // RFC 0013's fog, at the view distance the world holds.
-    const std::optional<vx::render::Fog> fog =
-        vx::app::frame_fog(overlay.fog(), overlay.held_view_distance().value_or(distance.chunks));
-    return renderer.render({.sky = sky,
-                            .camera = camera,
-                            .cubes = {},
-                            .players = std::span(figures.poses).first(figures.bodies),
-                            .tags = std::span(figures.tags).first(figures.tags_shown),
-                            .overlay = shown,
-                            .chunk_changes = &meshes,
-                            .fog = fog,
-                            .chunk_fade_seconds = overlay.chunk_fade()});
+    return renderer.render(
+        vx::app::frame_inputs(overlay, distance,
+                              {.sky = sky,
+                               .camera = camera,
+                               .cubes = {},
+                               .players = std::span(figures.poses).first(figures.bodies),
+                               .tags = std::span(figures.tags).first(figures.tags_shown),
+                               .overlay = shown,
+                               .chunk_changes = &meshes}));
 }
 
 // With validation on, a run that broke Vulkan's rules fails, so a smoke run
