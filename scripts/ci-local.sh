@@ -15,7 +15,9 @@
 #   build           the debug preset: configure if needed, build, run the tests
 #   tidy            clang-tidy over every tracked engine and app .cpp
 #   linux-warnings  macOS only: Homebrew's Clang over the same compile commands,
-#                   which gives warnings Apple Clang does not and Linux Clang does
+#                   against GCC's libstdc++ headers as on Linux, which gives the
+#                   warnings and missing includes that Linux Clang has and Apple
+#                   Clang does not (over libc++, doctest takes other overloads)
 #   ubsan           macOS only, not run by default: the mac-ubsan preset's build
 #                   and tests, the UndefinedBehaviorSanitizer half of CI's
 #                   sanitizer job
@@ -30,6 +32,9 @@
 #   ~/.ci-tools/bin/pip install clang-format==<version> clang-tidy==<version>
 # JOBS limits parallel compiles and clang-tidy runs (default 3, for 8 GB).
 # LINUX_CLANG names the compiler for linux-warnings (default: Homebrew's).
+# LINUX_STDLIB names the libstdc++ headers it uses (default: the newest of
+# Homebrew's GCC, brew install gcc); LINUX_STDLIB=libc++ checks against the
+# Mac's own instead, which cannot see those differences.
 
 set -uo pipefail
 
@@ -166,19 +171,43 @@ check_linux_warnings() {
         fail "no build/$preset/compile_commands.json: run the build check first"
         return 1
     fi
+    local stdlib=${LINUX_STDLIB:-} target=
+    if [ -z "$stdlib" ]; then
+        stdlib=$(ls -d "$(brew --prefix gcc 2>/dev/null)"/include/c++/[0-9]* 2>/dev/null | sort -V | tail -n 1)
+    fi
+    if [ -z "$stdlib" ]; then
+        fail "no libstdc++ headers (brew install gcc, or set LINUX_STDLIB; LINUX_STDLIB=libc++ uses the Mac's)"
+        return 1
+    fi
     "$clang" --version | head -n 1
+    if [ "$stdlib" = libc++ ]; then
+        echo "standard library: the Mac's libc++, so Linux's doctest overloads and missing includes go unchecked"
+    else
+        # The target's own headers, such as bits/c++config.h, sit in a
+        # folder named for the target.
+        target=$(ls -d "$stdlib"/*/bits/c++config.h 2>/dev/null | head -n 1)
+        target=${target%/bits/c++config.h}
+        if [ -z "$target" ]; then
+            fail "$stdlib has no <target>/bits/c++config.h, so it is not libstdc++'s headers"
+            return 1
+        fi
+        echo "standard library: libstdc++ $(basename "$stdlib") from $stdlib"
+    fi
     # Every compile command for our own sources, with the compiler swapped,
-    # no -c or output file, and syntax only.
-    python3 - "$clang" "build/$preset/compile_commands.json" "$root" "$jobs" <<'EOF'
+    # the standard library's headers replaced, no -c or output file, and
+    # syntax only.
+    python3 - "$clang" "build/$preset/compile_commands.json" "$root" "$jobs" "$stdlib" "$target" <<'EOF'
 import json, os, shlex, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 clang, database, root, jobs = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+stdlib, target = sys.argv[5], sys.argv[6]
+headers = [] if stdlib == "libc++" else ["-nostdinc++", "-isystem", stdlib, "-isystem", target]
 ours = ("engine/", "app/", "tests/", "bench/")
 
 def command(entry):
     words = entry["arguments"] if "arguments" in entry else shlex.split(entry["command"])
-    words = [clang] + words[1:]
+    words = [clang] + headers + words[1:]
     out = []
     skip = False
     for word in words:

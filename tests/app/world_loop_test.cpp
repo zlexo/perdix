@@ -26,6 +26,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
@@ -1144,7 +1145,7 @@ TEST_CASE("Perdix ticks beside the player, falls onto the ground and sends every
     // Facing the player, as he appeared; his auto-jump's presses never make
     // him fly.
     CHECK(std::abs(walker.main.perdix.motion.body_yaw) ==
-          doctest::Approx(Walker::south).epsilon(1e-4));
+          doctest::Approx(static_cast<double>(Walker::south)).epsilon(1e-4));
     REQUIRE(walker.loop->perdix() != nullptr);
     CHECK_FALSE(walker.loop->perdix()->player().may_fly);
     REQUIRE(walker.loop->walking() != nullptr);
@@ -1247,7 +1248,8 @@ TEST_CASE("brought to you, Perdix stands on the ground 5 blocks ahead, facing yo
     CHECK(walker.main.perdix.position.z == doctest::Approx(100.5));
     CHECK(walker.main.perdix.position.y == doctest::Approx(walker.generator.height(105, 100)));
     CHECK(walker.main.perdix.previous == walker.main.perdix.position);
-    CHECK(walker.main.perdix.motion.body_yaw == doctest::Approx(-east).epsilon(1e-4));
+    CHECK(walker.main.perdix.motion.body_yaw ==
+          doctest::Approx(static_cast<double>(-east)).epsilon(1e-4));
     // A new body there, which still may not fly, and his life starts over
     // there: on the next tick his head turns from where he now faces.
     REQUIRE(walker.loop->perdix() != nullptr);

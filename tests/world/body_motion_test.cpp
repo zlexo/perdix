@@ -356,11 +356,11 @@ TEST_CASE("between two walking ticks the body runs from one tick's pose to the n
     const vx::BodyAt start = vx::body_at(previous, current, 0.0);
     CHECK(start.limb_position == doctest::Approx(previous.limb_position));
     CHECK(start.limb_amount == doctest::Approx(previous.limb_speed));
-    CHECK(start.body_yaw == doctest::Approx(previous.body_yaw));
-    CHECK(start.head_yaw == doctest::Approx(previous.head_yaw));
+    CHECK(start.body_yaw == doctest::Approx(static_cast<double>(previous.body_yaw)));
+    CHECK(start.head_yaw == doctest::Approx(static_cast<double>(previous.head_yaw)));
     const vx::BodyAt end = vx::body_at(previous, current, 1.0);
     CHECK(end.limb_position == doctest::Approx(current.limb_position));
     CHECK(end.limb_amount == doctest::Approx(current.limb_speed));
-    CHECK(end.body_yaw == doctest::Approx(current.body_yaw));
-    CHECK(end.head_yaw == doctest::Approx(current.head_yaw));
+    CHECK(end.body_yaw == doctest::Approx(static_cast<double>(current.body_yaw)));
+    CHECK(end.head_yaw == doctest::Approx(static_cast<double>(current.head_yaw)));
 }
