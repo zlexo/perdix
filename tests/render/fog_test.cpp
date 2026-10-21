@@ -31,7 +31,8 @@ TEST_CASE("up to 26.2's farthest view, 512 blocks, the fog's ramps are the game'
         const FogRamps ours = vx::render::fog_ramps(blocks);
         const FogRamps game = game_ramps(blocks);
         CHECK(ours.haze_end == game.haze_end);
-        CHECK(ours.band_start == doctest::Approx(game.band_start).epsilon(1e-6));
+        CHECK(ours.band_start ==
+              doctest::Approx(static_cast<double>(game.band_start)).epsilon(1e-6));
         CHECK(ours.band_end == game.band_end);
     }
 }

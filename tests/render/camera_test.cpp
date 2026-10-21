@@ -115,8 +115,8 @@ TEST_CASE("a roll leans the view: rolled a quarter turn left, the world's up is 
     // clockwise in the view: its up points right.
     const glm::vec4 up =
         vx::render::view_rotation(0.0F, 0.0F, quarter_turn) * glm::vec4(0.0F, 1.0F, 0.0F, 0.0F);
-    CHECK(up.x == doctest::Approx(1.0F));
-    CHECK(up.y == doctest::Approx(0.0F));
+    CHECK(up.x == doctest::Approx(1.0));
+    CHECK(up.y == doctest::Approx(0.0));
     // A roll of 0 is no roll at all, bit for bit.
     CHECK(vx::render::view_rotation(0.4F, -0.3F, 0.0F) == vx::render::view_rotation(0.4F, -0.3F));
     vx::render::Camera camera;
