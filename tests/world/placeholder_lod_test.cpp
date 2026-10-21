@@ -136,19 +136,24 @@ TEST_CASE("coarse chunks are the same on every thread, in any order") {
 TEST_CASE("a coarse cell's ground is within a cell of the full-detail ground it covers") {
     const PlaceholderGenerator generator(0x5EED, blocks);
     vx::GenScratch scratch;
+    // std::mt19937's numbers are the same in every standard library, its
+    // distributions are not: the samples are taken from the numbers, so that
+    // every platform checks the same places.
     std::mt19937 random(13);
-    std::uniform_int_distribution<std::int64_t> blocks_across(-1'000'000, 1'000'000);
-    // Measured on 2026-10-19 over these samples, then held: the largest gap
-    // between the top of a coarse cell column as built and the mean of the
-    // full-detail heights under it, in cells, by level (0.88, 0.73, 0.58,
-    // 0.49 and 0.56). Within a cell, as RFC 0011 asks.
-    constexpr std::array<double, vx::lod_levels> held{0.0, 0.9, 0.75, 0.6, 0.5, 0.6};
+    const auto blocks_across = [&random] {
+        return static_cast<std::int64_t>(random() % 2'000'001U) - 1'000'000;
+    };
+    // The largest gap between the top of a coarse cell column as built and
+    // the mean of the full-detail heights under it, in cells: within a cell,
+    // as RFC 0011 asks. Over 2,000 samples a level it reaches 1.0, 0.80,
+    // 0.67, 0.61 and 0.82 cells by level (2026-10-21); bounds measured on a
+    // few samples only held those samples, and failed on others.
     for (std::uint8_t level = 1; level <= vx::max_lod_level; ++level) {
         const std::int64_t size = std::int64_t{1} << level;
         double largest = 0.0;
         for (int i = 0; i < 40; ++i) {
-            const std::int64_t cell_x = blocks_across(random) >> level;
-            const std::int64_t cell_z = blocks_across(random) >> level;
+            const std::int64_t cell_x = blocks_across() >> level;
+            const std::int64_t cell_z = blocks_across() >> level;
             double sum = 0.0;
             bool spire = false;
             for (std::int64_t dz = 0; dz < size; ++dz) {
@@ -186,7 +191,7 @@ TEST_CASE("a coarse cell's ground is within a cell of the full-detail ground it 
         }
         MESSAGE("level " << int{level} << ": a coarse cell's top within " << largest
                          << " cells of the full-detail mean");
-        CHECK(largest <= held[level]);
+        CHECK(largest <= 1.0);
     }
 }
 
