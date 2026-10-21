@@ -123,8 +123,9 @@ TEST_CASE("past level 0 every corner is lit, the same faces show, and they merge
         const vx::ChunkMesh shaded = vx::mesh_chunk(*padded, visuals, scratch);
         for (const vx::Quad quad : shaded.all()) {
             const vx::QuadFields fields = vx::decode_quad(quad);
-            darkened +=
-                std::ranges::any_of(fields.occlusion, [](std::uint8_t c) { return c < 3; }) ? 1 : 0;
+            darkened += std::ranges::any_of(fields.occlusion, [](std::uint8_t c) { return c < 3; })
+                            ? 1U
+                            : 0U;
         }
         CHECK(faces_of(shaded) == lit);
         CHECK(lit_quads <= shaded.all().size());
@@ -319,7 +320,7 @@ TEST_CASE("an open border makes a face for every opaque block of the outermost s
                         CHECK(now == vx::BlockState::air);
                     } else {
                         changed_elsewhere +=
-                            now == before.blocks[vx::padded_index(x, y, z)] ? 0 : 1;
+                            now == before.blocks[vx::padded_index(x, y, z)] ? 0U : 1U;
                     }
                 }
             }

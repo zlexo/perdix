@@ -394,7 +394,8 @@ TEST_CASE("cutout blocks cast no ambient occlusion") {
     }
     chunk.put(2, 1, 2, blocks::leaves);
     chunk.put(3, 1, 2, blocks::glass);
-    for (const vx::Quad quad : chunk.mesh().range(vx::Pass::opaque, vx::Face::pos_y)) {
+    const vx::ChunkMesh lit = chunk.mesh();
+    for (const vx::Quad quad : lit.range(vx::Pass::opaque, vx::Face::pos_y)) {
         CHECK(vx::decode_quad(quad).occlusion == std::array<std::uint8_t, 4>{3, 3, 3, 3});
     }
     // Stone in their place darkens the faces beside it.

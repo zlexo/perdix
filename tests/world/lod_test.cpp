@@ -371,7 +371,7 @@ TEST_CASE("the chunks drawn cover the view once, each within a level of its neig
             std::size_t under_coarser = 0;
             std::size_t unbalanced = 0;
             for (const LodPos chunk : cover) {
-                not_drawn += rings.drawn(eye, chunk) ? 0 : 1;
+                not_drawn += rings.drawn(eye, chunk) ? 0U : 1U;
                 if (chunk.level < vx::max_lod_level &&
                     drawn_over(drawn, vx::parent(chunk)).has_value()) {
                     ++under_coarser;
@@ -393,7 +393,7 @@ TEST_CASE("the chunks drawn cover the view once, each within a level of its neig
                         continue;
                     }
                     if (const std::optional<LodPos> over = drawn_over(drawn, next)) {
-                        unbalanced += over->level > chunk.level + 1 ? 1 : 0;
+                        unbalanced += over->level > chunk.level + 1 ? 1U : 0U;
                         ++pairs;
                     }
                 }
@@ -417,7 +417,7 @@ TEST_CASE("the chunks drawn cover the view once, each within a level of its neig
                 }
                 LodPos pos{.x = at.x + dx, .y = rows(random), .z = at.z + dz, .level = 0};
                 const bool near = (dx * dx) + (dz * dz) <= 64 && std::abs(pos.y - at.y) <= 8;
-                near_coarse += near && !drawn.contains(pos) ? 1 : 0;
+                near_coarse += near && !drawn.contains(pos) ? 1U : 0U;
                 int over = 0;
                 for (;;) {
                     over += drawn.contains(pos) ? 1 : 0;
@@ -730,7 +730,7 @@ TEST_CASE("RFC 0011's swaps: as meshes arrive and the camera wanders, no chunk i
                 INFO("seed " << seed << ", step " << step << ", level " << int{chunk.level});
                 CHECK(covered(now, chunk, ready, rings, eye, min_y, max_y));
             }
-            swaps += LodSet(before.begin(), before.end()) == now ? 0 : 1;
+            swaps += LodSet(before.begin(), before.end()) == now ? 0U : 1U;
             before = drawn;
         }
         // Still, with every mesh in: lod_cover's chunks with faces.
@@ -795,7 +795,7 @@ TEST_CASE("as meshes arrive and the camera wanders, ground drawn stays drawn, th
                 }
                 ++kept;
                 crossing +=
-                    (Ground::surface(x, z, 0) >> 1) != Ground::surface(x >> 1, z >> 1, 1) ? 1 : 0;
+                    (Ground::surface(x, z, 0) >> 1) != Ground::surface(x >> 1, z >> 1, 1) ? 1U : 0U;
                 INFO("seed " << seed << ", step " << step << ", column " << x << ", " << z);
                 CHECK(Ground::drawn(now, x, z));
             }
@@ -881,7 +881,7 @@ TEST_CASE("going finer, a coarse chunk stays until all its children can be drawn
     CHECK_FALSE(swapped_set.contains(coarse));
     std::size_t children_drawn = 0;
     for (const LodPos kid : kids) {
-        children_drawn += swapped_set.contains(kid) ? 1 : 0;
+        children_drawn += swapped_set.contains(kid) ? 1U : 0U;
     }
     CHECK(children_drawn >= 4);
     // Back out, the coarse chunk's mesh gone meanwhile: its children stay

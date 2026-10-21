@@ -283,7 +283,7 @@ TEST_CASE("with RFC 0011's horizon on, the arena draws exactly the chunks the wo
     for (const vx::LodPos chunk : loop.drawn()) {
         for (vx::LodPos up = chunk; up.level < vx::max_lod_level;) {
             up = vx::parent(up);
-            overlaps += shown.contains({up.level, up.x, up.y, up.z}) ? 1 : 0;
+            overlaps += shown.contains({up.level, up.x, up.y, up.z}) ? 1U : 0U;
         }
     }
     CHECK(overlaps == 0);
