@@ -208,7 +208,8 @@ add_executable(vx_app_vulkan_tests
     main.cpp
     app/overlay_input_test.cpp
     app/world_render_test.cpp)
-target_link_libraries(vx_app_vulkan_tests PRIVATE vx_app_overlay vx_app_stream doctest::doctest)
+target_link_libraries(vx_app_vulkan_tests PRIVATE vx_app_frame vx_app_overlay vx_app_stream
+    doctest::doctest)
 vx_target_warnings(vx_app_vulkan_tests)
 doctest_discover_tests(vx_app_vulkan_tests PROPERTIES ${VX_VULKAN_DOCTEST_PROPERTIES})
 
