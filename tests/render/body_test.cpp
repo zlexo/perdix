@@ -92,6 +92,12 @@ Pixel pixel_at(const std::vector<std::uint8_t>& pixels, int x, int y) {
 
 // Within two steps in every color channel: each driver rounds its own way
 // while encoding to sRGB.
+// A pixel as text, for a failed check's message.
+std::string text(const Pixel& pixel) {
+    return std::to_string(pixel[0]) + " " + std::to_string(pixel[1]) + " " +
+           std::to_string(pixel[2]) + " " + std::to_string(pixel[3]);
+}
+
 bool near(const Pixel& pixel, const Pixel& expected) {
     for (std::size_t channel = 0; channel < 3; ++channel) {
         if (std::abs(int{pixel.at(channel)} - int{expected.at(channel)}) > 2) {
@@ -228,12 +234,14 @@ TEST_CASE("seen from above a body's tops are lit fully and its insides as the ga
     // from inside its box is lit as if it faced the other way, so this one,
     // facing down, is lit as a top is, fully: cyan.
     const OnImage inside = project(above, {.x = 0.5, .y = 65.41, .z = 0.5});
-    INFO("inside at ", inside.x, ", ", inside.y);
-    CHECK(near(pixel_at(seen, inside.x, inside.y), {0, 255, 255, 255}));
+    const Pixel inside_seen = pixel_at(seen, inside.x, inside.y);
+    INFO("inside at ", inside.x, ", ", inside.y, ": ", text(inside_seen));
+    CHECK(near(inside_seen, {0, 255, 255, 255}));
     // The right arm's top, gray, lit fully as every top is.
     const OnImage arm = project(above, {.x = 0.5 - 0.38, .y = 65.41, .z = 0.5});
-    INFO("arm at ", arm.x, ", ", arm.y);
-    CHECK(near(pixel_at(seen, arm.x, arm.y), {128, 128, 128, 255}));
+    const Pixel arm_seen = pixel_at(seen, arm.x, arm.y);
+    INFO("arm at ", arm.x, ", ", arm.y, ": ", text(arm_seen));
+    CHECK(near(arm_seen, {128, 128, 128, 255}));
 }
 
 TEST_CASE(
