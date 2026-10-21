@@ -683,17 +683,19 @@ TEST_CASE("with every mesh ready, the swaps draw lod_cover's chunks that have fa
 
 TEST_CASE("RFC 0011's swaps: as meshes arrive and the camera wanders, no chunk is drawn with a "
           "chunk around it, and nothing drawn goes until what replaces it can be drawn") {
+    // std::mt19937's numbers are the same in every standard library, its
+    // distributions are not: the walk is made from the numbers, so that
+    // every platform takes the same one.
     std::mt19937 random(0x5A9);
-    std::uniform_real_distribution<double> step_by(-48.0, 48.0);
-    std::uniform_real_distribution<double> jump_by(-900.0, 900.0);
-    std::uniform_real_distribution<double> rise_by(-250.0, 250.0);
-    std::uniform_int_distribution<int> kind(0, 9);
+    const auto between = [&random](double low, double high) {
+        return low + ((high - low) * static_cast<double>(random()) / 4'294'967'296.0);
+    };
     constexpr std::int32_t min_y = -3;
     constexpr std::int32_t max_y = 6;
     std::size_t kept = 0;   // chunks drawn before and still in the region
     std::size_t swaps = 0;  // steps that changed what is drawn
     std::size_t levels = 0; // levels drawn at once, summed over the steps
-    for (std::uint64_t seed = 1; seed <= 4; ++seed) {
+    for (std::uint64_t seed = 1; seed <= 64; ++seed) {
         LodRings rings = with(360, 8.0);
         rings.view_distance = 40;
         rings.near_distance = 2;
@@ -702,13 +704,14 @@ TEST_CASE("RFC 0011's swaps: as meshes arrive and the camera wanders, no chunk i
         Vec3d eye{.x = 1'000.5 * static_cast<double>(seed), .y = 70.0, .z = -333.25};
         std::vector<LodPos> before;
         for (std::int32_t step = 0; step < 24; ++step) {
-            const int move = kind(random);
+            const auto move = random() % 10U;
             if (move < 6) {
-                eye = eye + Vec3d{.x = step_by(random), .y = 0.0, .z = step_by(random)};
+                eye = eye + Vec3d{.x = between(-48.0, 48.0), .y = 0.0, .z = between(-48.0, 48.0)};
             } else if (move < 8) {
-                eye = eye + Vec3d{.x = jump_by(random), .y = 0.0, .z = jump_by(random)};
+                eye =
+                    eye + Vec3d{.x = between(-900.0, 900.0), .y = 0.0, .z = between(-900.0, 900.0)};
             } else {
-                eye.y = std::clamp(eye.y + rise_by(random), -50.0, 1'500.0);
+                eye.y = std::clamp(eye.y + between(-250.0, 250.0), -50.0, 1'500.0);
             }
             const auto ready = [&arrivals, step](LodPos pos) { return arrivals.at(pos, step); };
             const std::vector<LodPos> drawn =
