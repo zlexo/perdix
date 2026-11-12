@@ -834,3 +834,56 @@ TEST_CASE("MSAA blends the edges a block draws, and off leaves every pixel one s
     CHECK(renderer.context().instance().validation_counts().errors == 0);
     CHECK(renderer.context().instance().validation_counts().warnings == 0);
 }
+
+TEST_CASE("A switch of MSAA the device has no room for changes nothing (RFC 0013)") {
+    using vx::render::Antialiasing;
+    const std::array<Quarters, 1> layers = {Quarters{white, white, white, white}};
+    const std::vector<std::byte> textures = texture_bytes(layers);
+    // Room for 2 samples' depth and color (16 bytes a pixel), not 4's (32).
+    const std::uint64_t pixels = std::uint64_t{image_size.width} * image_size.height;
+    vx::Result<vx::render::Renderer> created =
+        vx::render::Renderer::create({.surface = std::nullopt,
+                                      .framebuffer = image_size,
+                                      .validation = true,
+                                      .present_mode = vx::render::PresentMode::fifo,
+                                      .overlay = nullptr,
+                                      .block_textures = textures,
+                                      .attachment_budget = pixels * 24});
+    INFO((created.has_value() ? std::string() : created.error().message));
+    REQUIRE(created.has_value());
+    vx::render::Renderer& renderer = created.value();
+    OneBlock block(vx::Opacity::opaque);
+    REQUIRE(renderer.set_chunk({.x = 0, .y = 0, .z = 0}, block.mesh()).has_value());
+    vx::render::Camera corner;
+    corner.position = {18.0, 17.7, 18.0};
+    corner.yaw = quarter_turn / 2.0F;
+    corner.pitch = -0.515F;
+    const auto blends = [&] { return blended_pixels(draw(renderer, corner)); };
+    const auto validation_clean = [&] {
+        const auto counts = renderer.context().instance().validation_counts();
+        return counts.errors == 0 && counts.warnings == 0;
+    };
+    REQUIRE(renderer.offers(Antialiasing::x4));
+    static_cast<void>(draw(renderer, corner)); // the frame objects' first use
+    const std::uint32_t before = allocations(renderer);
+
+    const vx::Result<void> refused = renderer.set_antialiasing(Antialiasing::x4);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().message.find("room") != std::string::npos);
+    // Still one sample a pixel, drawn as before with nothing left over.
+    CHECK(renderer.antialiasing() == Antialiasing::off);
+    CHECK(allocations(renderer) == before);
+    CHECK(blends() == 0);
+    CHECK(validation_clean());
+
+    if (renderer.offers(Antialiasing::x2)) {
+        // A switch that fits goes through, and a refused one after it keeps it.
+        REQUIRE(renderer.set_antialiasing(Antialiasing::x2).has_value());
+        const int two = blends();
+        CHECK(two > 0);
+        REQUIRE_FALSE(renderer.set_antialiasing(Antialiasing::x4).has_value());
+        CHECK(renderer.antialiasing() == Antialiasing::x2);
+        CHECK(blends() == two);
+        CHECK(validation_clean());
+    }
+}

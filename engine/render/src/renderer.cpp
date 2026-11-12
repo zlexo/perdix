@@ -1397,6 +1397,7 @@ Result<Renderer> Renderer::create(const RendererDesc& desc) {
         }
     }
     renderer.gpu_profiler_ = make_gpu_profiler(renderer.context_.device());
+    renderer.attachment_budget_ = desc.attachment_budget;
     return renderer;
 }
 
@@ -1422,10 +1423,10 @@ Renderer::Renderer(Renderer&& other) noexcept
       set_chunk_at_(other.set_chunk_at_), set_chunk_generation_(other.set_chunk_generation_),
       block_filter_(other.block_filter_), occlusion_strength_(other.occlusion_strength_),
       wireframe_(other.wireframe_), antialiasing_(other.antialiasing_),
-      framebuffer_(other.framebuffer_), target_framebuffer_(other.target_framebuffer_),
-      present_mode_(other.present_mode_), swapchain_stale_(other.swapchain_stale_),
-      slots_(std::exchange(other.slots_, {})), origins_(std::move(other.origins_)),
-      body_vertices_(std::move(other.body_vertices_)),
+      attachment_budget_(other.attachment_budget_), framebuffer_(other.framebuffer_),
+      target_framebuffer_(other.target_framebuffer_), present_mode_(other.present_mode_),
+      swapchain_stale_(other.swapchain_stale_), slots_(std::exchange(other.slots_, {})),
+      origins_(std::move(other.origins_)), body_vertices_(std::move(other.body_vertices_)),
       body_origins_(std::move(other.body_origins_)), posed_(other.posed_),
       tag_vertices_(std::move(other.tag_vertices_)), tag_origins_(std::move(other.tag_origins_)),
       fog_(std::move(other.fog_)), laid_(other.laid_), tag_order_(other.tag_order_),
@@ -1674,43 +1675,58 @@ Result<void> Renderer::start_overlay(ImGuiContext* overlay) {
 }
 
 // Every pipeline again, for targets of `format`.
-Result<void> Renderer::rebuild_pipelines(VkFormat format) {
-    const VkSampleCountFlagBits samples = sample_bits(antialiasing_);
+struct Renderer::Pipelines {
+    GraphicsPipeline cube;
+    GraphicsPipeline body;
+    GraphicsPipeline see_through;
+    GraphicsPipeline normal;
+    ChunkPipelines chunks;
+};
+
+Result<Renderer::Pipelines> Renderer::make_pipelines(VkFormat format,
+                                                     VkSampleCountFlagBits samples) const {
     Result<GraphicsPipeline> cube =
         make_cube_pipeline(context_.device(), format, textures_.layout(), samples);
     if (!cube.has_value()) {
         return cube.error();
     }
-    cube_.pipeline = std::move(cube).value();
     Result<BodyResources> bodies =
         make_body_resources(context_.device(), format, textures_.layout(), 0, samples);
     if (!bodies.has_value()) {
         return bodies.error();
     }
-    body_drawing_.pipeline = std::move(bodies.value().pipeline);
     Result<TextResources> text =
         make_text_resources(context_.device(), format, textures_.layout(), false, samples);
     if (!text.has_value()) {
         return text.error();
     }
-    text_drawing_.see_through = std::move(text.value().see_through);
-    text_drawing_.normal = std::move(text.value().normal);
-    Result<ChunkPipelines> chunk_pipelines =
+    Result<ChunkPipelines> chunks =
         make_chunk_pipelines(context_.device(), format, textures_.layout(), samples);
-    if (!chunk_pipelines.has_value()) {
-        return chunk_pipelines.error();
+    if (!chunks.has_value()) {
+        return chunks.error();
     }
-    chunk_drawing_.opaque = std::move(chunk_pipelines.value().opaque);
-    chunk_drawing_.cutout = std::move(chunk_pipelines.value().cutout);
-    chunk_drawing_.wireframe = std::move(chunk_pipelines.value().wireframe);
-    chunk_drawing_.sky = std::move(chunk_pipelines.value().sky);
+    return Pipelines{.cube = std::move(cube).value(),
+                     .body = std::move(bodies.value().pipeline),
+                     .see_through = std::move(text.value().see_through),
+                     .normal = std::move(text.value().normal),
+                     .chunks = std::move(chunks).value()};
+}
+
+void Renderer::install(Pipelines pipelines, VkFormat format, VkSampleCountFlagBits samples) {
+    cube_.pipeline = std::move(pipelines.cube);
+    body_drawing_.pipeline = std::move(pipelines.body);
+    text_drawing_.see_through = std::move(pipelines.see_through);
+    text_drawing_.normal = std::move(pipelines.normal);
+    chunk_drawing_.opaque = std::move(pipelines.chunks.opaque);
+    chunk_drawing_.cutout = std::move(pipelines.chunks.cutout);
+    chunk_drawing_.wireframe = std::move(pipelines.chunks.wireframe);
+    chunk_drawing_.sky = std::move(pipelines.chunks.sky);
     if (overlay_ != nullptr) {
         ImGui::SetCurrentContext(overlay_);
         const ImGui_ImplVulkan_PipelineInfo overlay_pipeline =
             overlay_pipeline_info(&format, samples);
         ImGui_ImplVulkan_CreateMainPipeline(&overlay_pipeline);
     }
-    return {};
 }
 
 Result<void> Renderer::recreate_target() {
@@ -1732,9 +1748,11 @@ Result<void> Renderer::recreate_target() {
         // move to another display.
         if (const VkFormat format = swapchain_->choice().format.format;
             format != cube_.pipeline.color_format()) {
-            if (const Result<void> rebuilt = rebuild_pipelines(format); !rebuilt.has_value()) {
-                return rebuilt.error();
+            Result<Pipelines> pipelines = make_pipelines(format, sample_bits(antialiasing_));
+            if (!pipelines.has_value()) {
+                return pipelines.error();
             }
+            install(std::move(pipelines).value(), format, sample_bits(antialiasing_));
         }
     } else {
         Result<Image> replacement =
@@ -1744,22 +1762,33 @@ Result<void> Renderer::recreate_target() {
         }
         offscreen_ = std::move(replacement).value();
     }
-    if (const Result<void> made = make_attachments(extent, cube_.pipeline.color_format());
-        !made.has_value()) {
-        return made.error();
+    Result<Attachments> attachments =
+        make_attachments(extent, cube_.pipeline.color_format(), sample_bits(antialiasing_));
+    if (!attachments.has_value()) {
+        return attachments.error();
     }
+    depth_ = std::move(attachments.value().depth);
+    msaa_color_ = std::move(attachments.value().msaa_color);
     target_framebuffer_ = framebuffer_;
     return add_rendered_semaphores();
 }
 
-Result<void> Renderer::make_attachments(VkExtent2D extent, VkFormat format) {
-    const VkSampleCountFlagBits samples = sample_bits(antialiasing_);
+Result<Renderer::Attachments> Renderer::make_attachments(VkExtent2D extent, VkFormat format,
+                                                         VkSampleCountFlagBits samples) const {
+    // D32_SFLOAT's depth and the targets' 8-bit color both take 4 bytes a
+    // sample.
+    const std::uint64_t bytes = std::uint64_t{extent.width} * extent.height * 4U *
+                                static_cast<std::uint64_t>(samples) *
+                                (samples == VK_SAMPLE_COUNT_1_BIT ? 1U : 2U);
+    if (attachment_budget_ != 0 && bytes > attachment_budget_) {
+        return Error{"the attachments take " + std::to_string(bytes) + " bytes, over the " +
+                     std::to_string(attachment_budget_) + " the device has room for"};
+    }
     Result<Image> depth = make_depth_target(context_.device(), extent, samples);
     if (!depth.has_value()) {
         return depth.error();
     }
-    depth_ = std::move(depth).value();
-    msaa_color_.reset();
+    Attachments made{.depth = std::move(depth).value(), .msaa_color = std::nullopt};
     if (samples != VK_SAMPLE_COUNT_1_BIT) {
         Result<Image> color = Image::create_attachment(
             context_.device(), extent, format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
@@ -1767,9 +1796,9 @@ Result<void> Renderer::make_attachments(VkExtent2D extent, VkFormat format) {
         if (!color.has_value()) {
             return color.error();
         }
-        msaa_color_ = std::move(color).value();
+        made.msaa_color = std::move(color).value();
     }
-    return {};
+    return made;
 }
 
 bool Renderer::offers(Antialiasing samples) const noexcept {
@@ -1791,16 +1820,28 @@ Result<void> Renderer::set_antialiasing(Antialiasing samples) {
     }
     // The frames in flight still use the pipelines and attachments.
     vkDeviceWaitIdle(context_.device().handle());
-    antialiasing_ = samples;
+    const VkSampleCountFlagBits bits = sample_bits(samples);
     const VkFormat format = cube_.pipeline.color_format();
-    if (const Result<void> rebuilt = rebuild_pipelines(format); !rebuilt.has_value()) {
-        return rebuilt.error();
-    }
     // The target's own size: the swapchain's, which the surface may set,
     // or the one the offscreen image was made for.
     const VkExtent2D extent =
         swapchain_.has_value() ? swapchain_->choice().extent : vk_extent(target_framebuffer_);
-    return make_attachments(extent, format);
+    // All or nothing: everything is made before anything is replaced, so
+    // that a failure, such as no memory for more samples, leaves the old
+    // samples drawing as before.
+    Result<Pipelines> pipelines = make_pipelines(format, bits);
+    if (!pipelines.has_value()) {
+        return pipelines.error();
+    }
+    Result<Attachments> attachments = make_attachments(extent, format, bits);
+    if (!attachments.has_value()) {
+        return attachments.error();
+    }
+    install(std::move(pipelines).value(), format, bits);
+    depth_ = std::move(attachments.value().depth);
+    msaa_color_ = std::move(attachments.value().msaa_color);
+    antialiasing_ = samples;
+    return {};
 }
 
 void Renderer::set_present_mode(PresentMode mode) noexcept {

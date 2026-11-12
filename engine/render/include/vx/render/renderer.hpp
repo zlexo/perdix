@@ -75,6 +75,11 @@ struct RendererDesc {
     // The most commands one indirect call draws, below the device's limit:
     // tests set it to split each pass's calls. 0 is the device's.
     std::uint32_t draw_call_limit = 0;
+    // The most bytes one change of the attachments may make, depth and
+    // multisampled color together, at 4 a sample: a device short of memory
+    // refuses more, as tests set it to. A refused change, such as a switch of
+    // antialiasing, changes nothing. 0 is no limit.
+    std::uint64_t attachment_budget = 0;
 };
 
 // A color in linear RGB, with alpha. The target's sRGB format encodes it.
@@ -346,12 +351,21 @@ private:
                                                    std::size_t slot, std::span<TagRun> runs);
     [[nodiscard]] Result<void> add_rendered_semaphores();
     [[nodiscard]] Result<void> recreate_target();
-    // Every pipeline again, for a target of `format`, with the samples
-    // antialiasing_ asks for.
-    [[nodiscard]] Result<void> rebuild_pipelines(VkFormat format);
-    // The depth attachment, and with MSAA the world's color, for a target
-    // of `extent` and `format`.
-    [[nodiscard]] Result<void> make_attachments(VkExtent2D extent, VkFormat format);
+    // Every pipeline that draws into the target, made for a target of
+    // `format` with `samples` (defined in renderer.cpp).
+    struct Pipelines;
+    // The depth attachment, and with MSAA the world's color.
+    struct Attachments {
+        Image depth;
+        std::optional<Image> msaa_color;
+    };
+    // Each is made aside, so that a failure leaves the renderer drawing as
+    // it did; install puts what was made in place.
+    [[nodiscard]] Result<Pipelines> make_pipelines(VkFormat format,
+                                                   VkSampleCountFlagBits samples) const;
+    void install(Pipelines pipelines, VkFormat format, VkSampleCountFlagBits samples);
+    [[nodiscard]] Result<Attachments> make_attachments(VkExtent2D extent, VkFormat format,
+                                                       VkSampleCountFlagBits samples) const;
     // Makes the target again where the swapchain is stale or the framebuffer
     // changed size since it was made.
     [[nodiscard]] Result<void> refresh_target();
@@ -381,6 +395,7 @@ private:
     float occlusion_strength_ = 1.0F;
     bool wireframe_ = false;
     Antialiasing antialiasing_ = Antialiasing::off;
+    std::uint64_t attachment_budget_ = 0; // RendererDesc::attachment_budget
     Extent framebuffer_;
     Extent target_framebuffer_; // the size the target was made for
     PresentMode present_mode_;
