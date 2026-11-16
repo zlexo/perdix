@@ -43,6 +43,7 @@ add_library(vx_world STATIC
     src/memory_budget.cpp
     src/movement.cpp
     src/names.cpp
+    src/noise.cpp
     src/packed_array.cpp
     src/placeholder_generator.cpp
     src/region.cpp
