@@ -352,4 +352,4 @@ The amendment's, opened for RFC 0011's levels and settled on 2026-11-16: every r
 
 ## As built
 
-Not built yet.
+- **Random streams and the float rules** (item 2, #462, 2026-11-16): in the core library, `vx/core/random.hpp`, since nothing in them is about terrain. `stream_seed` takes the world's seed, a salt and any integer keys in order (a chunk's x, y and z, a level, a tile), each through its own `mix64`, rather than a `ChunkPos`, so coarse levels and tiles key streams the same way. `-ffp-contract=off` sits in `cmake/VxFloatRules.cmake` and every target of ours gets it through `vx_target_warnings`, tests and benchmarks included, since inline header code compiles with its caller's flags. The control is `interpolation_probe`, built into the core library. Measured on the reference machine: Clang's default contraction changes its hash at every optimization level on arm64, and on x86-64 with `-march=haswell`; `-ffp-contract=fast` only from -O1, since unoptimized builds never fuse across statements, so the RFC's control holds for optimized builds. Baseline x86-64 has no FMA and matches with contraction on or off.
