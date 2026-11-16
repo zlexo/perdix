@@ -31,6 +31,7 @@ add_executable(vx_core_tests
     core/job_system_test.cpp
     core/job_workers_test.cpp
     core/mesh_result_pool_test.cpp
+    core/random_test.cpp
     core/result_test.cpp
     core/thread_test.cpp
     core/vec3d_test.cpp

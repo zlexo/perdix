@@ -66,6 +66,7 @@ add_library(vx_core STATIC
     src/frustum.cpp
     src/job_system.cpp
     src/mesh_result_pool.cpp
+    src/random.cpp
     src/thread.cpp
     src/version.cpp
     src/wake_event.cpp)
