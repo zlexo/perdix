@@ -5,7 +5,7 @@
 | **Status** | Accepted (2026-10-02) |
 | **Milestone** | M4 Terrain |
 | **Issue** | #23 |
-| **Amendment** | Generating at a level (RFC 0011), in review since 2026-11-16 |
+| **Amendment** | Generating at a level (RFC 0011), accepted 2026-11-16 |
 
 ## Summary
 
