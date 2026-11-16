@@ -3,7 +3,10 @@
 # Applies the engine's warning set to one of our own targets. Third-party
 # code never gets these flags: it is built with its own defaults and its
 # headers are included as SYSTEM, so a dependency update cannot break the
-# build through a warning we do not control.
+# build through a warning we do not control. It also applies RFC 0008's
+# float rules (VxFloatRules.cmake), which every target of ours needs.
+include(VxFloatRules)
+
 function(vx_target_warnings target)
     if(MSVC)
         set(flags /W4 /permissive-)
@@ -31,4 +34,5 @@ function(vx_target_warnings target)
         endif()
     endif()
     target_compile_options(${target} PRIVATE ${flags})
+    vx_target_float_rules(${target})
 endfunction()
