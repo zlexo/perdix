@@ -87,9 +87,9 @@ The estimates assume 1.5 coarse chunks per column in the terrain band, today's 4
 
 The generator interface (RFC 0006 and RFC 0008) gains a level: `surface_range`, `plan` and `build` take it, and a level-0 call is today's. At level L the generator samples its fields at cell centers, 2^L blocks apart, and:
 
-- **Band-limits its noise:** octaves whose wavelength is under two cells are left out. They would alias into speckle, and leaving them out is what makes a coarse chunk cheap.
-- **Skips caves from level 2 on:** RFC 0008's default caves do not open to the sky, so from that far none would show. At level 1 it dilates them by a cell, as Cubyz does, so they widen rather than vanish.
-- **Draws trees as canopy cells** on a coarse grid from level 2, each grid cell's chance raised so a forest keeps its density, as Cubyz does, and **makes leaves opaque** past level 0: the cutout pass draws full detail only.
+- **Band-limits its noise:** octaves whose wavelength is under two cells are left out. They would alias into speckle, and leaving them out is what makes a coarse chunk cheap. (RFC 0008's amendment of 2026-11-16 counts in corner spacings, since its density is read only at lattice corners.)
+- **Skips caves from level 2 on:** RFC 0008's default caves do not open to the sky, so from that far none would show. At level 1 it dilates them by a cell, as Cubyz does, so they widen rather than vanish. (Amended 2026-11-16, RFC 0008's open question 6: no caves at any coarse level.)
+- **Draws trees as canopy cells** on a coarse grid from level 2, each grid cell's chance raised so a forest keeps its density, as Cubyz does, and **makes leaves opaque** past level 0: the cutout pass draws full detail only. (Amended 2026-11-16, RFC 0008's open question 7: canopy tiles aligned to the chunk from level 1.)
 - **Answers `surface_range` per coarse column,** never narrower than the truth, as RFC 0006 asks of level 0. The horizon test reads the same ranges.
 
 A coarse chunk is a pure function of the seed, the parameters and its position and level, so it is the same on every thread and machine. It is not the downsampled full-detail terrain, and the difference shows as a pop when levels swap; the test plan measures it on the placeholder hills now and on RFC 0008's terrain later. Until RFC 0008 lands, the placeholder hills (RFC 0006) gain a coarse path: each cell's height at its column's center, the finer octave dropped once its wavelength is under two cells.
