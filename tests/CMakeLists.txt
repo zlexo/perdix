@@ -84,6 +84,7 @@ add_executable(vx_world_tests
     world/movement_property_test.cpp
     world/movement_test.cpp
     world/names_test.cpp
+    world/noise_test.cpp
     world/packed_array_test.cpp
     world/placeholder_generator_test.cpp
     world/placeholder_lod_test.cpp
