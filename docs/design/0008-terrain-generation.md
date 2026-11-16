@@ -5,10 +5,11 @@
 | **Status** | Accepted (2026-10-02) |
 | **Milestone** | M4 Terrain |
 | **Issue** | #23 |
+| **Amendment** | Generating at a level (RFC 0011), accepted 2026-11-16 |
 
 ## Summary
 
-How a world seed and a chunk position become blocks: climate fields, a 3D density with overhangs and caves, biomes, surface blocks, and ores and trees that cross chunk borders, in cubic 32 by 32 by 32 chunks with no fixed height (RFC 0002). The same seed and parameter file give byte-identical chunks on every platform and thread count. Every parameter sits on a live slider in the debug overlay, so the look of the terrain is chosen by eye, not guessed in code. Generation speed is what lets the world keep up with a fast-flying camera, so it has a budget per chunk.
+How a world seed and a chunk position become blocks: climate fields, a 3D density with overhangs and caves, biomes, surface blocks, and ores and trees that cross chunk borders, in cubic 32 by 32 by 32 chunks with no fixed height (RFC 0002). The same seed and parameter file give byte-identical chunks on every platform and thread count. Every parameter sits on a live slider in the debug overlay, so the look of the terrain is chosen by eye, not guessed in code. Generation speed is what lets the world keep up with a fast-flying camera, so it has a budget per chunk. Every stage also runs at RFC 0011's coarse levels, cells 2 to 32 blocks wide, so the same generator draws the horizon (amended 2026-11-16).
 
 ## Motivation
 
@@ -28,6 +29,7 @@ Goals:
 - Biomes chosen from climate values, surface blocks per biome, and ores and trees that cross chunk borders without seams.
 - Chunks no terrain can reach cost about a microsecond and need no neighbors; other uniform chunks skip the per-block work.
 - Every tunable value is in one parameter file, on a slider in the overlay, and a change shows around the camera within 100 ms (target).
+- Every level of RFC 0011, cells of 1 to 32 blocks, from the same seed and parameters: a coarse chunk from its position and level alone, with no plan and nothing from its neighbors, as deterministic as a full-detail one.
 
 Non-goals:
 
@@ -36,7 +38,7 @@ Non-goals:
 - Structures (villages, dungeons) and any feature reaching more than 32 blocks from its origin: a later structures RFC.
 - Plants and other non-cube blocks: the block models RFC. Features take them unchanged.
 - Saving: M8. Determinism lets M8 store only edited chunks; how a saved world pins its generator and parameters is M8's call.
-- Level of detail for distant terrain: M9.
+- Which level is drawn where, swaps, seams, and meshing and drawing at a level: RFC 0011. This RFC says how each stage runs at a level.
 
 ## Prior art
 
@@ -145,7 +147,7 @@ float density = std::min(terrain, cave);
 - **Spaghetti:** `max(|a|, |b|) - r` for two independent fields `a` and `b`. The zero crossings of two noises meet along curves, which become tunnels; a slow third field varies `r`. **Noodles:** the same with higher frequency and a smaller radius, switched on and off by a toggle field.
 - Caves live between a depth under the surface and a floor depth, both parameters, tapered at both ends.
 
-Interpolation is `a * (1 - t) + b * t`, with `t` a multiple of a quarter or an eighth, so `t` and `1 - t` are exact. That form keeps signs: if every corner of a cell is positive, every block in it is solid. The uniform tests below rely on it.
+Interpolation is `a * (1 - t) + b * t`, and a block takes the value at its middle, so `t` is an odd number of eighths across a lattice cell and of sixteenths up it: `t` and `1 - t` are exact. That form keeps signs: if every corner of a cell is positive, every block in it is solid. The uniform tests below rely on it. (Block corners until 2026-11-16; middles make level 0 the first case of the coarse rule below, which samples cells at their middles as RFC 0011 asks.)
 
 ### Biomes and surface
 
@@ -175,13 +177,36 @@ A column's surface range spans `sea_level + height + jag` plus or minus `1 / squ
 
 All three need a uniform `ChunkStorage` of any state, not only air, which RFC 0002's `ChunkStorage::uniform(BlockState)` provides.
 
+### Generating at a level
+
+RFC 0011 chunks are the same 32 by 32 by 32 at every level, their cells 2^L blocks wide. Its item 4 built the generator's interface for them (`generator.hpp`): `levels()`, and beside the level-0 calls `lod_surface_range`, `lod_out_of_reach` and `lod_build`. **Coarse chunks have no plans:** a coarse build reads nothing of its neighbors, and streaming pins nothing for it. Every rule below follows from that.
+
+| Stage | Level 0 | Level L, 1 to 5 |
+|---|---|---|
+| 1. Climate and shape | every 4 blocks | every 4 cells, 4 x 2^L blocks: the same 81 lattice columns per column of chunks, cached per worker by column and level |
+| 2. Density | corners every 4 by 8 by 4 blocks | the same 9 by 6 by 9 corners, 4 by 8 by 4 cells apart, with the short octaves left out; no caves (open question 6) |
+| 3. Biomes | per 4 by 4 by 4 blocks | per 4 by 4 by 4 cells: 512 per chunk at every level |
+| 4. Placements | ores and trees | none |
+| 5. Fill and surface | per block, at its middle | per cell, at its middle; the top solid cell takes the top block |
+| 6. Features | gathered from 27 plans | canopy tiles inside the chunk (open question 7); no ores |
+| 7. Handoff | `from_dense` | `from_dense` |
+
+- **The same arithmetic, scaled.** A level-L chunk runs stages 1, 2, 3 and 5 as a level-0 chunk does, with every position multiplied by 2^L: its corners lie 4 x 2^L blocks apart across and 8 x 2^L up, a cell takes the interpolated density at its middle (the same odd eighths and sixteenths), and level 0 is the case L = 0. A coarse chunk therefore costs about what a mixed full-detail one does without caves and features, and every ring's lattice cell is 4 cells wide, at most 4k pixels on screen at RFC 0011's quality k, as the full-detail ring's is. The price: at level 5 the corners stand 128 blocks apart and 256 up, so a far mountain is straight between them (open question 5).
+- **Band-limited by the lattice.** Noise is read only at corners, so an octave whose wavelength is under two corner spacings aliases into speckle: under 8 blocks across at level 0, under 8 x 2^L at level L. Each field's octave count per level comes from the parameters once. This replaces RFC 0011's "under two cells", written when a coarse cell sampled the noise itself. The 2D noise read per cell column, the filler depth's, drops octaves under two cells.
+- **Surface.** The walk goes down each cell column from the apron's top, as at level 0, the apron being one layer of corners, 8 cells. The top solid cell under air takes the biome's top block, whatever depth of it the cell holds (the placeholder's grass caps, RFC 0011 As built #423); the cells under it take what the level-0 rule gives the cell's top: filler within the filler depth, stone below. From level 3, cells of 8 blocks or more, the filler is under one cell and the cap is all that shows. RFC 0011's flat colors past level 2 take their tint from the cell's biome.
+- **Trees as canopy tiles.** A coarse chunk divides its cell columns into tiles aligned to its own grid: 2 by 2 cells at level 1 (4 by 4 blocks, one level-0 candidate's cell), one cell from level 2. A tile can hold a tree where its first cell column's top solid cell takes a top block trees grow on (not sand or gravel under the sea), as a level-0 candidate needs, chosen with the chance of the level-0 candidates it covers, 1 - (1 - p)^n for n of them, from a stream keyed by the feature, the tile and the level. A chosen tile puts leaves, opaque past level 0 as RFC 0011 says, on each of its cell columns from the top solid cell up the tree's crown height in cells, at least one. Tiles never cross a chunk's sides. They can cross its top, so a coarse chunk also reads one layer of corners below itself, 9 by 7 by 9 in all, enough for a canopy up to 8 cells tall, 16 blocks at level 1.
+- **Uniform at a level.** The three tests of Uniform chunks hold per level: `lod_out_of_reach` from the parameter bounds in cells, the column's reach from `lod_surface_range`, and the sign test over the level's corners. With no caves and no ores, a coarse chunk wholly under its column's surface range is uniform stone or deep stone, unless the dither band crosses it.
+- **Surface ranges at a level** span the coarse columns' heights plus or minus `1 / squash`, plus the tallest canopy, in cells, rounded out to whole chunks of the level: never narrower than the cells' surfaces, as RFC 0011 and its horizon test ask.
+- **Coarse and fine disagree.** A coarse surface differs from the full-detail one by the dropped octaves' amplitude over `squash`, and by interpolating over wider lattice cells, above it as well as below. RFC 0011's swaps by column (#424) and its open sets (#421) were built on the placeholder hills, where a coarse surface lies at most half a cell under the finer one. The test plan measures the real disagreement per level and reruns RFC 0011's swap property test with it. The one known gap, a fully culled coarse chunk that makes no open set, grows with it; on 2026-11-16 the owner chose to wait until it shows, and M4's flythrough and the by-eye pass are where it would.
+- **Regeneration at every level.** A new parameter snapshot bumps `version()`, and every level regenerates, each by its own backlog (RFC 0011). While a slider moves only the level-0 columns around the camera follow it; the coarse levels follow on release.
+
 ### The taste loop
 
 - **One list.** `visit(TerrainParams&, Visitor&)` names every tunable value with its range and the earliest stage it affects. The file reader, the file writer and the overlay are visitors, so a new parameter is one line.
 - **Sliders.** The overlay (RFC 0001's Dear ImGui) has a section per group: a slider per value, a small plot per curve with draggable points, the seed with a "new seed" button, and save, save as, load and revert.
 - **Instant regeneration.** A change publishes a new immutable snapshot with a new version, and streaming (RFC 0006) regenerates from the earliest affected stage, nearest the camera first: a surface value rebuilds without replanning; a climate value also clears the column caches. While a slider moves, the 9 by 9 columns around the camera regenerate continuously, newest value wins; on release the rest of the view follows. Results from older versions are dropped. Jobs pin the snapshot they started with (RFC 0005), so publishing a new one never frees what a running job reads.
-- **Map view.** Continents are thousands of blocks across, wider than any view, so the overlay also draws a top-down map (height, climate or biome, 16 blocks per pixel by default) from stage 1 alone, redrawn on every change.
-- **The price.** The overlay shows the shares of out-of-reach, uniform and mixed chunks, plan and build times, and memory per chunk, so taller mountains or deeper caves show their cost while being tuned.
+- **Map view.** Continents are thousands of blocks across, wider than any view, so the overlay also draws a top-down map (height, climate or biome, 16 blocks per pixel by default) from stage 1 alone, redrawn on every change. Level 2's stage 1 has a lattice column every 16 blocks, one per pixel, so the map reuses it.
+- **The price.** The overlay shows the shares of out-of-reach, uniform and mixed chunks, plan and build times, and memory per chunk, per level, so taller mountains or deeper caves show their cost while being tuned.
 - **The file.** `assets/core/terrain/default.toml`, in the repository. It is read with toml++, which RFC 0004 brings for block files, and written by a small writer of our own that puts each value's range in a comment and prints floats to 9 significant digits, which round-trips every `float`. It also keeps camera bookmarks (seed, position, direction) for comparing looks. Blocks are named by key (`core:stone`) and resolved through the registry on load; problems are reported in RFC 0004's file, line and column format. The golden hashes are computed from this preset, so a new look is a reviewed diff.
 
 ### API sketch
@@ -189,8 +214,9 @@ All three need a uniform `ChunkStorage` of any state, not only air, which RFC 00
 ```cpp
 namespace vx {
 
-inline constexpr int cell_xz = 4, cell_y = 8;                                  // blocks per lattice cell
-inline constexpr int lattice_volume = 9 * 6 * 9;                               // corners, apron included
+inline constexpr int lattice_xz = 4, lattice_y = 8;    // cells between corners; RFC 0011 owns "cell"
+inline constexpr int lattice_volume = 9 * 6 * 9;        // corners, apron included
+inline constexpr int lod_lattice_volume = 9 * 7 * 9;    // at a coarse level, one layer below too
 
 enum class Fill : std::uint8_t { air, solid, mixed };                          // before features
 
@@ -229,6 +255,17 @@ public:
     // 3 by 3 by 3; null for a neighbor with no plan: out of reach, or above its column's
     // surface range (RFC 0006). Reads no other chunk's blocks.
     [[nodiscard]] ChunkStorage build(std::span<const ChunkPlan* const, 27> plans, GenScratch& scratch) const override;
+
+    // Bumped by each new parameter snapshot: streaming regenerates every level.
+    [[nodiscard]] std::uint32_t version() const noexcept override;
+
+    // RFC 0011's levels, as its item 4 built the interface: 6, cells of 1 to 32 blocks.
+    // Coarse chunks have no plans; a coarse build reads nothing of its neighbors.
+    [[nodiscard]] std::uint8_t levels() const noexcept override { return lod_levels; }
+    [[nodiscard]] ChunkRange lod_surface_range(ColumnPos column, std::uint8_t level,
+                                               GenScratch& scratch) const override;
+    [[nodiscard]] std::optional<BlockState> lod_out_of_reach(LodPos pos) const noexcept override;
+    [[nodiscard]] ChunkStorage lod_build(LodPos pos, GenScratch& scratch) const override;
 };
 
 } // namespace vx
@@ -260,9 +297,13 @@ Targets on the reference machine, release build, one thread, measured with nanob
 | Build, mixed chunk, `from_dense` included | 300 µs |
 | Plan in memory | 4 KiB |
 | Scratch per worker | 1 MiB |
+| Build, coarse chunk of any level, mixed, `from_dense` included | 300 µs |
+| Build, coarse chunk, uniform | 5 µs |
 | Taste loop: 9 by 9 columns around the camera regenerated, all workers | 100 ms |
 
 What that buys: in RFC 0006's region for a 1,024-block view, flying at 64 blocks per second loads about 1,100 new chunks a second, about 670 of them mixed with caves and ores 256 blocks deep. Generating those costs about a quarter of one performance core (670 times 400 µs), which leaves room for meshing (RFC 0003) and for flying several times faster. The real share of mixed chunks depends on how deep caves go (open question 2); the benchmark flythrough (RFC 0006) measures it and the real throughput.
+
+With RFC 0011's levels on (`--horizon`, k = 4), full detail streams 19 chunks out instead of 32, so the same flight loads about 650 full-detail chunks a second. Each coarse level loads half the chunks of the one below it, about 1.5 per column, all near the surface: about 110 a second for levels 1 to 5 together, about 33 ms of work a second at 300 µs each, 3% of one core.
 
 ## Test plan
 
@@ -275,7 +316,9 @@ What that buys: in RFC 0006's region for a 1,024-block view, flying at 64 blocks
 - **Uniform paths.** At every benchmark position, the out-of-reach and uniform answers equal a full build. Curve bounds never fall below a dense sampling of the curve.
 - **Noise.** SIMD equals scalar bit for bit; values stay within -1 to 1 with no NaN; smoothness at 2^30 blocks is within 10% of the origin's.
 - **Parameter file.** Save, load and save again gives identical bytes; unknown keys warn; missing keys take defaults; out-of-range values are clamped with a warning.
-- **By eye.** A pull request that changes the look includes before and after screenshots from the preset's bookmarks.
+- **Levels.** Golden hashes at levels 1 to 5 over the same seeds and positions on each level's grid. Level 0 by the coarse rules (no caves, ores or trees) equals a level-0 build with those switched off. A 9 by 9 by 9 region of each level built on every worker in shuffled order gives the same hashes as the single-threaded mode. `lod_surface_range` is never narrower than its chunks' solid cells under open sky, canopies included, and `lod_out_of_reach` agrees with full coarse builds. No canopy tile writes outside its chunk's sides; a control that offsets the tiles by one cell goes red.
+- **Coarse against fine.** Per level, the height of each coarse column's top solid cell against the downsampled full-detail surface under it, over the golden seeds: the distribution is recorded in As built, its worst case held as the test's bound, and RFC 0011's swap property test reruns with that bound in place of the placeholder's half a cell.
+- **By eye.** A pull request that changes the look includes before and after screenshots from the preset's bookmarks, near and at the horizon.
 
 ## Pull request plan
 
@@ -284,13 +327,13 @@ What that buys: in RFC 0006's region for a 1,024-block view, flying at 64 blocks
 3. Noise: scalar OpenSimplex2 in 2D and 3D, fBm and the lattice call, with range, smoothness and far-coordinate tests and the first benchmarks.
 4. Noise: the 4-wide path for NEON and SSE2, bit-equal to scalar, with before and after numbers.
 5. Curves with Bezier bounds, `TerrainParams`, the visitor, reading the preset with toml++ and writing it back, and the default preset.
-6. Climate and shape with the per-worker column cache, `surface_range`, and the map view: the first look at continents.
-7. Density, interpolation and fill; the out-of-reach and uniform paths (RFC 0002's `ChunkStorage::uniform`); the golden hashes start here.
-8. Caves: cheese, pillars, spaghetti and noodles.
-9. Biomes and surface rules.
-10. Plans, placements and the gather build, with ores and trees; the region and thread-count tests.
-11. Replacing RFC 0006's placeholder generator, with flythrough numbers: the M4 milestone image.
-12. Overlay sliders, curve editors, save and load, live regeneration around the camera, and the price panel.
+6. Climate and shape with the per-worker column cache, at every level, `surface_range` and `lod_surface_range`, and the map view: the first look at continents.
+7. Density, interpolation at middles and fill, at every level with each level's octaves; the out-of-reach and uniform paths (RFC 0002's `ChunkStorage::uniform`) and their coarse calls; the golden hashes start here, per level.
+8. Caves: cheese, pillars, spaghetti and noodles, at level 0 (open question 6).
+9. Biomes and surface rules at every level, the top cell's cap included.
+10. Plans, placements and the gather build, with ores and trees; the canopy tiles of the coarse levels (open question 7); the region and thread-count tests.
+11. Replacing RFC 0006's placeholder generator at every level, with flythrough numbers and the coarse-against-fine bound: the M4 milestone image, near and at the horizon.
+12. Overlay sliders, curve editors, save and load, live regeneration around the camera at every level, and the price panel per level.
 
 ## Open questions
 
@@ -300,6 +343,12 @@ All settled on 2026-10-02: every recommendation below was accepted.
 2. **How tall and how deep (taste).** Minecraft 1.18 builds from y -64 up to 319 with the sea at 63: about 256 blocks above the sea and 128 below. Recommendation: a default preset with peaks up to about 256 blocks above the sea and caves and ores down to 256 below, then solid stone forever, so below a camera at sea level the caves end where RFC 0006's near cylinder does (8 chunks, 256 blocks down). Deeper caves mean more mixed chunks underground, each costing memory and generation time; taller or deeper is a slider away, and the price panel shows the cost.
 3. **The first biomes (taste).** Recommendation: eight, as data: ocean floor, beach, plains, forest, taiga, desert, snowy plains and stony peaks. They need 15 blocks from RFC 0004's `core` pack: stone, deep stone, dirt, grass, sand, sandstone, gravel, snow, coal, iron and gold ore, and logs and leaves for oak and spruce.
 4. **Oceans before M7 (taste).** Recommendation: **dry basins** until M7 brings water and its rendering. Sea level and underwater surfaces (sand, gravel) exist from M4, so coasts read correctly the day water arrives. Filling the sea now with a placeholder block shows coastlines earlier, at the price of a block RFC 0003 cannot draw well yet, and of water walls where caves meet the sea, since aquifers are M7's.
+
+The amendment's, opened for RFC 0011's levels and settled on 2026-11-16: every recommendation below was accepted.
+
+5. **The lattice at coarse levels (look against cost).** Recommendation: **scaled with the level**, the same 486 corners per chunk, so every ring costs the same and a lattice cell is the same size on screen in every ring. Far mountains are then straight between corners 128 blocks apart at level 5, from about 8,200 blocks out, where that level starts. The other way: corners at most 32 blocks apart in every direction from level 3 on: 2 times the corners at level 3, 16 at level 4 and 128 at level 5, so against RFC 0008's 100 µs of density a chunk about 0.2, 1.6 and 13 ms, which breaks RFC 0011's 2 ms at level 5.
+6. **Caves at level 1 (look against cost; changes RFC 0011).** RFC 0011 dilates caves by a cell at level 1 and skips them from level 2. Recommendation: **no caves at any coarse level**. The default caves do not open to the sky, level 1 starts about 514 blocks out, and caves interpolated over 8-block corners would lose spaghetti and noodles anyway; without them every coarse chunk under its column's surface is uniform stone, and a coarse build skips cave noise. The cost: a cave mouth in a cliff closes where level 1 takes over. The other way: cheese caverns at level 1, widened by a cell, as RFC 0011 says.
+7. **Trees past level 0 (look; changes RFC 0011).** RFC 0011 draws canopy cells from level 2 and says nothing of level 1, where real trees would cross chunk borders and need the plans coarse chunks do not have. Recommendation: **canopy tiles from level 1**, aligned to the chunk so no coarse build reads a neighbor: 4 by 4 blocks of leaves at level 1, one cell beyond. The other way: plans at level 1 and the gather build there, real tree shapes 514 blocks out at about twice the build cost and plans pinned for every level-1 chunk.
 
 ## As built
 
